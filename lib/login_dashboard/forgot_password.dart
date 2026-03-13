@@ -366,27 +366,40 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage>
                                     const SizedBox(height: 36),
 
                                     // section divider
-                                    Row(children: [
-                                      Container(
-                                        width: 28, height: 1,
-                                        decoration: const BoxDecoration(
-                                          gradient: LinearGradient(colors: [
-                                            _C.gold, Colors.transparent
-                                          ]),
-                                        ),
+                                    SingleChildScrollView(
+                                      scrollDirection: Axis.horizontal,
+                                      child: SizedBox(
+                                        width: 320,
+                                        child: Row(children: [
+                                          Container(
+                                            width: 28,
+                                            height: 1,
+                                            decoration: const BoxDecoration(
+                                              gradient: LinearGradient(colors: [
+                                                _C.gold,
+                                                Colors.transparent
+                                              ]),
+                                            ),
+                                          ),
+                                          const SizedBox(width: 8),
+                                          Text(
+                                            'YOUR EMAIL',
+                                            style: TextStyle(
+                                              fontSize: 8,
+                                              letterSpacing: 4,
+                                              color: _C.gold.withOpacity(0.7),
+                                            ),
+                                          ),
+                                          const SizedBox(width: 8),
+                                          Expanded(
+                                            child: Container(
+                                              height: 1,
+                                              color: _C.border.withOpacity(0.4),
+                                            ),
+                                          ),
+                                        ]),
                                       ),
-                                      const SizedBox(width: 8),
-                                      Text('YOUR EMAIL',
-                                        style: TextStyle(
-                                          fontSize: 8, letterSpacing: 4,
-                                          color: _C.gold.withOpacity(0.7),
-                                        ),
-                                      ),
-                                      const SizedBox(width: 8),
-                                      Expanded(child: Container(
-                                          height: 1,
-                                          color: _C.border.withOpacity(0.4))),
-                                    ]),
+                                    ),
                                     const SizedBox(height: 24),
 
                                     // ── EMAIL — your controller ──

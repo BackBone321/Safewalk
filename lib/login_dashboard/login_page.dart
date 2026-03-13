@@ -226,6 +226,7 @@ class _LoginPageState extends State<LoginPage>
   @override
   Widget build(BuildContext context) {
     final size = MediaQuery.of(context).size;
+    final isCompactLayout = size.width < 980;
 
     return Scaffold(
       backgroundColor: AppColors.offWhite,
@@ -268,59 +269,111 @@ class _LoginPageState extends State<LoginPage>
           SafeArea(
             child: Center(
               child: SingleChildScrollView(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 24, vertical: 32),
+                padding: EdgeInsets.symmetric(
+                  horizontal: isCompactLayout ? 14 : 24,
+                  vertical: isCompactLayout ? 20 : 32,
+                ),
                 child: ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: 1140),
-                  child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.center,
-                    children: [
-                      Expanded(
-                        child: FadeTransition(
-                          opacity: _brandFade,
-                          child: SlideTransition(
-                            position: _brandSlide,
-                            child: const _BrandPanel(),
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 34),
-                      _VerticalSeparator(),
-                      const SizedBox(width: 34),
-                      _LoginCard(
-                        slideAnim: _cardSlide,
-                        fadeAnim: _cardFade,
-                        emailCtrl: _emailCtrl,
-                        passCtrl: _passCtrl,
-                        rememberMe: _rememberMe,
-                        obscurePass: _obscurePass,
-                        isLoading: _isLoading,
-                        onRemember: (v) {
-                          setState(() => _rememberMe = v ?? false);
-                        },
-                        onTogglePass: () {
-                          setState(() => _obscurePass = !_obscurePass);
-                        },
-                        onLogin: _handleLogin,
-                        onRegister: () {
-                          Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder: (_) => const RegisterPage(),
-                            ),
-                          );
-                        },
-                        onForgotPassword: () {
-                          Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder: (_) => const ForgotPasswordPage(),
-                            ),
-                          );
-                        },
-                      ),
-                    ],
+                  constraints: BoxConstraints(
+                    maxWidth: isCompactLayout ? 640 : 1140,
                   ),
+                  child: isCompactLayout
+                      ? Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            FadeTransition(
+                              opacity: _brandFade,
+                              child: SlideTransition(
+                                position: _brandSlide,
+                                child: const _BrandPanel(isCompact: true),
+                              ),
+                            ),
+                            const SizedBox(height: 18),
+                            _LoginCard(
+                              slideAnim: _cardSlide,
+                              fadeAnim: _cardFade,
+                              emailCtrl: _emailCtrl,
+                              passCtrl: _passCtrl,
+                              rememberMe: _rememberMe,
+                              obscurePass: _obscurePass,
+                              isLoading: _isLoading,
+                              isCompact: true,
+                              onRemember: (v) {
+                                setState(() => _rememberMe = v ?? false);
+                              },
+                              onTogglePass: () {
+                                setState(() => _obscurePass = !_obscurePass);
+                              },
+                              onLogin: _handleLogin,
+                              onRegister: () {
+                                Navigator.push(
+                                  context,
+                                  MaterialPageRoute(
+                                    builder: (_) => const RegisterPage(),
+                                  ),
+                                );
+                              },
+                              onForgotPassword: () {
+                                Navigator.push(
+                                  context,
+                                  MaterialPageRoute(
+                                    builder: (_) => const ForgotPasswordPage(),
+                                  ),
+                                );
+                              },
+                            ),
+                          ],
+                        )
+                      : Row(
+                          crossAxisAlignment: CrossAxisAlignment.center,
+                          children: [
+                            Expanded(
+                              child: FadeTransition(
+                                opacity: _brandFade,
+                                child: SlideTransition(
+                                  position: _brandSlide,
+                                  child: const _BrandPanel(),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 34),
+                            _VerticalSeparator(),
+                            const SizedBox(width: 34),
+                            _LoginCard(
+                              slideAnim: _cardSlide,
+                              fadeAnim: _cardFade,
+                              emailCtrl: _emailCtrl,
+                              passCtrl: _passCtrl,
+                              rememberMe: _rememberMe,
+                              obscurePass: _obscurePass,
+                              isLoading: _isLoading,
+                              isCompact: false,
+                              onRemember: (v) {
+                                setState(() => _rememberMe = v ?? false);
+                              },
+                              onTogglePass: () {
+                                setState(() => _obscurePass = !_obscurePass);
+                              },
+                              onLogin: _handleLogin,
+                              onRegister: () {
+                                Navigator.push(
+                                  context,
+                                  MaterialPageRoute(
+                                    builder: (_) => const RegisterPage(),
+                                  ),
+                                );
+                              },
+                              onForgotPassword: () {
+                                Navigator.push(
+                                  context,
+                                  MaterialPageRoute(
+                                    builder: (_) => const ForgotPasswordPage(),
+                                  ),
+                                );
+                              },
+                            ),
+                          ],
+                        ),
                 ),
               ),
             ),
@@ -335,13 +388,15 @@ class _LoginPageState extends State<LoginPage>
 //  Brand Panel
 // ─────────────────────────────────────────────
 class _BrandPanel extends StatelessWidget {
-  const _BrandPanel();
+  final bool isCompact;
+
+  const _BrandPanel({this.isCompact = false});
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      constraints: const BoxConstraints(maxWidth: 420),
-      padding: const EdgeInsets.all(34),
+      constraints: BoxConstraints(maxWidth: isCompact ? 640 : 420),
+      padding: EdgeInsets.all(isCompact ? 24 : 34),
       decoration: BoxDecoration(
         color: AppColors.white.withOpacity(0.88),
         border: Border.all(color: AppColors.border),
@@ -357,8 +412,8 @@ class _BrandPanel extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Container(
-            width: 76,
-            height: 76,
+            width: isCompact ? 62 : 76,
+            height: isCompact ? 62 : 76,
             decoration: BoxDecoration(
               shape: BoxShape.circle,
               color: AppColors.green,
@@ -371,24 +426,24 @@ class _BrandPanel extends StatelessWidget {
                 ),
               ],
             ),
-            child: const Center(
+            child: Center(
               child: Text(
                 'SW',
                 style: TextStyle(
                   fontFamily: 'CormorantGaramond',
-                  fontSize: 24,
+                  fontSize: isCompact ? 20 : 24,
                   fontWeight: FontWeight.w300,
                   color: AppColors.gold,
                 ),
               ),
             ),
           ),
-          const SizedBox(height: 24),
+          SizedBox(height: isCompact ? 18 : 24),
           RichText(
-            text: const TextSpan(
+            text: TextSpan(
               style: TextStyle(
                 fontFamily: 'CormorantGaramond',
-                fontSize: 54,
+                fontSize: isCompact ? 44 : 54,
                 fontWeight: FontWeight.w300,
                 height: 1.03,
                 color: AppColors.green,
@@ -405,17 +460,17 @@ class _BrandPanel extends StatelessWidget {
               ],
             ),
           ),
-          const SizedBox(height: 10),
+          SizedBox(height: isCompact ? 8 : 10),
           Text(
             'SECURE ACCESS PORTAL',
             style: TextStyle(
-              fontSize: 9,
-              letterSpacing: 6,
+              fontSize: isCompact ? 8 : 9,
+              letterSpacing: isCompact ? 3.2 : 6,
               color: AppColors.green.withOpacity(0.8),
               fontWeight: FontWeight.w400,
             ),
           ),
-          const SizedBox(height: 30),
+          SizedBox(height: isCompact ? 22 : 30),
           Container(
             width: 56,
             height: 1,
@@ -425,13 +480,13 @@ class _BrandPanel extends StatelessWidget {
               ),
             ),
           ),
-          const SizedBox(height: 28),
+          SizedBox(height: isCompact ? 18 : 28),
           Text(
             'LOGIN AS ADMIN, STUDENT,\nOR PARENT/GUARDIAN USING\nYOUR REGISTERED ACCOUNT.',
             style: TextStyle(
-              fontSize: 11,
-              letterSpacing: 2,
-              height: 2,
+              fontSize: isCompact ? 10 : 11,
+              letterSpacing: isCompact ? 1.2 : 2,
+              height: isCompact ? 1.65 : 2,
               color: AppColors.textSub,
               fontWeight: FontWeight.w300,
             ),
@@ -477,6 +532,7 @@ class _LoginCard extends StatelessWidget {
   final bool rememberMe;
   final bool obscurePass;
   final bool isLoading;
+  final bool isCompact;
   final ValueChanged<bool?> onRemember;
   final VoidCallback onTogglePass;
   final VoidCallback onLogin;
@@ -491,6 +547,7 @@ class _LoginCard extends StatelessWidget {
     required this.rememberMe,
     required this.obscurePass,
     required this.isLoading,
+    required this.isCompact,
     required this.onRemember,
     required this.onTogglePass,
     required this.onLogin,
@@ -505,7 +562,7 @@ class _LoginCard extends StatelessWidget {
       child: SlideTransition(
         position: slideAnim,
         child: Container(
-          width: 400,
+          width: isCompact ? double.infinity : 400,
           decoration: BoxDecoration(
             color: AppColors.white,
             border: Border.all(color: AppColors.border, width: 1),
@@ -539,7 +596,7 @@ class _LoginCard extends StatelessWidget {
                 ),
               ),
               Padding(
-                padding: const EdgeInsets.all(52),
+                padding: EdgeInsets.all(isCompact ? 26 : 52),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
@@ -547,22 +604,22 @@ class _LoginCard extends StatelessWidget {
                       'SECURE ACCESS',
                       style: TextStyle(
                         fontSize: 9,
-                        letterSpacing: 5,
+                        letterSpacing: isCompact ? 3.2 : 5,
                         color: AppColors.gold.withOpacity(0.9),
                         fontWeight: FontWeight.w300,
                       ),
                     ),
-                    const SizedBox(height: 10),
-                    const Text.rich(
+                    SizedBox(height: isCompact ? 8 : 10),
+                    Text.rich(
                       TextSpan(
                         style: TextStyle(
                           fontFamily: 'CormorantGaramond',
-                          fontSize: 34,
+                          fontSize: isCompact ? 30 : 34,
                           fontWeight: FontWeight.w300,
                           height: 1.1,
                           color: AppColors.green,
                         ),
-                        children: [
+                        children: const [
                           TextSpan(text: 'Welcome\n'),
                           TextSpan(
                             text: 'back',
@@ -574,14 +631,14 @@ class _LoginCard extends StatelessWidget {
                         ],
                       ),
                     ),
-                    const SizedBox(height: 36),
+                    SizedBox(height: isCompact ? 24 : 36),
                     _LuxuryField(
                       label: 'EMAIL OR PHONE NUMBER',
                       hint: 'Enter email or phone number',
                       controller: emailCtrl,
                       keyboardType: TextInputType.text,
                     ),
-                    const SizedBox(height: 28),
+                    SizedBox(height: isCompact ? 18 : 28),
                     _LuxuryField(
                       label: 'PASSWORD',
                       hint: '••••••••••••',
@@ -598,29 +655,85 @@ class _LoginCard extends StatelessWidget {
                         onPressed: onTogglePass,
                       ),
                     ),
-                    const SizedBox(height: 28),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Row(
-                          children: [
-                            SizedBox(
-                              width: 18,
-                              height: 18,
-                              child: Checkbox(
-                                value: rememberMe,
-                                onChanged: onRemember,
-                                activeColor: AppColors.green,
-                                checkColor: AppColors.gold,
-                                side: const BorderSide(
-                                  color: AppColors.border,
-                                  width: 1,
-                                ),
+                    SizedBox(height: isCompact ? 16 : 28),
+                    if (isCompact) ...[
+                      Row(
+                        children: [
+                          SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: Checkbox(
+                              value: rememberMe,
+                              onChanged: onRemember,
+                              activeColor: AppColors.green,
+                              checkColor: AppColors.gold,
+                              side: const BorderSide(
+                                color: AppColors.border,
+                                width: 1,
                               ),
                             ),
-                            const SizedBox(width: 10),
-                            Text(
-                              'REMEMBER ME',
+                          ),
+                          const SizedBox(width: 10),
+                          Text(
+                            'REMEMBER ME',
+                            style: TextStyle(
+                              fontSize: 9,
+                              letterSpacing: 2,
+                              color: AppColors.textSub,
+                              fontWeight: FontWeight.w300,
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 12),
+                      GestureDetector(
+                        onTap: onForgotPassword,
+                        child: Text(
+                          'FORGOT PASSWORD?',
+                          style: TextStyle(
+                            fontSize: 9,
+                            letterSpacing: 2,
+                            color: AppColors.textSub,
+                            fontWeight: FontWeight.w300,
+                          ),
+                        ),
+                      ),
+                    ] else
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Row(
+                            children: [
+                              SizedBox(
+                                width: 18,
+                                height: 18,
+                                child: Checkbox(
+                                  value: rememberMe,
+                                  onChanged: onRemember,
+                                  activeColor: AppColors.green,
+                                  checkColor: AppColors.gold,
+                                  side: const BorderSide(
+                                    color: AppColors.border,
+                                    width: 1,
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 10),
+                              Text(
+                                'REMEMBER ME',
+                                style: TextStyle(
+                                  fontSize: 9,
+                                  letterSpacing: 3,
+                                  color: AppColors.textSub,
+                                  fontWeight: FontWeight.w300,
+                                ),
+                              ),
+                            ],
+                          ),
+                          GestureDetector(
+                            onTap: onForgotPassword,
+                            child: Text(
+                              'FORGOT PASSWORD?',
                               style: TextStyle(
                                 fontSize: 9,
                                 letterSpacing: 3,
@@ -628,55 +741,43 @@ class _LoginCard extends StatelessWidget {
                                 fontWeight: FontWeight.w300,
                               ),
                             ),
-                          ],
-                        ),
-                        GestureDetector(
-                          onTap: onForgotPassword,
-                          child: Text(
-                            'FORGOT PASSWORD?',
-                            style: TextStyle(
-                              fontSize: 9,
-                              letterSpacing: 3,
-                              color: AppColors.textSub,
-                              fontWeight: FontWeight.w300,
-                            ),
                           ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 32),
+                        ],
+                      ),
+                    SizedBox(height: isCompact ? 22 : 32),
                     _SignInButton(
                       onTap: onLogin,
                       isLoading: isLoading,
                     ),
-                    const SizedBox(height: 24),
+                    SizedBox(height: isCompact ? 16 : 24),
                     Center(
-                      child: RichText(
-                        text: TextSpan(
-                          style: TextStyle(
-                            fontSize: 9,
-                            letterSpacing: 3,
-                            color: AppColors.textSub,
-                            fontWeight: FontWeight.w300,
+                      child: Wrap(
+                        alignment: WrapAlignment.center,
+                        spacing: 6,
+                        runSpacing: 2,
+                        children: [
+                          Text(
+                            'NEW HERE?',
+                            style: TextStyle(
+                              fontSize: 9,
+                              letterSpacing: isCompact ? 2 : 3,
+                              color: AppColors.textSub,
+                              fontWeight: FontWeight.w300,
+                            ),
                           ),
-                          children: [
-                            const TextSpan(text: 'NEW HERE?  '),
-                            WidgetSpan(
-                              child: GestureDetector(
-                                onTap: onRegister,
-                                child: const Text(
-                                  'CREATE AN ACCOUNT',
-                                  style: TextStyle(
-                                    fontSize: 9,
-                                    letterSpacing: 3,
-                                    color: AppColors.green,
-                                    fontWeight: FontWeight.w500,
-                                  ),
-                                ),
+                          GestureDetector(
+                            onTap: onRegister,
+                            child: Text(
+                              'CREATE AN ACCOUNT',
+                              style: TextStyle(
+                                fontSize: 9,
+                                letterSpacing: isCompact ? 2 : 3,
+                                color: AppColors.green,
+                                fontWeight: FontWeight.w500,
                               ),
                             ),
-                          ],
-                        ),
+                          ),
+                        ],
                       ),
                     ),
                   ],

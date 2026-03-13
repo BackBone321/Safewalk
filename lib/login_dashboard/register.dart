@@ -50,12 +50,14 @@ class _RegisterPageState extends State<RegisterPage>
   final _phoneCtrl = TextEditingController();
   final _passCtrl = TextEditingController();
   final _confirmCtrl = TextEditingController();
+  final _otpCtrl = TextEditingController();
   final AuthService _authService = AuthService();
 
   String _accountType = 'Student';
   bool _obscurePass = true;
   bool _obscureConfirm = true;
   bool _isLoading = false;
+  bool _otpRequested = false;
 
   // ── animation controllers ──
   late AnimationController _cardAnim;
@@ -65,7 +67,11 @@ class _RegisterPageState extends State<RegisterPage>
   final List<_Particle>    _particles = [];
   final Random             _rng       = Random();
 
-  Future<void> _handleRegister() async {
+  void _showMessage(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  bool _validateInputs() {
     final fullName = _fullNameCtrl.text.trim();
     final email = _emailCtrl.text.trim();
     final phone = _phoneCtrl.text.trim();
@@ -77,48 +83,86 @@ class _RegisterPageState extends State<RegisterPage>
         phone.isEmpty ||
         password.isEmpty ||
         confirmPassword.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please fill in all fields.')),
-      );
-      return;
+      _showMessage('Please fill in all fields.');
+      return false;
     }
     if (password != confirmPassword) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Passwords do not match.')),
-      );
-      return;
+      _showMessage('Passwords do not match.');
+      return false;
     }
     if (password.length < 6) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-            content: Text('Password must be at least 6 characters.')),
-      );
-      return;
+      _showMessage('Password must be at least 6 characters.');
+      return false;
     }
+    return true;
+  }
+
+  Future<void> _sendOtp() async {
+    if (!_validateInputs()) return;
 
     setState(() => _isLoading = true);
 
     try {
-      await _authService.register(
-        fullName: fullName,
-        email: email,
-        phoneNumber: phone,
-        password: password,
-        role: _accountType.toLowerCase(),
+      await _authService.sendEmailOtp(
+        email: _emailCtrl.text.trim(),
+        fullName: _fullNameCtrl.text.trim(),
       );
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Account created successfully.')),
-      );
-      Navigator.pop(context);
+
+      setState(() {
+        _otpRequested = true;
+      });
+
+      _showMessage('OTP sent to ${_emailCtrl.text.trim()}');
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(_authService.getMessageFromError(e))),
-      );
+      _showMessage(_authService.getMessageFromError(e));
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }
+  }
+
+  Future<void> _verifyOtpAndRegister() async {
+    if (!_validateInputs()) return;
+    if (!_otpRequested) {
+      _showMessage('Request OTP first.');
+      return;
+    }
+
+    final otp = _otpCtrl.text.trim();
+    if (otp.length < 6) {
+      _showMessage('Enter the 6-digit OTP.');
+      return;
+    }
+
+    setState(() => _isLoading = true);
+    try {
+      await _authService.registerWithEmailOtp(
+        fullName: _fullNameCtrl.text.trim(),
+        email: _emailCtrl.text.trim(),
+        phoneNumber: _phoneCtrl.text.trim(),
+        password: _passCtrl.text.trim(),
+        role: _accountType.toLowerCase(),
+        otpCode: otp,
+      );
+
+      if (!mounted) return;
+      _showMessage('Account created successfully.');
+      Navigator.pop(context);
+    } catch (e) {
+      if (!mounted) return;
+      _showMessage(_authService.getMessageFromError(e));
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  Future<void> _handleRegister() async {
+    if (_otpRequested) {
+      await _verifyOtpAndRegister();
+      return;
+    }
+    await _sendOtp();
   }
 
   @override
@@ -171,6 +215,7 @@ class _RegisterPageState extends State<RegisterPage>
     _phoneCtrl.dispose();
     _passCtrl.dispose();
     _confirmCtrl.dispose();
+    _otpCtrl.dispose();
     super.dispose();
   }
 
@@ -369,6 +414,32 @@ class _RegisterPageState extends State<RegisterPage>
                                     ),
                                     const SizedBox(height: 22),
 
+                                    if (_otpRequested) ...[
+                                      _LuxField(
+                                        label: 'OTP CODE',
+                                        hint: 'Enter 6-digit OTP',
+                                        controller: _otpCtrl,
+                                        keyboardType: TextInputType.number,
+                                        prefixIcon: Icons.verified_user_outlined,
+                                      ),
+                                      const SizedBox(height: 8),
+                                      Text(
+                                        'OTP sent to ${_emailCtrl.text.trim()}',
+                                        style: TextStyle(
+                                          fontSize: 10,
+                                          color: _C.green.withOpacity(0.7),
+                                        ),
+                                      ),
+                                      Align(
+                                        alignment: Alignment.centerRight,
+                                        child: TextButton(
+                                          onPressed: _isLoading ? null : _sendOtp,
+                                          child: const Text('Resend OTP'),
+                                        ),
+                                      ),
+                                      const SizedBox(height: 12),
+                                    ],
+
                                     Text(
                                       'ACCOUNT TYPE',
                                       style: TextStyle(
@@ -469,6 +540,7 @@ class _RegisterPageState extends State<RegisterPage>
                                     // ── CREATE ACCOUNT BUTTON ──
                                     _RegisterButton(
                                       isLoading: _isLoading,
+                                      label: _otpRequested ? 'VERIFY OTP' : 'SEND EMAIL OTP',
                                       onTap: _handleRegister,
                                     ),
 
@@ -526,24 +598,37 @@ class _RegisterPageState extends State<RegisterPage>
   }
 
   Widget _sectionDivider(String label) {
-    return Row(children: [
-      Container(
-        width: 28, height: 1,
-        decoration: const BoxDecoration(
-          gradient: LinearGradient(
-              colors: [_C.gold, Colors.transparent]),
-        ),
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      child: SizedBox(
+        width: 320,
+        child: Row(children: [
+          Container(
+            width: 28,
+            height: 1,
+            decoration: const BoxDecoration(
+              gradient: LinearGradient(colors: [_C.gold, Colors.transparent]),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: 8,
+              letterSpacing: 4,
+              color: _C.gold.withOpacity(0.7),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Container(
+              height: 1,
+              color: _C.border.withOpacity(0.4),
+            ),
+          ),
+        ]),
       ),
-      const SizedBox(width: 8),
-      Text(label, style: TextStyle(
-        fontSize: 8, letterSpacing: 4,
-        color: _C.gold.withOpacity(0.7),
-      )),
-      const SizedBox(width: 8),
-      Expanded(child: Container(
-          height: 1,
-          color: _C.border.withOpacity(0.4))),
-    ]);
+    );
   }
 }
 
@@ -671,9 +756,10 @@ class _LuxFieldState extends State<_LuxField>
 // ─────────────────────────────────────────────
 class _RegisterButton extends StatefulWidget {
   final bool isLoading;
+  final String label;
   final VoidCallback onTap;
   const _RegisterButton(
-      {required this.isLoading, required this.onTap});
+      {required this.isLoading, required this.label, required this.onTap});
 
   @override
   State<_RegisterButton> createState() => _RegisterButtonState();
@@ -755,8 +841,8 @@ class _RegisterButtonState extends State<_RegisterButton>
                               _C.goldLt),
                         ),
                       )
-                    : const Text('CREATE ACCOUNT',
-                        style: TextStyle(
+                    : Text(widget.label,
+                        style: const TextStyle(
                           fontSize: 10, letterSpacing: 6,
                           color: _C.goldLt,
                           fontWeight: FontWeight.w400,
