@@ -1,6 +1,6 @@
 import 'dart:math';
 import 'package:flutter/material.dart';
-import 'auth_service.dart';
+import '../auth/auth_service.dart';
 
 // ─────────────────────────────────────────────
 //  Colour Palette — white / light luxury theme
@@ -44,14 +44,18 @@ class RegisterPage extends StatefulWidget {
 class _RegisterPageState extends State<RegisterPage>
     with TickerProviderStateMixin {
 
-  // ── your original controllers & service ──
-  final _emailCtrl   = TextEditingController();
-  final _passCtrl    = TextEditingController();
+  // ── controllers & service ──
+  final _fullNameCtrl = TextEditingController();
+  final _emailCtrl = TextEditingController();
+  final _phoneCtrl = TextEditingController();
+  final _passCtrl = TextEditingController();
   final _confirmCtrl = TextEditingController();
   final AuthService _authService = AuthService();
-  bool _obscurePass    = true;
+
+  String _accountType = 'Student';
+  bool _obscurePass = true;
   bool _obscureConfirm = true;
-  bool _isLoading      = false;
+  bool _isLoading = false;
 
   // ── animation controllers ──
   late AnimationController _cardAnim;
@@ -61,13 +65,18 @@ class _RegisterPageState extends State<RegisterPage>
   final List<_Particle>    _particles = [];
   final Random             _rng       = Random();
 
-  // ── your original _handleRegister — completely untouched ──
   Future<void> _handleRegister() async {
-    final email           = _emailCtrl.text.trim();
-    final password        = _passCtrl.text.trim();
+    final fullName = _fullNameCtrl.text.trim();
+    final email = _emailCtrl.text.trim();
+    final phone = _phoneCtrl.text.trim();
+    final password = _passCtrl.text.trim();
     final confirmPassword = _confirmCtrl.text.trim();
 
-    if (email.isEmpty || password.isEmpty || confirmPassword.isEmpty) {
+    if (fullName.isEmpty ||
+        email.isEmpty ||
+        phone.isEmpty ||
+        password.isEmpty ||
+        confirmPassword.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Please fill in all fields.')),
       );
@@ -90,7 +99,13 @@ class _RegisterPageState extends State<RegisterPage>
     setState(() => _isLoading = true);
 
     try {
-      await _authService.register(email: email, password: password);
+      await _authService.register(
+        fullName: fullName,
+        email: email,
+        phoneNumber: phone,
+        password: password,
+        role: _accountType.toLowerCase(),
+      );
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Account created successfully.')),
@@ -151,7 +166,9 @@ class _RegisterPageState extends State<RegisterPage>
   void dispose() {
     _cardAnim.dispose();
     _particleAnim.dispose();
+    _fullNameCtrl.dispose();
     _emailCtrl.dispose();
+    _phoneCtrl.dispose();
     _passCtrl.dispose();
     _confirmCtrl.dispose();
     super.dispose();
@@ -324,7 +341,15 @@ class _RegisterPageState extends State<RegisterPage>
                                     _sectionDivider('ACCOUNT DETAILS'),
                                     const SizedBox(height: 24),
 
-                                    // ── EMAIL ──
+                                    _LuxField(
+                                      label: 'FULL NAME',
+                                      hint: 'Enter your full name',
+                                      controller: _fullNameCtrl,
+                                      keyboardType: TextInputType.name,
+                                      prefixIcon: Icons.person_outline,
+                                    ),
+                                    const SizedBox(height: 22),
+
                                     _LuxField(
                                       label: 'EMAIL ADDRESS',
                                       hint: 'your@email.com',
@@ -333,12 +358,72 @@ class _RegisterPageState extends State<RegisterPage>
                                           TextInputType.emailAddress,
                                       prefixIcon: Icons.mail_outline,
                                     ),
+                                    const SizedBox(height: 22),
+
+                                    _LuxField(
+                                      label: 'PHONE NUMBER',
+                                      hint: '+63 9XXXXXXXXX',
+                                      controller: _phoneCtrl,
+                                      keyboardType: TextInputType.phone,
+                                      prefixIcon: Icons.phone_outlined,
+                                    ),
+                                    const SizedBox(height: 22),
+
+                                    Text(
+                                      'ACCOUNT TYPE',
+                                      style: TextStyle(
+                                        fontSize: 9,
+                                        letterSpacing: 4,
+                                        color: _C.gold.withOpacity(0.9),
+                                        fontWeight: FontWeight.w400,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 8),
+
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                                      decoration: BoxDecoration(
+                                        color: _C.offWhite,
+                                        borderRadius: BorderRadius.circular(2),
+                                        border: Border.all(
+                                          color: _C.border.withOpacity(0.5),
+                                          width: 1,
+                                        ),
+                                      ),
+                                      child: DropdownButtonHideUnderline(
+                                        child: DropdownButton<String>(
+                                          value: _accountType,
+                                          isExpanded: true,
+                                          dropdownColor: _C.white,
+                                          style: const TextStyle(
+                                            fontSize: 13,
+                                            letterSpacing: 1.2,
+                                            color: _C.textMain,
+                                            fontWeight: FontWeight.w300,
+                                          ),
+                                          items: const [
+                                            DropdownMenuItem(
+                                              value: 'Student',
+                                              child: Text('Student'),
+                                            ),
+                                            DropdownMenuItem(
+                                              value: 'Parent',
+                                              child: Text('Parent'),
+                                            ),
+                                          ],
+                                          onChanged: (value) {
+                                            if (value != null) {
+                                              setState(() => _accountType = value);
+                                            }
+                                          },
+                                        ),
+                                      ),
+                                    ),
 
                                     const SizedBox(height: 32),
                                     _sectionDivider('SECURITY'),
                                     const SizedBox(height: 24),
 
-                                    // ── PASSWORD ──
                                     _LuxField(
                                       label: 'PASSWORD',
                                       hint: '••••••••••••',
@@ -359,7 +444,6 @@ class _RegisterPageState extends State<RegisterPage>
                                     ),
                                     const SizedBox(height: 22),
 
-                                    // ── CONFIRM PASSWORD ──
                                     _LuxField(
                                       label: 'CONFIRM PASSWORD',
                                       hint: '••••••••••••',

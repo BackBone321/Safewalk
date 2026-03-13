@@ -1,6 +1,6 @@
 import 'dart:math';
 import 'package:flutter/material.dart';
-import 'auth_service.dart';
+import '../auth/auth_service.dart';
 
 // ─────────────────────────────────────────────
 //  Colour Palette — white / light luxury theme
@@ -72,7 +72,7 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage>
     setState(() => _isLoading = true);
 
     try {
-      await _authService.resetPassword(email: email);
+      await _authService.sendPasswordResetEmail(email);
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
