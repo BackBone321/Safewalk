@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter_map/flutter_map.dart';
+import 'package:latlong2/latlong.dart';
 
 import '../auth/auth_service.dart';
 import '../login_dashboard/login_page.dart';
@@ -17,6 +19,7 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
   int _selectedNavIndex = 0;
   static const String _hf = 'CormorantGaramond';
   static const String _bf = 'JosefinSans';
+  static const LatLng _defaultMapCenter = LatLng(14.5995, 120.9842);
 
   final AuthService _authService = AuthService();
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
@@ -25,22 +28,17 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
   bool _isLoading = true;
   bool _isSavingProfile = false;
   bool _isSavingSettings = false;
-  bool _isProcessingWalk = false;
-  bool _sessionActive = true;
 
   String _fullName = 'Student';
   String _email = '';
   String _phoneNumber = '';
   String _activeRoute = 'Main Campus -> Dorm Block C';
-  DateTime? _sessionStartedAt =
-      DateTime.now().subtract(const Duration(minutes: 16));
-  double _distanceKm = 1.2;
-  String? _activeWalkSessionId;
 
   String _deviceId = 'Not linked';
   String _deviceName = 'No linked device';
   String _deviceLocation = 'Unknown';
   String _deviceStatus = 'offline';
+  LatLng? _deviceCoordinates;
 
   bool _alertsEnabled = true;
   bool _safeModeEnabled = true;
@@ -80,7 +78,7 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
   final List<_NavItem> _navItems = const [
     _NavItem('Home', Icons.home_outlined),
     _NavItem('Map', Icons.map_outlined),
-    _NavItem('Walk', Icons.directions_walk_outlined),
+    _NavItem('Device', Icons.smartphone_outlined),
     _NavItem('Alerts', Icons.notifications_none_rounded),
     _NavItem('Profile', Icons.person_outline),
   ];
@@ -99,16 +97,69 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
     return cleaned;
   }
 
-  String get _elapsedLabel {
-    if (!_sessionActive || _sessionStartedAt == null) return '--';
-    final d = DateTime.now().difference(_sessionStartedAt!);
-    return '${d.inMinutes} min';
+  double? _toDouble(dynamic value) {
+    if (value is num) return value.toDouble();
+    if (value is String) return double.tryParse(value.trim());
+    return null;
   }
 
-  String get _routeMetric {
-    final r = _activeRoute.split('->').first.trim();
-    if (r.isEmpty) return 'Campus';
-    return r.length > 10 ? '${r.substring(0, 10)}.' : r;
+  bool _isValidLatLng(double lat, double lng) {
+    return lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180;
+  }
+
+  LatLng? _coordinatesFromValues(dynamic latValue, dynamic lngValue) {
+    final lat = _toDouble(latValue);
+    final lng = _toDouble(lngValue);
+    if (lat == null || lng == null) return null;
+    if (!_isValidLatLng(lat, lng)) return null;
+    return LatLng(lat, lng);
+  }
+
+  LatLng? _coordinatesFromText(String text) {
+    final match = RegExp(r'(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)')
+        .firstMatch(text);
+    if (match == null) return null;
+    final lat = double.tryParse(match.group(1) ?? '');
+    final lng = double.tryParse(match.group(2) ?? '');
+    if (lat == null || lng == null) return null;
+    if (!_isValidLatLng(lat, lng)) return null;
+    return LatLng(lat, lng);
+  }
+
+  LatLng? _extractDeviceCoordinates(Map<String, dynamic> data) {
+    final direct = _coordinatesFromValues(
+      data['latitude'] ?? data['lat'],
+      data['longitude'] ?? data['lng'] ?? data['lon'],
+    );
+    if (direct != null) return direct;
+
+    final coordinates = data['coordinates'];
+    if (coordinates is Map) {
+      final nested = _coordinatesFromValues(
+        coordinates['latitude'] ?? coordinates['lat'],
+        coordinates['longitude'] ?? coordinates['lng'] ?? coordinates['lon'],
+      );
+      if (nested != null) return nested;
+    }
+
+    final location = data['location'];
+    if (location is GeoPoint) return LatLng(location.latitude, location.longitude);
+    if (location is String) {
+      final parsed = _coordinatesFromText(location);
+      if (parsed != null) return parsed;
+    }
+
+    return null;
+  }
+
+  LatLng get _mapCenter => _deviceCoordinates ?? _defaultMapCenter;
+
+  bool get _hasDeviceCoordinates => _deviceCoordinates != null;
+
+  String get _mapCoordinateLabel {
+    if (!_hasDeviceCoordinates) return 'Not available';
+    final coords = _deviceCoordinates!;
+    return '${coords.latitude.toStringAsFixed(6)}, ${coords.longitude.toStringAsFixed(6)}';
   }
 
   String _formatTimestamp(Timestamp? ts) {
@@ -166,7 +217,6 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
             (settingsDoc.data()?['locationSharingEnabled'] as bool?) ?? true;
       });
       await _loadLinkedDevice();
-      await _loadActiveWalkSession();
     } catch (e) {
       _showActionSnack('Failed to load dashboard data: $e', isError: true);
     } finally {
@@ -197,46 +247,23 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
         _deviceName = 'No linked device';
         _deviceLocation = 'Unknown';
         _deviceStatus = 'offline';
+        _deviceCoordinates = null;
       });
       return;
     }
     final data = q.docs.first.data();
+    final locationField = data['location'];
     if (!mounted) return;
     setState(() {
       _deviceId = (data['deviceId'] ?? '').toString().isEmpty
           ? q.docs.first.id
           : (data['deviceId'] ?? q.docs.first.id).toString();
       _deviceName = (data['deviceName'] ?? 'Emergency Device').toString();
-      _deviceLocation = (data['location'] ?? 'Unknown').toString();
+      _deviceLocation = locationField is GeoPoint
+          ? '${locationField.latitude.toStringAsFixed(6)}, ${locationField.longitude.toStringAsFixed(6)}'
+          : (locationField ?? 'Unknown').toString();
       _deviceStatus = (data['status'] ?? 'active').toString().toLowerCase();
-    });
-  }
-
-  Future<void> _loadActiveWalkSession() async {
-    final uid = FirebaseAuth.instance.currentUser?.uid;
-    if (uid == null) return;
-    final q = await _firestore
-        .collection('walk_sessions')
-        .where('uid', isEqualTo: uid)
-        .where('status', isEqualTo: 'active')
-        .limit(1)
-        .get();
-    if (q.docs.isEmpty) {
-      if (!mounted) return;
-      setState(() {
-        _sessionActive = false;
-        _activeWalkSessionId = null;
-      });
-      return;
-    }
-    final data = q.docs.first.data();
-    if (!mounted) return;
-    setState(() {
-      _sessionActive = true;
-      _activeWalkSessionId = q.docs.first.id;
-      _sessionStartedAt = (data['startAt'] as Timestamp?)?.toDate();
-      _activeRoute = (data['route'] ?? _activeRoute).toString();
-      _distanceKm = (data['distanceKm'] as num?)?.toDouble() ?? _distanceKm;
+      _deviceCoordinates = _extractDeviceCoordinates(data);
     });
   }
 
@@ -277,57 +304,6 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
       _showActionSnack('SOS alert sent. Admin and guardians can now see the alert.');
     } catch (e) {
       _showActionSnack('Failed to send SOS alert: $e', isError: true);
-    }
-  }
-
-  Future<void> _toggleWalkSession() async {
-    if (_isProcessingWalk) return;
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) {
-      _showActionSnack('Please login again.', isError: true);
-      return;
-    }
-    setState(() => _isProcessingWalk = true);
-    try {
-      if (_sessionActive && _activeWalkSessionId != null) {
-        await _firestore
-            .collection('walk_sessions')
-            .doc(_activeWalkSessionId)
-            .update({
-          'status': 'completed',
-          'endAt': FieldValue.serverTimestamp(),
-          'distanceKm': _distanceKm,
-        });
-        if (!mounted) return;
-        setState(() {
-          _sessionActive = false;
-          _sessionStartedAt = null;
-          _activeWalkSessionId = null;
-        });
-        _showActionSnack('Walk session ended.');
-      } else {
-        final now = DateTime.now();
-        final doc = await _firestore.collection('walk_sessions').add({
-          'uid': user.uid,
-          'fullName': _fullName,
-          'route': _activeRoute,
-          'status': 'active',
-          'startAt': FieldValue.serverTimestamp(),
-          'distanceKm': _distanceKm,
-          'createdAt': FieldValue.serverTimestamp(),
-        });
-        if (!mounted) return;
-        setState(() {
-          _sessionActive = true;
-          _sessionStartedAt = now;
-          _activeWalkSessionId = doc.id;
-        });
-        _showActionSnack('Walk session started.');
-      }
-    } catch (e) {
-      _showActionSnack('Failed to update walk session: $e', isError: true);
-    } finally {
-      if (mounted) setState(() => _isProcessingWalk = false);
     }
   }
 
@@ -399,6 +375,7 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
       rows: [
         _InfoRow('Route', _activeRoute),
         _InfoRow('Device Location', _deviceLocation),
+        _InfoRow('Coordinates', _mapCoordinateLabel),
         _InfoRow(
             'Location Sharing', _locationSharingEnabled ? 'Enabled' : 'Disabled'),
       ],
@@ -426,23 +403,6 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
         await _loadLinkedDevice();
         _showActionSnack('Device status refreshed.');
       },
-    );
-  }
-
-  Future<void> _showSessionDetailsDialog() async {
-    await _showLuxuryInfoSheet(
-      title: 'Walk Session',
-      subtitle: 'SESSION DETAILS',
-      icon: Icons.directions_walk_outlined,
-      rows: [
-        _InfoRow('Status', _sessionActive ? 'Active' : 'Inactive'),
-        _InfoRow('Route', _activeRoute),
-        _InfoRow('Elapsed', _elapsedLabel),
-        _InfoRow('Distance', '${_distanceKm.toStringAsFixed(1)} km'),
-        _InfoRow('Device', '$_deviceName ($_deviceId)'),
-      ],
-      actionLabel: _sessionActive ? 'END SESSION' : 'START SESSION',
-      onAction: () async => await _toggleWalkSession(),
     );
   }
 
@@ -1427,8 +1387,8 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
       case 'Map':
         await _showLocationDialog();
         return;
-      case 'Walk':
-        await _toggleWalkSession();
+      case 'Device':
+        await _showDeviceDialog();
         return;
       case 'Alerts':
         await _showAlertHistorySheet();
@@ -1517,9 +1477,9 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                   const SizedBox(height: 16),
                   _buildRouteCard(),
                   const SizedBox(height: 18),
-                  _buildSectionLabel('CURRENT SESSION'),
+                  _buildSectionLabel('DEVICE STATUS'),
                   const SizedBox(height: 10),
-                  _buildSessionCard(),
+                  _buildDeviceCard(),
                   const SizedBox(height: 20),
                   _buildSectionLabel('TOOLS'),
                   const SizedBox(height: 10),
@@ -1698,19 +1658,16 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
   }
 
   Widget _buildRouteCard() {
+    final center = _mapCenter;
     return Container(
-      height: 160,
+      height: 260,
       decoration: BoxDecoration(
-        gradient: const LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: [Color(0xFF0F5E3E), Color(0xFF0A3D2A)],
-        ),
+        color: AppColors.white,
         borderRadius: BorderRadius.circular(22),
-        border: Border.all(color: AppColors.gold.withOpacity(0.2), width: 0.8),
+        border: Border.all(color: AppColors.border),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.1),
+            color: Colors.black.withOpacity(0.08),
             blurRadius: 16,
             offset: const Offset(0, 8),
           ),
@@ -1721,100 +1678,168 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
           Positioned.fill(
             child: ClipRRect(
               borderRadius: BorderRadius.circular(22),
-              child: CustomPaint(painter: _GridPatternPainter()),
+              child: FlutterMap(
+                options: MapOptions(
+                  initialCenter: center,
+                  initialZoom: _hasDeviceCoordinates ? 16 : 12,
+                  minZoom: 3,
+                  maxZoom: 19,
+                ),
+                children: [
+                  TileLayer(
+                    urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                    userAgentPackageName: 'com.example.safewalk',
+                  ),
+                  if (_hasDeviceCoordinates)
+                    MarkerLayer(
+                      markers: [
+                        Marker(
+                          point: center,
+                          width: 42,
+                          height: 42,
+                          child: Container(
+                            decoration: BoxDecoration(
+                              color: AppColors.green,
+                              shape: BoxShape.circle,
+                              border: Border.all(color: AppColors.gold, width: 1.8),
+                              boxShadow: [
+                                BoxShadow(
+                                  color: Colors.black.withOpacity(0.25),
+                                  blurRadius: 10,
+                                  offset: const Offset(0, 3),
+                                ),
+                              ],
+                            ),
+                            child: const Icon(
+                              Icons.location_on_rounded,
+                              color: AppColors.white,
+                              size: 22,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                ],
+              ),
+            ),
+          ),
+          Positioned(
+            top: 14,
+            left: 14,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+              decoration: BoxDecoration(
+                color: const Color(0xFF0E5B3C),
+                borderRadius: BorderRadius.circular(999),
+                border:
+                    Border.all(color: AppColors.gold.withOpacity(0.3), width: 0.5),
+              ),
+              child: Text('LIVE MAP',
+                  style: TextStyle(
+                    fontFamily: _bf,
+                    color: AppColors.gold,
+                    fontSize: 10,
+                    letterSpacing: 2,
+                    fontWeight: FontWeight.w600,
+                  )),
             ),
           ),
           Positioned(
             top: 14,
             right: 14,
             child: Container(
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
               decoration: BoxDecoration(
-                color: const Color(0xFF27AE60),
+                color:
+                    _hasDeviceCoordinates ? const Color(0xFF0F5A3E) : const Color(0xFF6C757D),
                 borderRadius: BorderRadius.circular(999),
-                border: Border.all(
-                    color: AppColors.gold.withOpacity(0.3), width: 0.5),
+                border: Border.all(color: Colors.white.withOpacity(0.35)),
               ),
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  const Icon(Icons.shield_outlined,
-                      color: Colors.white, size: 13),
+                  Icon(
+                    Icons.circle,
+                    size: 7,
+                    color: _hasDeviceCoordinates
+                        ? const Color(0xFF5DF0A0)
+                        : const Color(0xFFF6D38E),
+                  ),
                   const SizedBox(width: 5),
-                  Text(_safeModeEnabled ? 'SAFE' : 'MONITOR',
-                      style: TextStyle(
-                        fontFamily: _bf,
-                        color: Colors.white,
-                        fontSize: 10,
-                        letterSpacing: 2,
-                        fontWeight: FontWeight.w600,
-                      )),
+                  Text(
+                    _hasDeviceCoordinates ? 'TRACKING' : 'NO COORDS',
+                    style: TextStyle(
+                      fontFamily: _bf,
+                      color: AppColors.white,
+                      fontSize: 9,
+                      letterSpacing: 1.5,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
                 ],
               ),
             ),
           ),
-          const Center(
-            child: CircleAvatar(
-              radius: 12,
-              backgroundColor: Color(0xFF346349),
-              child: CircleAvatar(
-                radius: 6,
-                backgroundColor: AppColors.gold,
-              ),
-            ),
-          ),
           Positioned(
-            left: 16,
-            bottom: 14,
-            right: 16,
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.end,
-              children: [
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text('ACTIVE ROUTE',
-                          style: TextStyle(
-                            fontFamily: _bf,
-                            color: AppColors.gold,
-                            fontSize: 9,
-                            letterSpacing: 3,
-                            fontWeight: FontWeight.w300,
-                          )),
-                      const SizedBox(height: 4),
-                      Text(_activeRoute,
-                          style: TextStyle(
-                            fontFamily: _bf,
-                            color: const Color(0xFFF8FBF9),
-                            fontSize: 15,
-                            height: 1.2,
-                            fontWeight: FontWeight.w600,
-                          )),
-                    ],
-                  ),
+            left: 0,
+            right: 0,
+            bottom: 0,
+            child: Container(
+              padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  colors: [
+                    Colors.black.withOpacity(0.02),
+                    Colors.black.withOpacity(0.7),
+                  ],
                 ),
-                const SizedBox(width: 10),
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 12, vertical: 6),
-                  decoration: BoxDecoration(
-                    color: AppColors.gold,
-                    borderRadius: BorderRadius.circular(999),
-                  ),
-                  child: Text(
-                    _sessionActive ? 'LIVE' : 'PAUSED',
-                    style: TextStyle(
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('ACTIVE ROUTE',
+                      style: TextStyle(
+                        fontFamily: _bf,
+                        color: AppColors.gold,
+                        fontSize: 9,
+                        letterSpacing: 2.5,
+                        fontWeight: FontWeight.w400,
+                      )),
+                  const SizedBox(height: 3),
+                  Text(
+                    _activeRoute,
+                    style: const TextStyle(
                       fontFamily: _bf,
-                      color: AppColors.green,
-                      fontSize: 10,
-                      letterSpacing: 2,
-                      fontWeight: FontWeight.w700,
+                      color: Colors.white,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
                     ),
                   ),
-                ),
-              ],
+                  const SizedBox(height: 6),
+                  Text(
+                    _hasDeviceCoordinates
+                        ? '$_deviceName at $_mapCoordinateLabel'
+                        : 'Waiting for device coordinates. Save location as "lat, lng".',
+                    style: const TextStyle(
+                      fontFamily: _bf,
+                      color: Color(0xFFE8ECE9),
+                      fontSize: 10,
+                      letterSpacing: 0.4,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    'Map data (c) OpenStreetMap contributors',
+                    style: TextStyle(
+                      fontFamily: _bf,
+                      color: Colors.white.withOpacity(0.85),
+                      fontSize: 9,
+                    ),
+                  ),
+                ],
+              ),
             ),
           ),
         ],
@@ -1849,7 +1874,10 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
     );
   }
 
-  Widget _buildSessionCard() {
+  Widget _buildDeviceCard() {
+    final isLinked = _deviceId != 'Not linked';
+    final isOnline = _deviceStatus == 'active' || _deviceStatus == 'online';
+
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.fromLTRB(18, 16, 18, 18),
@@ -1874,7 +1902,7 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text('Safe Walk',
+                    Text('Device',
                         style: TextStyle(
                           fontFamily: _hf,
                           color: AppColors.green,
@@ -1883,7 +1911,7 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                           fontWeight: FontWeight.w300,
                           fontStyle: FontStyle.italic,
                         )),
-                    Text('Session',
+                    Text('Connection',
                         style: TextStyle(
                           fontFamily: _hf,
                           color: AppColors.goldDark,
@@ -1893,9 +1921,9 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                         )),
                     const SizedBox(height: 6),
                     Text(
-                      _locationSharingEnabled
-                          ? 'Location sharing is active'
-                          : 'Location sharing is paused',
+                      isLinked
+                          ? 'Your emergency device is linked to this account.'
+                          : 'No emergency device linked yet.',
                       style: TextStyle(
                         fontFamily: _bf,
                         color: AppColors.textSub,
@@ -1920,11 +1948,11 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                   children: [
                     Icon(Icons.circle,
                         size: 7,
-                        color: _sessionActive
+                        color: isOnline
                             ? const Color(0xFF60CC8A)
                             : const Color(0xFFFF7F7F)),
                     const SizedBox(width: 5),
-                    Text(_sessionActive ? 'Active' : 'Inactive',
+                    Text(isOnline ? 'Online' : 'Offline',
                         style: TextStyle(
                           fontFamily: _bf,
                           color: AppColors.green,
@@ -1946,15 +1974,15 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
             ),
           ),
           const SizedBox(height: 14),
-          Row(
-            children: [
-              Expanded(child: _MetricCell(value: _routeMetric, label: 'ROUTE')),
-              Expanded(child: _MetricCell(value: _elapsedLabel, label: 'ELAPSED')),
-              Expanded(
-                  child: _MetricCell(
-                      value: '${_distanceKm.toStringAsFixed(1)} km',
-                      label: 'DISTANCE')),
-            ],
+          _buildDeviceRow('Device Name', _deviceName),
+          const SizedBox(height: 8),
+          _buildDeviceRow('Device ID', _deviceId),
+          const SizedBox(height: 8),
+          _buildDeviceRow('Location', _deviceLocation),
+          const SizedBox(height: 8),
+          _buildDeviceRow(
+            'GPS Sharing',
+            _locationSharingEnabled ? 'Enabled' : 'Disabled',
           ),
           const SizedBox(height: 16),
           SizedBox(
@@ -1963,7 +1991,7 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
               color: AppColors.green,
               borderRadius: BorderRadius.circular(12),
               child: InkWell(
-                onTap: _showSessionDetailsDialog,
+                onTap: _showDeviceDialog,
                 borderRadius: BorderRadius.circular(12),
                 child: Container(
                   padding: const EdgeInsets.symmetric(vertical: 14),
@@ -1972,7 +2000,7 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                     borderRadius: BorderRadius.circular(12),
                     border: Border.all(color: AppColors.gold.withOpacity(0.5)),
                   ),
-                  child: Text('VIEW DETAILS',
+                  child: Text('VIEW DEVICE',
                       style: TextStyle(
                         fontFamily: _bf,
                         color: AppColors.white,
@@ -1981,6 +2009,46 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                         fontWeight: FontWeight.w400,
                       )),
                 ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildDeviceRow(String label, String value) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: AppColors.offWhite,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: Row(
+        children: [
+          Text(
+            label,
+            style: TextStyle(
+              fontFamily: _bf,
+              color: AppColors.textSub,
+              fontSize: 10,
+              letterSpacing: 1.2,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              value,
+              textAlign: TextAlign.right,
+              style: TextStyle(
+                fontFamily: _bf,
+                color: AppColors.green,
+                fontSize: 11,
+                letterSpacing: 0.3,
+                fontWeight: FontWeight.w600,
               ),
             ),
           ),
@@ -2177,38 +2245,6 @@ class _NavItem {
 // ─────────────────────────────────────────────────────────────────
 //  Reusable Widgets
 // ─────────────────────────────────────────────────────────────────
-
-class _MetricCell extends StatelessWidget {
-  final String value;
-  final String label;
-  const _MetricCell({required this.value, required this.label});
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      children: [
-        Text(value,
-            style: const TextStyle(
-              fontFamily: 'CormorantGaramond',
-              color: AppColors.green,
-              fontSize: 32,
-              height: 1,
-              fontWeight: FontWeight.w300,
-              fontStyle: FontStyle.italic,
-            )),
-        const SizedBox(height: 4),
-        Text(label,
-            style: const TextStyle(
-              fontFamily: 'JosefinSans',
-              color: AppColors.textSub,
-              fontSize: 9,
-              letterSpacing: 3,
-              fontWeight: FontWeight.w300,
-            )),
-      ],
-    );
-  }
-}
 
 class _StatusPill extends StatelessWidget {
   final String label;
@@ -2489,27 +2525,4 @@ class _DashSettingsTile extends StatelessWidget {
       ),
     );
   }
-}
-
-// ─────────────────────────────────────────────────────────────────
-//  Grid background painter
-// ─────────────────────────────────────────────────────────────────
-
-class _GridPatternPainter extends CustomPainter {
-  @override
-  void paint(Canvas canvas, Size size) {
-    final stroke = Paint()
-      ..color = Colors.white.withOpacity(0.05)
-      ..strokeWidth = 1;
-    const spacing = 24.0;
-    for (double x = 0; x <= size.width; x += spacing) {
-      canvas.drawLine(Offset(x, 0), Offset(x, size.height), stroke);
-    }
-    for (double y = 0; y <= size.height; y += spacing) {
-      canvas.drawLine(Offset(0, y), Offset(size.width, y), stroke);
-    }
-  }
-
-  @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }
