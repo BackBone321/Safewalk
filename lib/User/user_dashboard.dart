@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+
 import '../login_dashboard/login_page.dart';
 
 class UserDashboardPage extends StatefulWidget {
@@ -11,40 +12,80 @@ class UserDashboardPage extends StatefulWidget {
 class _UserDashboardPageState extends State<UserDashboardPage> {
   int _selectedNavIndex = 0;
 
-  final List<_QuickAction> quickActions = const [
-    _QuickAction('SOS Button', Icons.warning_amber_rounded),
-    _QuickAction('Location', Icons.location_on_outlined),
-    _QuickAction('Safe Walk', Icons.directions_walk_outlined),
-    _QuickAction('Device', Icons.bluetooth_connected_outlined),
+  final List<_ActionItem> _quickActions = const [
+    _ActionItem(
+      label: 'SOS',
+      icon: Icons.warning_amber_rounded,
+      background: Color(0xFFFFF0EF),
+      iconWrap: Color(0xFFFFDFDC),
+      iconColor: Color(0xFFCB392B),
+    ),
+    _ActionItem(
+      label: 'Location',
+      icon: Icons.location_on_outlined,
+      background: Color(0xFFEFFAF4),
+      iconWrap: Color(0xFFD6F0E2),
+      iconColor: Color(0xFF1E7E55),
+    ),
+    _ActionItem(
+      label: 'Walk',
+      icon: Icons.directions_walk_outlined,
+      background: Color(0xFFFFFAEC),
+      iconWrap: Color(0xFFF4ECCD),
+      iconColor: Color(0xFF9C7A24),
+    ),
+    _ActionItem(
+      label: 'Device',
+      icon: Icons.smartphone_rounded,
+      background: Color(0xFFF2F4FF),
+      iconWrap: Color(0xFFE1E5FC),
+      iconColor: Color(0xFF4156B8),
+    ),
   ];
 
-  final List<_MenuAction> menuActions = const [
-    _MenuAction(
-      title: 'Device Connection Status',
-      subtitle: 'Check your emergency device and mobile number link',
-      icon: Icons.bluetooth_connected_outlined,
+  final List<_ToolItem> _tools = const [
+    _ToolItem(
+      title: 'Device Connection',
+      subtitle: 'Check your linked emergency device',
+      icon: Icons.smartphone_rounded,
+      iconColor: Color(0xFF1E7E55),
+      iconBg: Color(0xFFEAF5EF),
     ),
-    _MenuAction(
+    _ToolItem(
       title: 'Alert History',
-      subtitle: 'See your recent alerts and emergency activities',
-      icon: Icons.history_outlined,
+      subtitle: 'Recent alerts and emergency logs',
+      icon: Icons.history,
+      iconColor: Color(0xFF9C7A24),
+      iconBg: Color(0xFFFAF3DF),
     ),
-    _MenuAction(
+    _ToolItem(
       title: 'Profile',
-      subtitle: 'Manage your personal information',
+      subtitle: 'Edit personal information',
       icon: Icons.person_outline,
+      iconColor: Color(0xFF4156B8),
+      iconBg: Color(0xFFEFF2FF),
     ),
-    _MenuAction(
+    _ToolItem(
       title: 'Settings',
-      subtitle: 'Update app preferences and account settings',
+      subtitle: 'Preferences and account settings',
       icon: Icons.settings_outlined,
+      iconColor: Color(0xFF6E6D67),
+      iconBg: Color(0xFFF2F1ED),
     ),
   ];
 
-  void _handleTap(String title) {
+  final List<_NavItem> _navItems = const [
+    _NavItem('Home', Icons.home_outlined),
+    _NavItem('Map', Icons.map_outlined),
+    _NavItem('Walk', Icons.directions_walk_outlined),
+    _NavItem('Alerts', Icons.notifications_none_rounded),
+    _NavItem('Profile', Icons.person_outline),
+  ];
+
+  void _showActionSnack(String label) {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text('$title clicked'),
+        content: Text('$label tapped'),
         backgroundColor: AppColors.green,
       ),
     );
@@ -62,42 +103,27 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: AppColors.offWhite,
-      appBar: AppBar(
-        backgroundColor: AppColors.offWhite,
-        elevation: 0,
-        centerTitle: true,
-        iconTheme: const IconThemeData(color: AppColors.green),
-        title: const Text(
-          'Student Dashboard',
-          style: TextStyle(
-            color: AppColors.green,
-            fontWeight: FontWeight.w700,
-          ),
-        ),
-        actions: [
-          IconButton(
-            onPressed: _logout,
-            icon: const Icon(Icons.logout_rounded),
-          ),
-        ],
-      ),
       body: SafeArea(
         child: SingleChildScrollView(
-          padding: const EdgeInsets.fromLTRB(18, 8, 18, 24),
+          padding: const EdgeInsets.fromLTRB(16, 14, 16, 20),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              _buildStatusChips(),
-              const SizedBox(height: 18),
-              _buildMainCard(),
-              const SizedBox(height: 22),
-              _buildSectionTitle('Quick Actions'),
-              const SizedBox(height: 12),
+              _buildHeroCard(),
+              const SizedBox(height: 16),
+              _buildRouteCard(),
+              const SizedBox(height: 16),
+              _buildSectionLabel('QUICK ACTIONS'),
+              const SizedBox(height: 10),
               _buildQuickActions(),
-              const SizedBox(height: 22),
-              _buildSectionTitle('Your Tools'),
-              const SizedBox(height: 12),
-              _buildMenuList(),
+              const SizedBox(height: 18),
+              _buildSectionLabel('CURRENT SESSION'),
+              const SizedBox(height: 10),
+              _buildSessionCard(),
+              const SizedBox(height: 18),
+              _buildSectionLabel('TOOLS'),
+              const SizedBox(height: 10),
+              _buildToolList(),
             ],
           ),
         ),
@@ -106,118 +132,430 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
     );
   }
 
-  Widget _buildStatusChips() {
-    return SingleChildScrollView(
-      scrollDirection: Axis.horizontal,
-      child: Row(
-        children: const [
-          _StatusChip(
-            label: 'Connected',
-            icon: Icons.check_circle_outline,
-            highlighted: true,
+  Widget _buildHeroCard() {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [Color(0xFF05412B), Color(0xFF042D1F)],
+        ),
+        borderRadius: BorderRadius.circular(26),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Row(
+                children: [
+                  Container(
+                    width: 40,
+                    height: 40,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      border: Border.all(color: const Color(0xFFD9B255)),
+                    ),
+                    child: const Center(
+                      child: Text(
+                        'SW',
+                        style: TextStyle(
+                          color: Color(0xFFD9B255),
+                          fontSize: 14,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  const Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'SafeWalk',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 22,
+                          height: 1,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                      SizedBox(height: 2),
+                      Text(
+                        'STUDENT',
+                        style: TextStyle(
+                          color: Color(0xFF9DB2A9),
+                          fontSize: 10,
+                          letterSpacing: 2,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+              const Spacer(),
+              Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 6,
+                ),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF0E5B3C),
+                  borderRadius: BorderRadius.circular(999),
+                  border: Border.all(color: const Color(0xFF2D8760)),
+                ),
+                child: const Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.circle, color: Color(0xFF5DF0A0), size: 8),
+                    SizedBox(width: 6),
+                    Text(
+                      'ONLINE',
+                      style: TextStyle(
+                        color: Color(0xFF5DF0A0),
+                        fontSize: 13,
+                        letterSpacing: 2,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 10),
+              InkWell(
+                onTap: _logout,
+                borderRadius: BorderRadius.circular(12),
+                child: Container(
+                  width: 38,
+                  height: 38,
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF124733),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: const Icon(
+                    Icons.logout_rounded,
+                    color: Color(0xFFF0F5F2),
+                    size: 21,
+                  ),
+                ),
+              ),
+            ],
           ),
-          SizedBox(width: 10),
-          _StatusChip(
-            label: 'GPS Active',
-            icon: Icons.my_location_outlined,
+          const SizedBox(height: 18),
+          const Text(
+            'Good morning,',
+            style: TextStyle(
+              color: Colors.white,
+              fontSize: 38,
+              height: 1,
+              fontWeight: FontWeight.w700,
+            ),
           ),
-          SizedBox(width: 10),
-          _StatusChip(
-            label: 'Safe Mode',
-            icon: Icons.shield_outlined,
+          const SizedBox(height: 6),
+          const Text(
+            'Aria Santos',
+            style: TextStyle(
+              color: Color(0xFFD9B255),
+              fontSize: 44,
+              height: 1,
+              fontWeight: FontWeight.w400,
+            ),
+          ),
+          const SizedBox(height: 14),
+          const Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              _StatusPill(label: 'GPS Active', dotColor: Color(0xFF4ADE80)),
+              _StatusPill(label: 'Device Linked', dotColor: Color(0xFFFFD166)),
+              _StatusPill(label: 'Safe Mode On', dotColor: Color(0xFF4ADE80)),
+            ],
           ),
         ],
       ),
     );
   }
 
-  Widget _buildMainCard() {
+  Widget _buildRouteCard() {
     return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(18),
+      height: 168,
       decoration: BoxDecoration(
-        color: AppColors.white,
-        borderRadius: BorderRadius.circular(28),
-        border: Border.all(color: AppColors.border),
-        boxShadow: const [
-          BoxShadow(
-            color: AppColors.shadow,
-            blurRadius: 20,
-            offset: Offset(0, 10),
+        gradient: const LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [Color(0xFF0F5E3E), Color(0xFF0A3D2A)],
+        ),
+        borderRadius: BorderRadius.circular(24),
+      ),
+      child: Stack(
+        children: [
+          Positioned.fill(
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(24),
+              child: CustomPaint(painter: _GridPatternPainter()),
+            ),
+          ),
+          Positioned(
+            top: 12,
+            right: 12,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+              decoration: BoxDecoration(
+                color: const Color(0xFF27AE60),
+                borderRadius: BorderRadius.circular(999),
+              ),
+              child: const Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.shield_outlined, color: Colors.white, size: 15),
+                  SizedBox(width: 6),
+                  Text(
+                    'SAFE',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 16,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const Center(
+            child: CircleAvatar(
+              radius: 13,
+              backgroundColor: Color(0xFF346349),
+              child: CircleAvatar(
+                radius: 7,
+                backgroundColor: Color(0xFFD9B255),
+              ),
+            ),
+          ),
+          Positioned(
+            left: 16,
+            bottom: 12,
+            right: 16,
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                const Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'ACTIVE ROUTE',
+                        style: TextStyle(
+                          color: Color(0xFFE2C77D),
+                          fontSize: 18,
+                          letterSpacing: 2,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      SizedBox(height: 4),
+                      Text(
+                        'Main Campus -> Dorm Block C',
+                        style: TextStyle(
+                          color: Color(0xFFF8FBF9),
+                          fontSize: 30,
+                          height: 1,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 14,
+                    vertical: 7,
+                  ),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFD8B453),
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                  child: const Text(
+                    'LIVE',
+                    style: TextStyle(
+                      color: Color(0xFF0B2C1E),
+                      fontSize: 16,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+              ],
+            ),
           ),
         ],
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-            decoration: BoxDecoration(
-              color: AppColors.gold.withOpacity(0.16),
-              borderRadius: BorderRadius.circular(100),
-            ),
-            child: const Text(
-              'ACTIVE SESSION',
-              style: TextStyle(
-                color: AppColors.green,
-                fontSize: 11,
-                fontWeight: FontWeight.w700,
-                letterSpacing: 1.1,
+    );
+  }
+
+  Widget _buildSectionLabel(String title) {
+    return Text(
+      title,
+      style: const TextStyle(
+        color: Color(0xFFB6AEA2),
+        fontSize: 17,
+        letterSpacing: 5,
+        fontWeight: FontWeight.w600,
+      ),
+    );
+  }
+
+  Widget _buildQuickActions() {
+    return Row(
+      children: _quickActions.map((item) {
+        return Expanded(
+          child: Padding(
+            padding: const EdgeInsets.only(right: 8),
+            child: InkWell(
+              onTap: () => _showActionSnack(item.label),
+              borderRadius: BorderRadius.circular(18),
+              child: Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 12,
+                ),
+                decoration: BoxDecoration(
+                  color: item.background,
+                  borderRadius: BorderRadius.circular(18),
+                  border: Border.all(color: AppColors.border),
+                ),
+                child: Column(
+                  children: [
+                    Container(
+                      width: 40,
+                      height: 40,
+                      decoration: BoxDecoration(
+                        color: item.iconWrap,
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Icon(item.icon, color: item.iconColor, size: 20),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      item.label,
+                      style: const TextStyle(
+                        color: AppColors.green,
+                        fontSize: 15,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ],
+                ),
               ),
             ),
           ),
-          const SizedBox(height: 14),
-          const Text(
-            'Safe Walk Session',
-            style: TextStyle(
-              fontSize: 24,
-              color: AppColors.green,
-              fontWeight: FontWeight.w700,
-            ),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            'Start or monitor your walk session, location sharing, and emergency support in one place.',
-            style: TextStyle(
-              fontSize: 14,
-              color: AppColors.green.withOpacity(0.75),
-              height: 1.45,
-            ),
-          ),
-          const SizedBox(height: 16),
+        );
+      }).toList(),
+    );
+  }
+
+  Widget _buildSessionCard() {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
+      decoration: BoxDecoration(
+        color: AppColors.white,
+        borderRadius: BorderRadius.circular(24),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: Column(
+        children: [
           Row(
             children: [
-              _infoMiniCard(
-                icon: Icons.route_outlined,
-                label: 'Route',
-                value: 'Campus',
+              const Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Safe Walk Session',
+                      style: TextStyle(
+                        color: AppColors.green,
+                        fontSize: 34,
+                        height: 1,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    SizedBox(height: 4),
+                    Text(
+                      'Location sharing is active',
+                      style: TextStyle(
+                        color: Color(0xFF6E7A73),
+                        fontSize: 18,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ],
+                ),
               ),
-              const SizedBox(width: 10),
-              _infoMiniCard(
-                icon: Icons.access_time_outlined,
-                label: 'Time',
-                value: '16 min',
+              Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 13,
+                  vertical: 6,
+                ),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF4F8F6),
+                  borderRadius: BorderRadius.circular(999),
+                  border: Border.all(color: const Color(0xFFCEE4D9)),
+                ),
+                child: const Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.circle, size: 8, color: Color(0xFF60CC8A)),
+                    SizedBox(width: 6),
+                    Text(
+                      'Active',
+                      style: TextStyle(
+                        color: AppColors.green,
+                        fontSize: 16,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ],
+                ),
               ),
             ],
           ),
-          const SizedBox(height: 18),
+          const SizedBox(height: 14),
+          Divider(color: AppColors.border.withValues(alpha: 0.55), height: 1),
+          const SizedBox(height: 13),
+          const Row(
+            children: [
+              Expanded(
+                child: _MetricCell(value: 'Campus', label: 'ROUTE'),
+              ),
+              Expanded(
+                child: _MetricCell(value: '16 min', label: 'ELAPSED'),
+              ),
+              Expanded(
+                child: _MetricCell(value: '1.2 km', label: 'DISTANCE'),
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
           SizedBox(
             width: double.infinity,
-            height: 52,
             child: ElevatedButton(
-              onPressed: () => _handleTap('Safe Walk Session'),
+              onPressed: () => _showActionSnack('View Details'),
               style: ElevatedButton.styleFrom(
                 backgroundColor: AppColors.green,
-                foregroundColor: AppColors.white,
+                foregroundColor: Colors.white,
                 elevation: 0,
                 shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(18),
+                  borderRadius: BorderRadius.circular(14),
                 ),
+                padding: const EdgeInsets.symmetric(vertical: 14),
               ),
               child: const Text(
-                'View Details',
+                'VIEW DETAILS',
                 style: TextStyle(
-                  fontSize: 15,
+                  fontSize: 21,
+                  letterSpacing: 2,
                   fontWeight: FontWeight.w700,
                 ),
               ),
@@ -228,283 +566,127 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
     );
   }
 
-  Widget _infoMiniCard({
-    required IconData icon,
-    required String label,
-    required String value,
-  }) {
-    return Expanded(
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
-        decoration: BoxDecoration(
-          color: AppColors.offWhite,
-          borderRadius: BorderRadius.circular(18),
-          border: Border.all(color: AppColors.border),
-        ),
-        child: Row(
-          children: [
-            Icon(icon, size: 18, color: AppColors.goldDark),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    label,
-                    style: TextStyle(
-                      fontSize: 11,
-                      color: AppColors.green.withOpacity(0.65),
-                      fontWeight: FontWeight.w500,
-                    ),
-                  ),
-                  const SizedBox(height: 3),
-                  Text(
-                    value,
-                    style: const TextStyle(
-                      fontSize: 14,
-                      color: AppColors.green,
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildSectionTitle(String title) {
-    return Text(
-      title,
-      style: const TextStyle(
-        fontSize: 19,
-        color: AppColors.green,
-        fontWeight: FontWeight.w700,
-      ),
-    );
-  }
-
-  Widget _buildQuickActions() {
-    return GridView.builder(
-      shrinkWrap: true,
-      itemCount: quickActions.length,
-      physics: const NeverScrollableScrollPhysics(),
-      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-        crossAxisCount: 2,
-        mainAxisSpacing: 14,
-        crossAxisSpacing: 14,
-        childAspectRatio: 1.18,
-      ),
-      itemBuilder: (context, index) {
-        final item = quickActions[index];
-        return InkWell(
-          onTap: () => _handleTap(item.title),
-          borderRadius: BorderRadius.circular(24),
-          child: Container(
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              color: AppColors.white,
-              borderRadius: BorderRadius.circular(24),
-              border: Border.all(color: AppColors.border),
-              boxShadow: const [
-                BoxShadow(
-                  color: AppColors.shadow,
-                  blurRadius: 18,
-                  offset: Offset(0, 8),
-                ),
-              ],
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Container(
-                  height: 46,
-                  width: 46,
-                  decoration: BoxDecoration(
-                    color: AppColors.gold.withOpacity(0.14),
-                    borderRadius: BorderRadius.circular(14),
-                  ),
-                  child: Icon(
-                    item.icon,
-                    color: AppColors.green,
-                    size: 24,
-                  ),
-                ),
-                const Spacer(),
-                Text(
-                  item.title,
-                  style: const TextStyle(
-                    fontSize: 16,
-                    color: AppColors.green,
-                    fontWeight: FontWeight.w700,
-                    height: 1.2,
-                  ),
-                ),
-                const SizedBox(height: 6),
-                Text(
-                  'Open feature',
-                  style: TextStyle(
-                    fontSize: 12,
-                    color: AppColors.goldDark.withOpacity(0.85),
-                    fontWeight: FontWeight.w500,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        );
-      },
-    );
-  }
-
-  Widget _buildMenuList() {
+  Widget _buildToolList() {
     return Column(
-      children: menuActions.map((item) {
-        return Padding(
-          padding: const EdgeInsets.only(bottom: 12),
-          child: InkWell(
-            onTap: () => _handleTap(item.title),
-            borderRadius: BorderRadius.circular(22),
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
-              decoration: BoxDecoration(
-                color: AppColors.white,
-                borderRadius: BorderRadius.circular(22),
-                border: Border.all(color: AppColors.border),
-                boxShadow: const [
-                  BoxShadow(
-                    color: AppColors.shadow,
-                    blurRadius: 18,
-                    offset: Offset(0, 8),
+      children: _tools
+          .map(
+            (item) => Padding(
+              padding: const EdgeInsets.only(bottom: 10),
+              child: InkWell(
+                onTap: () => _showActionSnack(item.title),
+                borderRadius: BorderRadius.circular(18),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 14,
+                    vertical: 14,
                   ),
-                ],
-              ),
-              child: Row(
-                children: [
-                  Container(
-                    height: 46,
-                    width: 46,
-                    decoration: BoxDecoration(
-                      color: AppColors.offWhite,
-                      borderRadius: BorderRadius.circular(14),
-                    ),
-                    child: Icon(
-                      item.icon,
-                      color: AppColors.green,
-                      size: 22,
-                    ),
+                  decoration: BoxDecoration(
+                    color: AppColors.white,
+                    borderRadius: BorderRadius.circular(18),
+                    border: Border.all(color: AppColors.border),
                   ),
-                  const SizedBox(width: 14),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          item.title,
-                          style: const TextStyle(
-                            fontSize: 15,
-                            color: AppColors.green,
-                            fontWeight: FontWeight.w700,
-                          ),
+                  child: Row(
+                    children: [
+                      Container(
+                        width: 38,
+                        height: 38,
+                        decoration: BoxDecoration(
+                          color: item.iconBg,
+                          borderRadius: BorderRadius.circular(12),
                         ),
-                        const SizedBox(height: 4),
-                        Text(
-                          item.subtitle,
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: AppColors.green.withOpacity(0.68),
-                            height: 1.35,
-                          ),
+                        child: Icon(item.icon, color: item.iconColor, size: 20),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              item.title,
+                              style: const TextStyle(
+                                color: AppColors.green,
+                                fontSize: 18,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              item.subtitle,
+                              style: const TextStyle(
+                                color: Color(0xFF6E7A73),
+                                fontSize: 15,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          ],
                         ),
-                      ],
-                    ),
+                      ),
+                      const Icon(Icons.chevron_right, color: Color(0xFFB5B2AA)),
+                    ],
                   ),
-                  const SizedBox(width: 10),
-                  const Icon(
-                    Icons.chevron_right_rounded,
-                    color: AppColors.green,
-                    size: 24,
-                  ),
-                ],
+                ),
               ),
             ),
-          ),
-        );
-      }).toList(),
+          )
+          .toList(),
     );
   }
 
   Widget _buildBottomNav() {
-    final items = [
-      _BottomNavItemData('Home', Icons.home_filled),
-      _BottomNavItemData('Map', Icons.map_outlined),
-      _BottomNavItemData('Session', Icons.compare_arrows_rounded),
-      _BottomNavItemData('Settings', Icons.settings_outlined),
-      _BottomNavItemData('Profile', Icons.person_outline),
-    ];
-
     return Container(
-      padding: const EdgeInsets.fromLTRB(8, 10, 8, 14),
       decoration: BoxDecoration(
         color: AppColors.white,
         border: Border(top: BorderSide(color: AppColors.border)),
-        boxShadow: const [
-          BoxShadow(
-            color: AppColors.shadow,
-            blurRadius: 16,
-            offset: Offset(0, -4),
-          ),
-        ],
       ),
+      padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
       child: SafeArea(
         top: false,
         child: Row(
           mainAxisAlignment: MainAxisAlignment.spaceAround,
-          children: List.generate(items.length, (index) {
-            final item = items[index];
-            final isSelected = _selectedNavIndex == index;
+          children: List.generate(_navItems.length, (index) {
+            final item = _navItems[index];
+            final selected = index == _selectedNavIndex;
 
             return Expanded(
               child: InkWell(
                 onTap: () {
                   setState(() => _selectedNavIndex = index);
-                  _handleTap(item.label);
+                  _showActionSnack(item.label);
                 },
-                borderRadius: BorderRadius.circular(16),
+                borderRadius: BorderRadius.circular(14),
                 child: Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 6),
+                  padding: const EdgeInsets.symmetric(vertical: 5),
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       Container(
-                        height: 34,
-                        width: 34,
+                        width: 36,
+                        height: 36,
                         decoration: BoxDecoration(
-                          color: isSelected
-                              ? AppColors.gold.withOpacity(0.18)
+                          color: selected
+                              ? const Color(0xFFE5ECE8)
                               : Colors.transparent,
                           shape: BoxShape.circle,
                         ),
                         child: Icon(
                           item.icon,
-                          size: 20,
-                          color: isSelected
+                          size: 21,
+                          color: selected
                               ? AppColors.green
-                              : AppColors.green.withOpacity(0.45),
+                              : const Color(0xFFA6A49D),
                         ),
                       ),
                       const SizedBox(height: 4),
                       Text(
                         item.label,
                         style: TextStyle(
-                          fontSize: 11,
-                          fontWeight:
-                              isSelected ? FontWeight.w700 : FontWeight.w500,
-                          color: isSelected
+                          color: selected
                               ? AppColors.green
-                              : AppColors.green.withOpacity(0.45),
+                              : const Color(0xFFA6A49D),
+                          fontSize: 12,
+                          fontWeight: selected
+                              ? FontWeight.w700
+                              : FontWeight.w500,
                         ),
                       ),
                     ],
@@ -519,72 +701,129 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
   }
 }
 
-class _QuickAction {
-  final String title;
-  final IconData icon;
-
-  const _QuickAction(this.title, this.icon);
-}
-
-class _MenuAction {
-  final String title;
-  final String subtitle;
-  final IconData icon;
-
-  const _MenuAction({
-    required this.title,
-    required this.subtitle,
-    required this.icon,
-  });
-}
-
-class _BottomNavItemData {
+class _MetricCell extends StatelessWidget {
+  final String value;
   final String label;
-  final IconData icon;
 
-  _BottomNavItemData(this.label, this.icon);
+  const _MetricCell({required this.value, required this.label});
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        Text(
+          value,
+          style: const TextStyle(
+            color: AppColors.green,
+            fontSize: 33,
+            height: 1,
+            fontWeight: FontWeight.w700,
+          ),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          label,
+          style: const TextStyle(
+            color: Color(0xFFB5AEA1),
+            fontSize: 14,
+            letterSpacing: 3,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+      ],
+    );
+  }
 }
 
-class _StatusChip extends StatelessWidget {
+class _StatusPill extends StatelessWidget {
   final String label;
-  final IconData icon;
-  final bool highlighted;
+  final Color dotColor;
 
-  const _StatusChip({
-    required this.label,
-    required this.icon,
-    this.highlighted = false,
-  });
+  const _StatusPill({required this.label, required this.dotColor});
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
       decoration: BoxDecoration(
-        color: highlighted
-            ? AppColors.green
-            : AppColors.white,
-        borderRadius: BorderRadius.circular(100),
-        border: Border.all(color: AppColors.border),
+        color: const Color(0xFF164837),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: const Color(0xFF2B6851)),
       ),
       child: Row(
+        mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(
-            icon,
-            size: 16,
-            color: highlighted ? AppColors.white : AppColors.green,
-          ),
-          const SizedBox(width: 8),
+          Icon(Icons.circle, color: dotColor, size: 7),
+          const SizedBox(width: 6),
           Text(
             label,
-            style: TextStyle(
-              color: highlighted ? AppColors.white : AppColors.green,
-              fontWeight: FontWeight.w600,
-              fontSize: 12,
+            style: const TextStyle(
+              color: Color(0xFFEAF2ED),
+              fontSize: 14,
+              fontWeight: FontWeight.w700,
             ),
           ),
         ],
       ),
     );
   }
+}
+
+class _GridPatternPainter extends CustomPainter {
+  @override
+  void paint(Canvas canvas, Size size) {
+    final stroke = Paint()
+      ..color = Colors.white.withValues(alpha: 0.06)
+      ..strokeWidth = 1;
+
+    const spacing = 24.0;
+    for (double x = 0; x <= size.width; x += spacing) {
+      canvas.drawLine(Offset(x, 0), Offset(x, size.height), stroke);
+    }
+    for (double y = 0; y <= size.height; y += spacing) {
+      canvas.drawLine(Offset(0, y), Offset(size.width, y), stroke);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
+}
+
+class _ActionItem {
+  final String label;
+  final IconData icon;
+  final Color background;
+  final Color iconWrap;
+  final Color iconColor;
+
+  const _ActionItem({
+    required this.label,
+    required this.icon,
+    required this.background,
+    required this.iconWrap,
+    required this.iconColor,
+  });
+}
+
+class _ToolItem {
+  final String title;
+  final String subtitle;
+  final IconData icon;
+  final Color iconColor;
+  final Color iconBg;
+
+  const _ToolItem({
+    required this.title,
+    required this.subtitle,
+    required this.icon,
+    required this.iconColor,
+    required this.iconBg,
+  });
+}
+
+class _NavItem {
+  final String label;
+  final IconData icon;
+
+  const _NavItem(this.label, this.icon);
 }
