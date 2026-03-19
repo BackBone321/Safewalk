@@ -12,62 +12,31 @@ class ParentDashboardPage extends StatefulWidget {
 class _ParentDashboardPageState extends State<ParentDashboardPage> {
   int _selectedNavIndex = 0;
 
-  final List<_ActionItem> _quickActions = const [
-    _ActionItem(
-      label: 'Locate',
-      icon: Icons.location_searching_outlined,
-      background: Color(0xFFEFFAF4),
-      iconWrap: Color(0xFFD6F0E2),
-      iconColor: Color(0xFF1E7E55),
-    ),
-    _ActionItem(
-      label: 'Call',
-      icon: Icons.call_outlined,
-      background: Color(0xFFF2F4FF),
-      iconWrap: Color(0xFFE1E5FC),
-      iconColor: Color(0xFF4156B8),
-    ),
-    _ActionItem(
-      label: 'Alerts',
-      icon: Icons.notifications_none_rounded,
-      background: Color(0xFFFFF0EF),
-      iconWrap: Color(0xFFFFDFDC),
-      iconColor: Color(0xFFCB392B),
-    ),
-    _ActionItem(
-      label: 'History',
-      icon: Icons.history,
-      background: Color(0xFFFFFAEC),
-      iconWrap: Color(0xFFF4ECCD),
-      iconColor: Color(0xFF9C7A24),
-    ),
-  ];
-
   final List<_ToolItem> _tools = const [
     _ToolItem(
-      title: 'Child Location',
-      subtitle: 'View your student live location',
-      icon: Icons.location_on_outlined,
+      title: 'Device Connection',
+      subtitle: 'Check your linked emergency device',
+      icon: Icons.smartphone_rounded,
       iconColor: Color(0xFF1E7E55),
       iconBg: Color(0xFFEAF5EF),
     ),
     _ToolItem(
-      title: 'Emergency Contacts',
-      subtitle: 'Manage trusted contact numbers',
-      icon: Icons.contacts_outlined,
-      iconColor: Color(0xFF4156B8),
-      iconBg: Color(0xFFEFF2FF),
-    ),
-    _ToolItem(
       title: 'Alert History',
-      subtitle: 'Review past incident notifications',
+      subtitle: 'Recent alerts and emergency logs',
       icon: Icons.history,
       iconColor: Color(0xFF9C7A24),
       iconBg: Color(0xFFFAF3DF),
     ),
     _ToolItem(
+      title: 'Profile',
+      subtitle: 'Edit parent information',
+      icon: Icons.person_outline,
+      iconColor: Color(0xFF4156B8),
+      iconBg: Color(0xFFEFF2FF),
+    ),
+    _ToolItem(
       title: 'Settings',
-      subtitle: 'Update account and app preferences',
+      subtitle: 'Preferences and account settings',
       icon: Icons.settings_outlined,
       iconColor: Color(0xFF6E6D67),
       iconBg: Color(0xFFF2F1ED),
@@ -76,8 +45,7 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
 
   final List<_NavItem> _navItems = const [
     _NavItem('Home', Icons.home_outlined),
-    _NavItem('Map', Icons.map_outlined),
-    _NavItem('Messages', Icons.chat_bubble_outline_rounded),
+    _NavItem('Child', Icons.shield_outlined),
     _NavItem('Alerts', Icons.notifications_none_rounded),
     _NavItem('Profile', Icons.person_outline),
   ];
@@ -110,12 +78,6 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               _buildHeroCard(),
-              const SizedBox(height: 16),
-              _buildRouteCard(),
-              const SizedBox(height: 16),
-              _buildSectionLabel('QUICK ACTIONS'),
-              const SizedBox(height: 10),
-              _buildQuickActions(),
               const SizedBox(height: 18),
               _buildSectionLabel('CURRENT SESSION'),
               const SizedBox(height: 10),
@@ -270,128 +232,9 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
             runSpacing: 8,
             children: [
               _StatusPill(label: 'Student Online', dotColor: Color(0xFF4ADE80)),
-              _StatusPill(label: 'Tracking On', dotColor: Color(0xFFFFD166)),
+              _StatusPill(label: 'Device Linked', dotColor: Color(0xFFFFD166)),
               _StatusPill(label: 'Alerts Enabled', dotColor: Color(0xFF4ADE80)),
             ],
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildRouteCard() {
-    return Container(
-      height: 168,
-      decoration: BoxDecoration(
-        gradient: const LinearGradient(
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-          colors: [Color(0xFF0F5E3E), Color(0xFF0A3D2A)],
-        ),
-        borderRadius: BorderRadius.circular(24),
-      ),
-      child: Stack(
-        children: [
-          Positioned.fill(
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(24),
-              child: CustomPaint(painter: _GridPatternPainter()),
-            ),
-          ),
-          Positioned(
-            top: 12,
-            right: 12,
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-              decoration: BoxDecoration(
-                color: const Color(0xFF27AE60),
-                borderRadius: BorderRadius.circular(999),
-              ),
-              child: const Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(
-                    Icons.verified_user_outlined,
-                    color: Colors.white,
-                    size: 15,
-                  ),
-                  SizedBox(width: 6),
-                  Text(
-                    'TRACKING',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 16,
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-          const Center(
-            child: CircleAvatar(
-              radius: 13,
-              backgroundColor: Color(0xFF346349),
-              child: CircleAvatar(
-                radius: 7,
-                backgroundColor: Color(0xFFD9B255),
-              ),
-            ),
-          ),
-          Positioned(
-            left: 16,
-            bottom: 12,
-            right: 16,
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.end,
-              children: [
-                const Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        'ACTIVE ROUTE',
-                        style: TextStyle(
-                          color: Color(0xFFE2C77D),
-                          fontSize: 18,
-                          letterSpacing: 2,
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
-                      SizedBox(height: 4),
-                      Text(
-                        'Main Campus -> Dorm Block C',
-                        style: TextStyle(
-                          color: Color(0xFFF8FBF9),
-                          fontSize: 30,
-                          height: 1,
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 14,
-                    vertical: 7,
-                  ),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFFD8B453),
-                    borderRadius: BorderRadius.circular(999),
-                  ),
-                  child: const Text(
-                    'LIVE',
-                    style: TextStyle(
-                      color: Color(0xFF0B2C1E),
-                      fontSize: 16,
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                ),
-              ],
-            ),
           ),
         ],
       ),
@@ -407,55 +250,6 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
         letterSpacing: 5,
         fontWeight: FontWeight.w600,
       ),
-    );
-  }
-
-  Widget _buildQuickActions() {
-    return Row(
-      children: _quickActions.map((item) {
-        return Expanded(
-          child: Padding(
-            padding: const EdgeInsets.only(right: 8),
-            child: InkWell(
-              onTap: () => _showActionSnack(item.label),
-              borderRadius: BorderRadius.circular(18),
-              child: Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 10,
-                  vertical: 12,
-                ),
-                decoration: BoxDecoration(
-                  color: item.background,
-                  borderRadius: BorderRadius.circular(18),
-                  border: Border.all(color: AppColors.border),
-                ),
-                child: Column(
-                  children: [
-                    Container(
-                      width: 40,
-                      height: 40,
-                      decoration: BoxDecoration(
-                        color: item.iconWrap,
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: Icon(item.icon, color: item.iconColor, size: 20),
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      item.label,
-                      style: const TextStyle(
-                        color: AppColors.green,
-                        fontSize: 15,
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ),
-        );
-      }).toList(),
     );
   }
 
@@ -477,7 +271,7 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      'Daughter Session',
+                      'Safe Walk Session',
                       style: TextStyle(
                         color: AppColors.green,
                         fontSize: 34,
@@ -487,7 +281,7 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                     ),
                     SizedBox(height: 4),
                     Text(
-                      'Realtime location sharing is active',
+                      'Location sharing is active',
                       style: TextStyle(
                         color: Color(0xFF6E7A73),
                         fontSize: 18,
@@ -771,42 +565,6 @@ class _StatusPill extends StatelessWidget {
       ),
     );
   }
-}
-
-class _GridPatternPainter extends CustomPainter {
-  @override
-  void paint(Canvas canvas, Size size) {
-    final stroke = Paint()
-      ..color = Colors.white.withValues(alpha: 0.06)
-      ..strokeWidth = 1;
-
-    const spacing = 24.0;
-    for (double x = 0; x <= size.width; x += spacing) {
-      canvas.drawLine(Offset(x, 0), Offset(x, size.height), stroke);
-    }
-    for (double y = 0; y <= size.height; y += spacing) {
-      canvas.drawLine(Offset(0, y), Offset(size.width, y), stroke);
-    }
-  }
-
-  @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
-}
-
-class _ActionItem {
-  final String label;
-  final IconData icon;
-  final Color background;
-  final Color iconWrap;
-  final Color iconColor;
-
-  const _ActionItem({
-    required this.label,
-    required this.icon,
-    required this.background,
-    required this.iconWrap,
-    required this.iconColor,
-  });
 }
 
 class _ToolItem {

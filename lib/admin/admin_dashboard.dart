@@ -3,6 +3,9 @@ import 'package:flutter/material.dart';
 import 'add_device_page.dart';
 import '../auth/auth_service.dart';
 import '../login_dashboard/login_page.dart';
+import '../services/notification_service.dart';
+import '../services/print_service.dart';
+import '../services/system_admin_service.dart';
 
 class AdminDashboardPage extends StatefulWidget {
   const AdminDashboardPage({super.key});
@@ -13,10 +16,26 @@ class AdminDashboardPage extends StatefulWidget {
 
 class _AdminDashboardPageState extends State<AdminDashboardPage> {
   final AuthService _authService = AuthService();
+  final SystemAdminService _systemAdminService = SystemAdminService();
+  final NotificationService _notificationService = NotificationService();
+  final TextEditingController _reportTitleCtrl = TextEditingController(
+    text: 'SafeWalk System Report',
+  );
+  final TextEditingController _testEmailCtrl = TextEditingController(
+    text: 'admin@gmail.com',
+  );
+  final TextEditingController _testPhoneCtrl = TextEditingController();
 
   String _selectedFilter = 'all';
   String _searchText = '';
   int _selectedMenuIndex = 0;
+  bool _isGeneratingReport = false;
+  bool _isCreatingBackup = false;
+  bool _isSendingTestEmail = false;
+  bool _isSendingTestSms = false;
+  String _latestReportText = '';
+  String _lastReportId = '';
+  String _lastBackupId = '';
 
   final List<_AdminMenuItem> _menuItems = const [
     _AdminMenuItem('User Management', Icons.people_alt_outlined),
@@ -28,6 +47,177 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
     _AdminMenuItem('Reports', Icons.bar_chart_outlined),
     _AdminMenuItem('Settings', Icons.settings_outlined),
   ];
+
+  @override
+  void dispose() {
+    _reportTitleCtrl.dispose();
+    _testEmailCtrl.dispose();
+    _testPhoneCtrl.dispose();
+    super.dispose();
+  }
+
+  void _showMessage(String message, {bool isError = false}) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        backgroundColor: isError ? Colors.red.shade700 : AppColors.green,
+      ),
+    );
+  }
+
+  Future<void> _generateReport() async {
+    if (_isGeneratingReport) return;
+
+    setState(() => _isGeneratingReport = true);
+
+    try {
+      final report = await _systemAdminService.generateSystemReport();
+      final reportId = await _systemAdminService.saveGeneratedReport(report);
+      final reportText = SystemAdminService.formatReportAsText(report);
+
+      if (!mounted) return;
+      setState(() {
+        _latestReportText = reportText;
+        _lastReportId = reportId;
+      });
+
+      _showMessage('Report generated successfully. ID: $reportId');
+    } catch (e) {
+      _showMessage('Failed to generate report: $e', isError: true);
+    } finally {
+      if (mounted) {
+        setState(() => _isGeneratingReport = false);
+      }
+    }
+  }
+
+  Future<void> _printLatestReport() async {
+    if (_latestReportText.isEmpty) {
+      await _generateReport();
+      if (_latestReportText.isEmpty) return;
+    }
+
+    final title = _reportTitleCtrl.text.trim().isEmpty
+        ? 'SafeWalk System Report'
+        : _reportTitleCtrl.text.trim();
+    final printed = await printReportHtml(
+      title: title,
+      content: _latestReportText,
+    );
+
+    if (printed) {
+      _showMessage('Print window opened.');
+      return;
+    }
+
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Report Preview'),
+          content: SizedBox(
+            width: 560,
+            child: SingleChildScrollView(
+              child: SelectableText(
+                _latestReportText,
+                style: const TextStyle(fontSize: 13, height: 1.45),
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Close'),
+            ),
+          ],
+        );
+      },
+    );
+
+    _showMessage(
+      'Use Ctrl+P from the report preview if browser print is unavailable.',
+    );
+  }
+
+  Future<void> _createBackupSnapshot() async {
+    if (_isCreatingBackup) return;
+
+    setState(() => _isCreatingBackup = true);
+
+    try {
+      final result = await _systemAdminService.createBackupSnapshot();
+      if (!mounted) return;
+      setState(() {
+        _lastBackupId = result.backupId;
+      });
+      _showMessage(
+        'Backup created. ID: ${result.backupId} (${result.totalDocuments} docs)',
+      );
+    } catch (e) {
+      _showMessage('Backup failed: $e', isError: true);
+    } finally {
+      if (mounted) {
+        setState(() => _isCreatingBackup = false);
+      }
+    }
+  }
+
+  Future<void> _sendTestEmail() async {
+    if (_isSendingTestEmail) return;
+
+    final targetEmail = _testEmailCtrl.text.trim();
+    if (targetEmail.isEmpty) {
+      _showMessage('Enter an email address first.', isError: true);
+      return;
+    }
+
+    setState(() => _isSendingTestEmail = true);
+    try {
+      await _notificationService.sendEmailNotification(
+        toEmail: targetEmail,
+        toName: 'SafeWalk Admin',
+        subject: 'SafeWalk Test Email',
+        message:
+            'This is a test email notification from SafeWalk admin settings.',
+        triggeredBy: 'admin_dashboard',
+      );
+      _showMessage('Test email sent to $targetEmail');
+    } catch (e) {
+      _showMessage('Email send failed: $e', isError: true);
+    } finally {
+      if (mounted) {
+        setState(() => _isSendingTestEmail = false);
+      }
+    }
+  }
+
+  Future<void> _sendTestSms() async {
+    if (_isSendingTestSms) return;
+
+    final targetPhone = _testPhoneCtrl.text.trim();
+    if (targetPhone.isEmpty) {
+      _showMessage('Enter a phone number first.', isError: true);
+      return;
+    }
+
+    setState(() => _isSendingTestSms = true);
+    try {
+      await _notificationService.sendSmsNotification(
+        phoneNumber: targetPhone,
+        message: 'SafeWalk test SMS notification from admin dashboard.',
+        triggeredBy: 'admin_dashboard',
+      );
+      _showMessage('Test SMS sent to $targetPhone');
+    } catch (e) {
+      _showMessage('SMS send failed: $e', isError: true);
+    } finally {
+      if (mounted) {
+        setState(() => _isSendingTestSms = false);
+      }
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -154,10 +344,7 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
           icon: const Icon(Icons.logout, color: AppColors.green),
           label: const Text(
             'SIGN OUT',
-            style: TextStyle(
-              color: AppColors.green,
-              letterSpacing: 2,
-            ),
+            style: TextStyle(color: AppColors.green, letterSpacing: 2),
           ),
         ),
       ],
@@ -363,13 +550,17 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
         _LuxurySummaryCard(
           title: 'ALERTS',
           icon: Icons.warning_amber_rounded,
-          stream: FirebaseFirestore.instance.collection('emergency_alerts').snapshots(),
+          stream: FirebaseFirestore.instance
+              .collection('emergency_alerts')
+              .snapshots(),
         ),
         const SizedBox(width: 12),
         _LuxurySummaryCard(
           title: 'LOGINS',
           icon: Icons.login_outlined,
-          stream: FirebaseFirestore.instance.collection('login_logs').snapshots(),
+          stream: FirebaseFirestore.instance
+              .collection('login_logs')
+              .snapshots(),
         ),
       ],
     );
@@ -396,9 +587,7 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
             padding: const EdgeInsets.all(18),
             decoration: BoxDecoration(
               border: Border(
-                bottom: BorderSide(
-                  color: AppColors.border.withOpacity(0.5),
-                ),
+                bottom: BorderSide(color: AppColors.border.withOpacity(0.5)),
               ),
             ),
             child: Text(
@@ -445,7 +634,9 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
                       children: [
                         Icon(
                           item.icon,
-                          color: isSelected ? AppColors.green : AppColors.textSub,
+                          color: isSelected
+                              ? AppColors.green
+                              : AppColors.textSub,
                           size: 20,
                         ),
                         const SizedBox(width: 12),
@@ -454,8 +645,12 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
                             item.title,
                             style: TextStyle(
                               fontSize: 13,
-                              fontWeight: isSelected ? FontWeight.w600 : FontWeight.w400,
-                              color: isSelected ? AppColors.green : AppColors.textMain,
+                              fontWeight: isSelected
+                                  ? FontWeight.w600
+                                  : FontWeight.w400,
+                              color: isSelected
+                                  ? AppColors.green
+                                  : AppColors.textMain,
                             ),
                           ),
                         ),
@@ -498,9 +693,7 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
     return _LuxuryPanel(
       title: 'REGISTERED USERS',
       child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-        stream: FirebaseFirestore.instance
-            .collection('users')
-            .snapshots(),
+        stream: FirebaseFirestore.instance.collection('users').snapshots(),
         builder: (context, snapshot) {
           if (!snapshot.hasData) {
             return const Center(child: CircularProgressIndicator());
@@ -567,8 +760,12 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
                             spacing: 8,
                             runSpacing: 8,
                             children: [
-                              _MiniTag(label: 'Role: ${data['role'] ?? 'unknown'}'),
-                              _MiniTag(label: 'Email: ${data['email'] ?? 'No Email'}'),
+                              _MiniTag(
+                                label: 'Role: ${data['role'] ?? 'unknown'}',
+                              ),
+                              _MiniTag(
+                                label: 'Email: ${data['email'] ?? 'No Email'}',
+                              ),
                             ],
                           ),
                           const SizedBox(height: 10),
@@ -708,9 +905,7 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
     return _LuxuryPanel(
       title: 'LIVE LOCATION MONITORING',
       child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-        stream: FirebaseFirestore.instance
-            .collection('devices')
-            .snapshots(),
+        stream: FirebaseFirestore.instance.collection('devices').snapshots(),
         builder: (context, snapshot) {
           if (!snapshot.hasData) {
             return const Center(child: CircularProgressIndicator());
@@ -742,7 +937,11 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
                 ),
                 child: Row(
                   children: [
-                    const Icon(Icons.location_on, color: AppColors.green, size: 28),
+                    const Icon(
+                      Icons.location_on,
+                      color: AppColors.green,
+                      size: 28,
+                    ),
                     const SizedBox(width: 14),
                     Expanded(
                       child: Column(
@@ -825,7 +1024,11 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
                 child: Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Icon(Icons.warning_amber_rounded, color: Colors.red.shade700, size: 28),
+                    Icon(
+                      Icons.warning_amber_rounded,
+                      color: Colors.red.shade700,
+                      size: 28,
+                    ),
                     const SizedBox(width: 14),
                     Expanded(
                       child: Column(
@@ -920,7 +1123,9 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
                       padding: const EdgeInsets.all(16),
                       decoration: BoxDecoration(
                         color: AppColors.offWhite,
-                        border: Border.all(color: AppColors.border.withOpacity(0.5)),
+                        border: Border.all(
+                          color: AppColors.border.withOpacity(0.5),
+                        ),
                         boxShadow: const [
                           BoxShadow(
                             color: AppColors.shadow,
@@ -970,7 +1175,8 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
                                   runSpacing: 8,
                                   children: [
                                     _MiniTag(
-                                      label: 'Role: ${data['role'] ?? 'unknown'}',
+                                      label:
+                                          'Role: ${data['role'] ?? 'unknown'}',
                                     ),
                                     _MiniTag(
                                       label: 'Status: ${data['status'] ?? ''}',
@@ -993,7 +1199,9 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
                                     color: AppColors.textMain,
                                   ),
                                 ),
-                                if ((data['error'] ?? '').toString().isNotEmpty) ...[
+                                if ((data['error'] ?? '')
+                                    .toString()
+                                    .isNotEmpty) ...[
                                   const SizedBox(height: 8),
                                   Text(
                                     'Error: ${data['error']}',
@@ -1104,43 +1312,181 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
   Widget _buildReports() {
     return _LuxuryPanel(
       title: 'REPORTS OVERVIEW',
-      child: Padding(
+      child: ListView(
         padding: const EdgeInsets.all(18),
-        child: Column(
-          children: [
-            Row(
+        children: [
+          Row(
+            children: [
+              _ReportCard(
+                title: 'Total Users',
+                icon: Icons.people_outline,
+                stream: FirebaseFirestore.instance
+                    .collection('users')
+                    .snapshots(),
+              ),
+              const SizedBox(width: 12),
+              _ReportCard(
+                title: 'Total Devices',
+                icon: Icons.memory_outlined,
+                stream: FirebaseFirestore.instance
+                    .collection('devices')
+                    .snapshots(),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              _ReportCard(
+                title: 'Emergency Alerts',
+                icon: Icons.warning_amber_rounded,
+                stream: FirebaseFirestore.instance
+                    .collection('emergency_alerts')
+                    .snapshots(),
+              ),
+              const SizedBox(width: 12),
+              _ReportCard(
+                title: 'SMS Logs',
+                icon: Icons.sms_outlined,
+                stream: FirebaseFirestore.instance
+                    .collection('sms_logs')
+                    .snapshots(),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: AppColors.offWhite,
+              border: Border.all(color: AppColors.border.withOpacity(0.5)),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                _ReportCard(
-                  title: 'Total Users',
-                  icon: Icons.people_outline,
-                  stream: FirebaseFirestore.instance.collection('users').snapshots(),
+                const Text(
+                  'REPORT GENERATION AND BACKUP',
+                  style: TextStyle(
+                    fontSize: 10,
+                    letterSpacing: 3,
+                    color: AppColors.goldDark,
+                    fontWeight: FontWeight.w600,
+                  ),
                 ),
-                const SizedBox(width: 12),
-                _ReportCard(
-                  title: 'Total Devices',
-                  icon: Icons.memory_outlined,
-                  stream: FirebaseFirestore.instance.collection('devices').snapshots(),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: _reportTitleCtrl,
+                  decoration: InputDecoration(
+                    labelText: 'Report title',
+                    border: OutlineInputBorder(
+                      borderSide: BorderSide(
+                        color: AppColors.border.withOpacity(0.6),
+                      ),
+                    ),
+                    enabledBorder: OutlineInputBorder(
+                      borderSide: BorderSide(
+                        color: AppColors.border.withOpacity(0.6),
+                      ),
+                    ),
+                    isDense: true,
+                    filled: true,
+                    fillColor: AppColors.white,
+                  ),
                 ),
+                const SizedBox(height: 12),
+                Wrap(
+                  spacing: 10,
+                  runSpacing: 10,
+                  children: [
+                    ElevatedButton.icon(
+                      onPressed: _isGeneratingReport ? null : _generateReport,
+                      icon: _isGeneratingReport
+                          ? const SizedBox(
+                              width: 14,
+                              height: 14,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.description_outlined),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: AppColors.green,
+                        foregroundColor: AppColors.white,
+                      ),
+                      label: const Text('Generate Report'),
+                    ),
+                    ElevatedButton.icon(
+                      onPressed: _latestReportText.isEmpty
+                          ? null
+                          : _printLatestReport,
+                      icon: const Icon(Icons.print_outlined),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: AppColors.goldDark,
+                        foregroundColor: AppColors.white,
+                      ),
+                      label: const Text('Print Report'),
+                    ),
+                    ElevatedButton.icon(
+                      onPressed: _isCreatingBackup
+                          ? null
+                          : _createBackupSnapshot,
+                      icon: _isCreatingBackup
+                          ? const SizedBox(
+                              width: 14,
+                              height: 14,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.backup_outlined),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: AppColors.greenMid,
+                        foregroundColor: AppColors.white,
+                      ),
+                      label: const Text('Create Backup'),
+                    ),
+                  ],
+                ),
+                if (_lastReportId.isNotEmpty || _lastBackupId.isNotEmpty) ...[
+                  const SizedBox(height: 12),
+                  Text(
+                    'Last report: ${_lastReportId.isEmpty ? 'N/A' : _lastReportId}',
+                    style: const TextStyle(
+                      fontSize: 12,
+                      color: AppColors.textMain,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    'Last backup: ${_lastBackupId.isEmpty ? 'N/A' : _lastBackupId}',
+                    style: const TextStyle(
+                      fontSize: 12,
+                      color: AppColors.textMain,
+                    ),
+                  ),
+                ],
               ],
             ),
+          ),
+          if (_latestReportText.isNotEmpty) ...[
             const SizedBox(height: 12),
-            Row(
-              children: [
-                _ReportCard(
-                  title: 'Emergency Alerts',
-                  icon: Icons.warning_amber_rounded,
-                  stream: FirebaseFirestore.instance.collection('emergency_alerts').snapshots(),
+            Container(
+              width: double.infinity,
+              constraints: const BoxConstraints(maxHeight: 220),
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: AppColors.offWhite,
+                border: Border.all(color: AppColors.border.withOpacity(0.5)),
+              ),
+              child: SingleChildScrollView(
+                child: SelectableText(
+                  _latestReportText,
+                  style: const TextStyle(
+                    fontSize: 12,
+                    color: AppColors.textMain,
+                    height: 1.5,
+                  ),
                 ),
-                const SizedBox(width: 12),
-                _ReportCard(
-                  title: 'SMS Logs',
-                  icon: Icons.sms_outlined,
-                  stream: FirebaseFirestore.instance.collection('sms_logs').snapshots(),
-                ),
-              ],
+              ),
             ),
           ],
-        ),
+        ],
       ),
     );
   }
@@ -1150,29 +1496,261 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
       title: 'SYSTEM SETTINGS',
       child: ListView(
         padding: const EdgeInsets.all(16),
-        children: const [
-          _SettingTile(
+        children: [
+          const _SettingTile(
             icon: Icons.admin_panel_settings_outlined,
             title: 'Admin Account Settings',
             subtitle: 'Manage admin profile and access control.',
           ),
-          SizedBox(height: 12),
-          _SettingTile(
+          const SizedBox(height: 12),
+          const _SettingTile(
             icon: Icons.notifications_outlined,
             title: 'Notification Settings',
             subtitle: 'Configure alerts and app notifications.',
           ),
-          SizedBox(height: 12),
-          _SettingTile(
+          const SizedBox(height: 12),
+          const _SettingTile(
             icon: Icons.security_outlined,
             title: 'Security Settings',
             subtitle: 'Manage login protection and account security.',
           ),
-          SizedBox(height: 12),
-          _SettingTile(
+          const SizedBox(height: 12),
+          const _SettingTile(
             icon: Icons.phone_android_outlined,
             title: 'Device Settings',
             subtitle: 'Adjust device connection and monitoring options.',
+          ),
+          const SizedBox(height: 12),
+          _buildRequirementChecklistCard(),
+          const SizedBox(height: 12),
+          _buildNotificationTestCard(),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildRequirementChecklistCard() {
+    final notificationSystemReady =
+        _notificationService.isEmailConfigured &&
+        _notificationService.isSmsConfigured;
+
+    final requirementItems = [
+      _RequirementItem(
+        title: 'Be ONLINE',
+        detail: 'Connected through Firebase services and cloud database.',
+        isMet: true,
+      ),
+      _RequirementItem(
+        title: 'Be a Web-based Application',
+        detail: 'Flutter Web build is supported by this project.',
+        isMet: true,
+      ),
+      _RequirementItem(
+        title: 'Have a Mobile Application',
+        detail: 'Flutter Android/iOS targets are already configured.',
+        isMet: true,
+      ),
+      _RequirementItem(
+        title: 'Have Email and SMS notification system',
+        detail: notificationSystemReady
+            ? 'EmailJS and SMS gateway configuration detected.'
+            : 'EmailJS is configured, but SMS gateway still needs credentials.',
+        isMet: notificationSystemReady,
+      ),
+      _RequirementItem(
+        title: 'Have Backup mechanism',
+        detail:
+            'Admin can create Firestore backup snapshots into system_backups.',
+        isMet: true,
+      ),
+      _RequirementItem(
+        title: 'Generate and Print Report',
+        detail:
+            'Admin report generation and printable output are available in Reports.',
+        isMet: true,
+      ),
+    ];
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: AppColors.offWhite,
+        border: Border.all(color: AppColors.border.withOpacity(0.5)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'CAPSTONE REQUIREMENTS',
+            style: TextStyle(
+              fontSize: 10,
+              letterSpacing: 3,
+              color: AppColors.goldDark,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const SizedBox(height: 12),
+          ...requirementItems.map(
+            (item) => Padding(
+              padding: const EdgeInsets.only(bottom: 10),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(
+                    item.isMet
+                        ? Icons.check_circle_outline_rounded
+                        : Icons.error_outline_rounded,
+                    color: item.isMet
+                        ? AppColors.green
+                        : Colors.orange.shade700,
+                    size: 20,
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          item.title,
+                          style: const TextStyle(
+                            fontSize: 13,
+                            color: AppColors.green,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          item.detail,
+                          style: const TextStyle(
+                            fontSize: 12,
+                            color: AppColors.textSub,
+                            height: 1.4,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          if (!notificationSystemReady) ...[
+            const SizedBox(height: 4),
+            Text(
+              'SMS gateway setup needed in lib/config/sms_config.dart',
+              style: TextStyle(fontSize: 11, color: Colors.orange.shade800),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildNotificationTestCard() {
+    final isEmailReady = _notificationService.isEmailConfigured;
+    final isSmsReady = _notificationService.isSmsConfigured;
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: AppColors.offWhite,
+        border: Border.all(color: AppColors.border.withOpacity(0.5)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'NOTIFICATION TEST TOOLS',
+            style: TextStyle(
+              fontSize: 10,
+              letterSpacing: 3,
+              color: AppColors.goldDark,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const SizedBox(height: 10),
+          Text(
+            'Email config: ${isEmailReady ? 'Ready' : 'Missing'} | SMS config: ${isSmsReady ? 'Ready' : 'Missing'}',
+            style: const TextStyle(fontSize: 12, color: AppColors.textSub),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _testEmailCtrl,
+            keyboardType: TextInputType.emailAddress,
+            decoration: InputDecoration(
+              labelText: 'Test email address',
+              border: OutlineInputBorder(
+                borderSide: BorderSide(
+                  color: AppColors.border.withOpacity(0.6),
+                ),
+              ),
+              enabledBorder: OutlineInputBorder(
+                borderSide: BorderSide(
+                  color: AppColors.border.withOpacity(0.6),
+                ),
+              ),
+              isDense: true,
+              filled: true,
+              fillColor: AppColors.white,
+            ),
+          ),
+          const SizedBox(height: 10),
+          TextField(
+            controller: _testPhoneCtrl,
+            keyboardType: TextInputType.phone,
+            decoration: InputDecoration(
+              labelText: 'Test SMS number',
+              border: OutlineInputBorder(
+                borderSide: BorderSide(
+                  color: AppColors.border.withOpacity(0.6),
+                ),
+              ),
+              enabledBorder: OutlineInputBorder(
+                borderSide: BorderSide(
+                  color: AppColors.border.withOpacity(0.6),
+                ),
+              ),
+              isDense: true,
+              filled: true,
+              fillColor: AppColors.white,
+            ),
+          ),
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            children: [
+              ElevatedButton.icon(
+                onPressed: _isSendingTestEmail ? null : _sendTestEmail,
+                icon: _isSendingTestEmail
+                    ? const SizedBox(
+                        width: 14,
+                        height: 14,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.email_outlined),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppColors.green,
+                  foregroundColor: AppColors.white,
+                ),
+                label: const Text('Send Test Email'),
+              ),
+              ElevatedButton.icon(
+                onPressed: _isSendingTestSms ? null : _sendTestSms,
+                icon: _isSendingTestSms
+                    ? const SizedBox(
+                        width: 14,
+                        height: 14,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.sms_outlined),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppColors.greenMid,
+                  foregroundColor: AppColors.white,
+                ),
+                label: const Text('Send Test SMS'),
+              ),
+            ],
           ),
         ],
       ),
@@ -1262,6 +1840,18 @@ class _AdminMenuItem {
   const _AdminMenuItem(this.title, this.icon);
 }
 
+class _RequirementItem {
+  final String title;
+  final String detail;
+  final bool isMet;
+
+  const _RequirementItem({
+    required this.title,
+    required this.detail,
+    required this.isMet,
+  });
+}
+
 class _LuxurySummaryCard extends StatelessWidget {
   final String title;
   final IconData icon;
@@ -1331,10 +1921,7 @@ class _LuxuryPanel extends StatelessWidget {
   final String title;
   final Widget child;
 
-  const _LuxuryPanel({
-    required this.title,
-    required this.child,
-  });
+  const _LuxuryPanel({required this.title, required this.child});
 
   @override
   Widget build(BuildContext context) {
@@ -1357,9 +1944,7 @@ class _LuxuryPanel extends StatelessWidget {
             padding: const EdgeInsets.all(18),
             decoration: BoxDecoration(
               border: Border(
-                bottom: BorderSide(
-                  color: AppColors.border.withOpacity(0.5),
-                ),
+                bottom: BorderSide(color: AppColors.border.withOpacity(0.5)),
               ),
             ),
             child: Text(
@@ -1383,10 +1968,7 @@ class _AdminSearchField extends StatelessWidget {
   final String hint;
   final ValueChanged<String> onChanged;
 
-  const _AdminSearchField({
-    required this.hint,
-    required this.onChanged,
-  });
+  const _AdminSearchField({required this.hint, required this.onChanged});
 
   @override
   Widget build(BuildContext context) {
@@ -1427,10 +2009,7 @@ class _MiniTag extends StatelessWidget {
       ),
       child: Text(
         label,
-        style: const TextStyle(
-          fontSize: 11,
-          color: AppColors.textSub,
-        ),
+        style: const TextStyle(fontSize: 11, color: AppColors.textSub),
       ),
     );
   }
