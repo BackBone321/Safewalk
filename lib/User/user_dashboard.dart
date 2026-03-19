@@ -368,21 +368,277 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
   // ─── LUXURY DIALOGS ────────────────────────────────────────────
 
   Future<void> _showLocationDialog() async {
-    await _showLuxuryInfoSheet(
-      title: 'Location Info',
-      subtitle: 'CURRENT LOCATION',
-      icon: Icons.location_on_outlined,
-      rows: [
-        _InfoRow('Route', _activeRoute),
-        _InfoRow('Device Location', _deviceLocation),
-        _InfoRow('Coordinates', _mapCoordinateLabel),
-        _InfoRow(
-            'Location Sharing', _locationSharingEnabled ? 'Enabled' : 'Disabled'),
-      ],
-      actionLabel: 'REFRESH',
-      onAction: () async {
-        await _loadLinkedDevice();
-        _showActionSnack('Location info refreshed.');
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (context, setSheetState) {
+            final center = _mapCenter;
+
+            Widget infoTile(String label, String value) {
+              return Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                decoration: BoxDecoration(
+                  color: AppColors.white,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: AppColors.border),
+                ),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        label,
+                        style: const TextStyle(
+                          fontFamily: _bf,
+                          fontSize: 9,
+                          letterSpacing: 2.8,
+                          color: AppColors.gold,
+                          fontWeight: FontWeight.w400,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        value,
+                        textAlign: TextAlign.right,
+                        style: const TextStyle(
+                          fontFamily: _bf,
+                          fontSize: 12,
+                          letterSpacing: 0.4,
+                          color: AppColors.green,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            }
+
+            return DraggableScrollableSheet(
+              initialChildSize: 0.86,
+              minChildSize: 0.6,
+              maxChildSize: 0.95,
+              expand: false,
+              builder: (context, scrollController) {
+                return Container(
+                  decoration: const BoxDecoration(
+                    color: AppColors.offWhite,
+                    borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+                  ),
+                  child: ListView(
+                    controller: scrollController,
+                    padding: const EdgeInsets.fromLTRB(20, 14, 20, 24),
+                    children: [
+                      Center(
+                        child: Container(
+                          width: 38,
+                          height: 4,
+                          decoration: BoxDecoration(
+                            color: AppColors.border,
+                            borderRadius: BorderRadius.circular(99),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 14),
+                      Row(
+                        children: [
+                          Container(
+                            width: 44,
+                            height: 44,
+                            decoration: BoxDecoration(
+                              color: AppColors.green,
+                              borderRadius: BorderRadius.circular(14),
+                              border: Border.all(color: AppColors.gold, width: 1),
+                            ),
+                            child: const Icon(
+                              Icons.location_on_outlined,
+                              color: AppColors.gold,
+                              size: 22,
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Text(
+                                'LIVE MAP',
+                                style: TextStyle(
+                                  fontFamily: _bf,
+                                  fontSize: 9,
+                                  letterSpacing: 4,
+                                  color: AppColors.gold,
+                                  fontWeight: FontWeight.w300,
+                                ),
+                              ),
+                              const SizedBox(height: 2),
+                              const Text(
+                                'Location Info',
+                                style: TextStyle(
+                                  fontFamily: _hf,
+                                  fontSize: 32,
+                                  height: 1,
+                                  color: AppColors.green,
+                                  fontWeight: FontWeight.w300,
+                                  fontStyle: FontStyle.italic,
+                                ),
+                              ),
+                            ],
+                          ),
+                          const Spacer(),
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 10, vertical: 6),
+                            decoration: BoxDecoration(
+                              color: _hasDeviceCoordinates
+                                  ? const Color(0xFF0F5A3E)
+                                  : const Color(0xFF6C757D),
+                              borderRadius: BorderRadius.circular(999),
+                            ),
+                            child: Text(
+                              _hasDeviceCoordinates ? 'TRACKING' : 'NO COORDS',
+                              style: const TextStyle(
+                                fontFamily: _bf,
+                                color: AppColors.white,
+                                fontSize: 9,
+                                letterSpacing: 1.5,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 14),
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(18),
+                        child: SizedBox(
+                          height: 220,
+                          child: FlutterMap(
+                            options: MapOptions(
+                              initialCenter: center,
+                              initialZoom: _hasDeviceCoordinates ? 16 : 12,
+                              minZoom: 3,
+                              maxZoom: 19,
+                            ),
+                            children: [
+                              TileLayer(
+                                urlTemplate:
+                                    'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                                userAgentPackageName: 'com.example.safewalk',
+                              ),
+                              if (_hasDeviceCoordinates)
+                                MarkerLayer(
+                                  markers: [
+                                    Marker(
+                                      point: center,
+                                      width: 40,
+                                      height: 40,
+                                      child: Container(
+                                        decoration: BoxDecoration(
+                                          color: AppColors.green,
+                                          shape: BoxShape.circle,
+                                          border: Border.all(
+                                              color: AppColors.gold, width: 1.8),
+                                        ),
+                                        child: const Icon(
+                                          Icons.place_rounded,
+                                          color: AppColors.white,
+                                          size: 22,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                            ],
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      Text(
+                        'Map data (c) OpenStreetMap contributors',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          fontFamily: _bf,
+                          fontSize: 9,
+                          letterSpacing: 1,
+                          color: AppColors.textSub.withOpacity(0.8),
+                        ),
+                      ),
+                      const SizedBox(height: 14),
+                      infoTile('ROUTE', _activeRoute),
+                      const SizedBox(height: 10),
+                      infoTile('DEVICE LOCATION', _deviceLocation),
+                      const SizedBox(height: 10),
+                      infoTile('COORDINATES', _mapCoordinateLabel),
+                      const SizedBox(height: 10),
+                      infoTile(
+                        'LOCATION SHARING',
+                        _locationSharingEnabled ? 'Enabled' : 'Disabled',
+                      ),
+                      const SizedBox(height: 16),
+                      SizedBox(
+                        width: double.infinity,
+                        child: Material(
+                          color: AppColors.green,
+                          borderRadius: BorderRadius.circular(12),
+                          child: InkWell(
+                            borderRadius: BorderRadius.circular(12),
+                            onTap: () async {
+                              await _loadLinkedDevice();
+                              if (!mounted) return;
+                              setSheetState(() {});
+                              _showActionSnack('Location info refreshed.');
+                            },
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(vertical: 15),
+                              alignment: Alignment.center,
+                              decoration: BoxDecoration(
+                                borderRadius: BorderRadius.circular(12),
+                                border: Border.all(
+                                  color: AppColors.gold.withOpacity(0.65),
+                                ),
+                              ),
+                              child: const Text(
+                                'REFRESH',
+                                style: TextStyle(
+                                  fontFamily: _bf,
+                                  color: AppColors.white,
+                                  letterSpacing: 4,
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w400,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      Center(
+                        child: GestureDetector(
+                          onTap: () => Navigator.pop(ctx),
+                          child: Text(
+                            'CLOSE',
+                            style: TextStyle(
+                              fontFamily: _bf,
+                              fontSize: 9,
+                              letterSpacing: 3,
+                              color: AppColors.textSub,
+                              fontWeight: FontWeight.w300,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                );
+              },
+            );
+          },
+        );
       },
     );
   }
