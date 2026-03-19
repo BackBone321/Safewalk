@@ -23,6 +23,10 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
   bool _isLoading = true;
   bool _isSavingProfile = false;
   bool _isSavingSettings = false;
+  bool _isProfileSheetOpen = false;
+
+  final TextEditingController _profileNameCtrl = TextEditingController();
+  final TextEditingController _profilePhoneCtrl = TextEditingController();
 
   String _parentName = 'Parent';
   String _parentEmail = '';
@@ -119,13 +123,17 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
   }
 
   void _showActionSnack(String label, {bool isError = false}) {
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text(label,
-          style: const TextStyle(fontFamily: _bf, letterSpacing: 0.5)),
-      backgroundColor: isError ? Colors.red.shade700 : AppColors.green,
-      behavior: SnackBarBehavior.floating,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-    ));
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          label,
+          style: const TextStyle(fontFamily: _bf, letterSpacing: 0.5),
+        ),
+        backgroundColor: isError ? Colors.red.shade700 : AppColors.green,
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+      ),
+    );
   }
 
   // ─── Data Loading ──────────────────────────────────────────────
@@ -136,6 +144,13 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
     _loadDashboard();
   }
 
+  @override
+  void dispose() {
+    _profileNameCtrl.dispose();
+    _profilePhoneCtrl.dispose();
+    super.dispose();
+  }
+
   Future<void> _loadDashboard() async {
     final currentUser = FirebaseAuth.instance.currentUser;
     if (currentUser == null) {
@@ -144,8 +159,10 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
       return;
     }
     try {
-      final parentDoc =
-          await _firestore.collection('users').doc(currentUser.uid).get();
+      final parentDoc = await _firestore
+          .collection('users')
+          .doc(currentUser.uid)
+          .get();
       final settingsDoc = await _firestore
           .collection('user_settings')
           .doc(currentUser.uid)
@@ -163,8 +180,8 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
             (settingsDoc.data()?['emailAlertsEnabled'] as bool?) ?? true;
       });
 
-      String configuredChildUid =
-          (settingsDoc.data()?['childUid'] ?? '').toString();
+      String configuredChildUid = (settingsDoc.data()?['childUid'] ?? '')
+          .toString();
       if (configuredChildUid.isEmpty) {
         final childQuery = await _firestore
             .collection('users')
@@ -186,8 +203,7 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
   }
 
   Future<void> _loadChildData(String childUid) async {
-    final childDoc =
-        await _firestore.collection('users').doc(childUid).get();
+    final childDoc = await _firestore.collection('users').doc(childUid).get();
     if (!childDoc.exists) return;
 
     final childData = childDoc.data() ?? <String, dynamic>{};
@@ -224,8 +240,7 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
       if (walkQuery.docs.isNotEmpty) {
         final walkData = walkQuery.docs.first.data();
         _childSessionActive = true;
-        _childSessionStartedAt =
-            (walkData['startAt'] as Timestamp?)?.toDate();
+        _childSessionStartedAt = (walkData['startAt'] as Timestamp?)?.toDate();
         _childRoute = (walkData['route'] ?? _childRoute).toString();
         _childDistanceKm =
             (walkData['distanceKm'] as num?)?.toDouble() ?? _childDistanceKm;
@@ -235,12 +250,11 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
 
       if (deviceQuery.docs.isNotEmpty) {
         final device = deviceQuery.docs.first.data();
-        _deviceId =
-            (device['deviceId'] ?? deviceQuery.docs.first.id).toString();
+        _deviceId = (device['deviceId'] ?? deviceQuery.docs.first.id)
+            .toString();
         _deviceName = (device['deviceName'] ?? 'Emergency Device').toString();
         _deviceLocation = (device['location'] ?? 'Unknown').toString();
-        _deviceStatus =
-            (device['status'] ?? 'active').toString().toLowerCase();
+        _deviceStatus = (device['status'] ?? 'active').toString().toLowerCase();
       } else {
         _deviceId = 'Not linked';
         _deviceName = 'No linked device';
@@ -390,11 +404,13 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
               Container(
                 height: 1,
                 decoration: const BoxDecoration(
-                  gradient: LinearGradient(colors: [
-                    Colors.transparent,
-                    AppColors.gold,
-                    Colors.transparent,
-                  ]),
+                  gradient: LinearGradient(
+                    colors: [
+                      Colors.transparent,
+                      AppColors.gold,
+                      Colors.transparent,
+                    ],
+                  ),
                 ),
               ),
               const SizedBox(height: 14),
@@ -421,31 +437,34 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                             borderRadius: BorderRadius.circular(14),
                             border: Border.all(color: AppColors.gold, width: 1),
                           ),
-                          child:
-                              Icon(icon, color: AppColors.gold, size: 22),
+                          child: Icon(icon, color: AppColors.gold, size: 22),
                         ),
                         const SizedBox(width: 14),
                         Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text(subtitle,
-                                style: const TextStyle(
-                                  fontFamily: _bf,
-                                  fontSize: 9,
-                                  letterSpacing: 4,
-                                  color: AppColors.gold,
-                                  fontWeight: FontWeight.w300,
-                                )),
+                            Text(
+                              subtitle,
+                              style: const TextStyle(
+                                fontFamily: _bf,
+                                fontSize: 9,
+                                letterSpacing: 4,
+                                color: AppColors.gold,
+                                fontWeight: FontWeight.w300,
+                              ),
+                            ),
                             const SizedBox(height: 2),
-                            Text(title,
-                                style: const TextStyle(
-                                  fontFamily: _hf,
-                                  fontSize: 28,
-                                  height: 1,
-                                  color: AppColors.green,
-                                  fontWeight: FontWeight.w300,
-                                  fontStyle: FontStyle.italic,
-                                )),
+                            Text(
+                              title,
+                              style: const TextStyle(
+                                fontFamily: _hf,
+                                fontSize: 28,
+                                height: 1,
+                                color: AppColors.green,
+                                fontWeight: FontWeight.w300,
+                                fontStyle: FontStyle.italic,
+                              ),
+                            ),
                           ],
                         ),
                       ],
@@ -455,47 +474,56 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                       height: 1,
                       decoration: const BoxDecoration(
                         gradient: LinearGradient(
-                            colors: [AppColors.gold, Colors.transparent]),
+                          colors: [AppColors.gold, Colors.transparent],
+                        ),
                       ),
                     ),
                     const SizedBox(height: 16),
-                    ...rows.map((row) => Padding(
-                          padding: const EdgeInsets.only(bottom: 10),
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 14, vertical: 12),
-                            decoration: BoxDecoration(
-                              color: AppColors.white,
-                              borderRadius: BorderRadius.circular(10),
-                              border: Border.all(color: AppColors.border),
-                            ),
-                            child: Row(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(row.label,
-                                    style: const TextStyle(
-                                      fontFamily: _bf,
-                                      fontSize: 10,
-                                      letterSpacing: 2,
-                                      color: AppColors.gold,
-                                      fontWeight: FontWeight.w400,
-                                    )),
-                                const SizedBox(width: 12),
-                                Expanded(
-                                  child: Text(row.value,
-                                      textAlign: TextAlign.right,
-                                      style: const TextStyle(
-                                        fontFamily: _bf,
-                                        fontSize: 13,
-                                        letterSpacing: 0.5,
-                                        color: AppColors.green,
-                                        fontWeight: FontWeight.w600,
-                                      )),
-                                ),
-                              ],
-                            ),
+                    ...rows.map(
+                      (row) => Padding(
+                        padding: const EdgeInsets.only(bottom: 10),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 14,
+                            vertical: 12,
                           ),
-                        )),
+                          decoration: BoxDecoration(
+                            color: AppColors.white,
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(color: AppColors.border),
+                          ),
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                row.label,
+                                style: const TextStyle(
+                                  fontFamily: _bf,
+                                  fontSize: 10,
+                                  letterSpacing: 2,
+                                  color: AppColors.gold,
+                                  fontWeight: FontWeight.w400,
+                                ),
+                              ),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: Text(
+                                  row.value,
+                                  textAlign: TextAlign.right,
+                                  style: const TextStyle(
+                                    fontFamily: _bf,
+                                    fontSize: 13,
+                                    letterSpacing: 0.5,
+                                    color: AppColors.green,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
                     const SizedBox(height: 8),
                     if (actionLabel != null && onAction != null)
                       SizedBox(
@@ -508,21 +536,23 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                               await onAction();
                             },
                             child: Container(
-                              padding:
-                                  const EdgeInsets.symmetric(vertical: 16),
+                              padding: const EdgeInsets.symmetric(vertical: 16),
                               alignment: Alignment.center,
                               decoration: BoxDecoration(
                                 border: Border.all(
-                                    color: AppColors.gold.withOpacity(0.65)),
+                                  color: AppColors.gold.withOpacity(0.65),
+                                ),
                               ),
-                              child: Text(actionLabel,
-                                  style: const TextStyle(
-                                    fontFamily: _bf,
-                                    color: AppColors.white,
-                                    letterSpacing: 4,
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.w400,
-                                  )),
+                              child: Text(
+                                actionLabel,
+                                style: const TextStyle(
+                                  fontFamily: _bf,
+                                  color: AppColors.white,
+                                  letterSpacing: 4,
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w400,
+                                ),
+                              ),
                             ),
                           ),
                         ),
@@ -531,14 +561,16 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                     Center(
                       child: GestureDetector(
                         onTap: () => Navigator.pop(ctx),
-                        child: Text('CLOSE',
-                            style: TextStyle(
-                              fontFamily: _bf,
-                              fontSize: 9,
-                              letterSpacing: 3,
-                              color: AppColors.textSub,
-                              fontWeight: FontWeight.w300,
-                            )),
+                        child: Text(
+                          'CLOSE',
+                          style: TextStyle(
+                            fontFamily: _bf,
+                            fontSize: 9,
+                            letterSpacing: 3,
+                            color: AppColors.textSub,
+                            fontWeight: FontWeight.w300,
+                          ),
+                        ),
                       ),
                     ),
                   ],
@@ -577,11 +609,13 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                   Container(
                     height: 1,
                     decoration: const BoxDecoration(
-                      gradient: LinearGradient(colors: [
-                        Colors.transparent,
-                        AppColors.gold,
-                        Colors.transparent,
-                      ]),
+                      gradient: LinearGradient(
+                        colors: [
+                          Colors.transparent,
+                          AppColors.gold,
+                          Colors.transparent,
+                        ],
+                      ),
                     ),
                   ),
                   const SizedBox(height: 14),
@@ -605,32 +639,41 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                             color: AppColors.green,
                             borderRadius: BorderRadius.circular(12),
                             border: Border.all(
-                                color: AppColors.gold, width: 0.8),
+                              color: AppColors.gold,
+                              width: 0.8,
+                            ),
                           ),
-                          child: const Icon(Icons.history,
-                              color: AppColors.gold, size: 20),
+                          child: const Icon(
+                            Icons.history,
+                            color: AppColors.gold,
+                            size: 20,
+                          ),
                         ),
                         const SizedBox(width: 12),
                         Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text('$_childName · ALERTS',
-                                style: TextStyle(
-                                  fontFamily: _bf,
-                                  fontSize: 9,
-                                  letterSpacing: 4,
-                                  color: AppColors.gold,
-                                  fontWeight: FontWeight.w300,
-                                )),
-                            const Text('Alert History',
-                                style: TextStyle(
-                                  fontFamily: _hf,
-                                  fontSize: 26,
-                                  height: 1,
-                                  color: AppColors.green,
-                                  fontWeight: FontWeight.w300,
-                                  fontStyle: FontStyle.italic,
-                                )),
+                            Text(
+                              '$_childName · ALERTS',
+                              style: TextStyle(
+                                fontFamily: _bf,
+                                fontSize: 9,
+                                letterSpacing: 4,
+                                color: AppColors.gold,
+                                fontWeight: FontWeight.w300,
+                              ),
+                            ),
+                            const Text(
+                              'Alert History',
+                              style: TextStyle(
+                                fontFamily: _hf,
+                                fontSize: 26,
+                                height: 1,
+                                color: AppColors.green,
+                                fontWeight: FontWeight.w300,
+                                fontStyle: FontStyle.italic,
+                              ),
+                            ),
                           ],
                         ),
                       ],
@@ -643,7 +686,8 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                       height: 1,
                       decoration: const BoxDecoration(
                         gradient: LinearGradient(
-                            colors: [AppColors.gold, Colors.transparent]),
+                          colors: [AppColors.gold, Colors.transparent],
+                        ),
                       ),
                     ),
                   ),
@@ -658,55 +702,63 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                       builder: (context, snapshot) {
                         if (snapshot.hasError) {
                           return Center(
-                              child: Text(
-                                  'Failed to load alerts: ${snapshot.error}',
-                                  style: const TextStyle(fontFamily: _bf)));
+                            child: Text(
+                              'Failed to load alerts: ${snapshot.error}',
+                              style: const TextStyle(fontFamily: _bf),
+                            ),
+                          );
                         }
                         if (!snapshot.hasData) {
                           return const Center(
-                              child: CircularProgressIndicator(
-                                  color: AppColors.gold));
+                            child: CircularProgressIndicator(
+                              color: AppColors.gold,
+                            ),
+                          );
                         }
                         final docs = snapshot.data!.docs.toList()
                           ..sort((a, b) {
                             final aTs = a.data()['timestamp'] as Timestamp?;
                             final bTs = b.data()['timestamp'] as Timestamp?;
-                            return (bTs?.millisecondsSinceEpoch ?? 0)
-                                .compareTo(aTs?.millisecondsSinceEpoch ?? 0);
+                            return (bTs?.millisecondsSinceEpoch ?? 0).compareTo(
+                              aTs?.millisecondsSinceEpoch ?? 0,
+                            );
                           });
                         if (docs.isEmpty) {
                           return Center(
                             child: Column(
                               mainAxisSize: MainAxisSize.min,
                               children: [
-                                Icon(Icons.check_circle_outline,
-                                    size: 48,
-                                    color: AppColors.gold.withOpacity(0.4)),
+                                Icon(
+                                  Icons.check_circle_outline,
+                                  size: 48,
+                                  color: AppColors.gold.withOpacity(0.4),
+                                ),
                                 const SizedBox(height: 10),
-                                Text('No alerts found.',
-                                    style: TextStyle(
-                                      fontFamily: _bf,
-                                      color: AppColors.textSub,
-                                      fontSize: 13,
-                                      letterSpacing: 2,
-                                    )),
+                                Text(
+                                  'No alerts found.',
+                                  style: TextStyle(
+                                    fontFamily: _bf,
+                                    color: AppColors.textSub,
+                                    fontSize: 13,
+                                    letterSpacing: 2,
+                                  ),
+                                ),
                               ],
                             ),
                           );
                         }
                         return ListView.separated(
                           controller: scrollController,
-                          padding:
-                              const EdgeInsets.fromLTRB(20, 6, 20, 32),
+                          padding: const EdgeInsets.fromLTRB(20, 6, 20, 32),
                           itemCount: docs.length,
                           separatorBuilder: (_, __) =>
                               const SizedBox(height: 10),
                           itemBuilder: (context, i) {
                             final data = docs[i].data();
-                            final status =
-                                (data['status'] ?? 'unknown').toString();
-                            final message =
-                                (data['message'] ?? 'No details').toString();
+                            final status = (data['status'] ?? 'unknown')
+                                .toString();
+                            final message = (data['message'] ?? 'No details')
+                                .toString();
                             final timestamp = data['timestamp'] as Timestamp?;
                             final isActive = status == 'active';
                             return Container(
@@ -716,8 +768,9 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                                 borderRadius: BorderRadius.circular(16),
                                 border: Border.all(
                                   color: isActive
-                                      ? const Color(0xFFCB392B)
-                                          .withOpacity(0.35)
+                                      ? const Color(
+                                          0xFFCB392B,
+                                        ).withOpacity(0.35)
                                       : AppColors.border,
                                 ),
                                 boxShadow: [
@@ -729,8 +782,7 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                                 ],
                               ),
                               child: Column(
-                                crossAxisAlignment:
-                                    CrossAxisAlignment.start,
+                                crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
                                   Row(
                                     children: [
@@ -741,8 +793,9 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                                           color: isActive
                                               ? const Color(0xFFFFEEEC)
                                               : AppColors.cream,
-                                          borderRadius:
-                                              BorderRadius.circular(10),
+                                          borderRadius: BorderRadius.circular(
+                                            10,
+                                          ),
                                         ),
                                         child: Icon(
                                           Icons.warning_amber_rounded,
@@ -754,13 +807,15 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                                       ),
                                       const SizedBox(width: 10),
                                       Expanded(
-                                        child: Text(message,
-                                            style: const TextStyle(
-                                              fontFamily: _bf,
-                                              fontWeight: FontWeight.w600,
-                                              fontSize: 13,
-                                              color: AppColors.green,
-                                            )),
+                                        child: Text(
+                                          message,
+                                          style: const TextStyle(
+                                            fontFamily: _bf,
+                                            fontWeight: FontWeight.w600,
+                                            fontSize: 13,
+                                            color: AppColors.green,
+                                          ),
+                                        ),
                                       ),
                                     ],
                                   ),
@@ -768,8 +823,9 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                                   Row(
                                     children: [
                                       _AlertBadge(
-                                          label: status.toUpperCase(),
-                                          isActive: isActive),
+                                        label: status.toUpperCase(),
+                                        isActive: isActive,
+                                      ),
                                       const Spacer(),
                                       Text(
                                         _formatTimestamp(timestamp),
@@ -788,45 +844,50 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                                       width: double.infinity,
                                       child: Material(
                                         color: AppColors.green,
-                                        borderRadius:
-                                            BorderRadius.circular(8),
+                                        borderRadius: BorderRadius.circular(8),
                                         child: InkWell(
-                                          borderRadius:
-                                              BorderRadius.circular(8),
+                                          borderRadius: BorderRadius.circular(
+                                            8,
+                                          ),
                                           onTap: () async {
                                             await _firestore
-                                                .collection(
-                                                    'emergency_alerts')
+                                                .collection('emergency_alerts')
                                                 .doc(docs[i].id)
                                                 .set({
-                                              'status': 'acknowledged',
-                                              'ackBy': FirebaseAuth.instance
-                                                      .currentUser?.uid ??
-                                                  '',
-                                              'ackAt':
-                                                  FieldValue.serverTimestamp(),
-                                            }, SetOptions(merge: true));
+                                                  'status': 'acknowledged',
+                                                  'ackBy':
+                                                      FirebaseAuth
+                                                          .instance
+                                                          .currentUser
+                                                          ?.uid ??
+                                                      '',
+                                                  'ackAt':
+                                                      FieldValue.serverTimestamp(),
+                                                }, SetOptions(merge: true));
                                           },
                                           child: Container(
-                                            padding:
-                                                const EdgeInsets.symmetric(
-                                                    vertical: 10),
+                                            padding: const EdgeInsets.symmetric(
+                                              vertical: 10,
+                                            ),
                                             alignment: Alignment.center,
                                             decoration: BoxDecoration(
                                               borderRadius:
                                                   BorderRadius.circular(8),
                                               border: Border.all(
-                                                  color: AppColors.gold
-                                                      .withOpacity(0.4)),
+                                                color: AppColors.gold
+                                                    .withOpacity(0.4),
+                                              ),
                                             ),
-                                            child: Text('ACKNOWLEDGE',
-                                                style: TextStyle(
-                                                  fontFamily: _bf,
-                                                  color: AppColors.white,
-                                                  letterSpacing: 3,
-                                                  fontSize: 10,
-                                                  fontWeight: FontWeight.w400,
-                                                )),
+                                            child: Text(
+                                              'ACKNOWLEDGE',
+                                              style: TextStyle(
+                                                fontFamily: _bf,
+                                                color: AppColors.white,
+                                                letterSpacing: 3,
+                                                fontSize: 10,
+                                                fontWeight: FontWeight.w400,
+                                              ),
+                                            ),
                                           ),
                                         ),
                                       ),
@@ -852,299 +913,341 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
   // ─── LUXURY PROFILE SHEET ──────────────────────────────────────
 
   Future<void> _showProfileDialog() async {
-    final nameCtrl = TextEditingController(text: _parentName);
-    final phoneCtrl = TextEditingController(text: _parentPhone);
+    if (_isProfileSheetOpen || !mounted) return;
+    _isProfileSheetOpen = true;
+    _profileNameCtrl
+      ..text = _parentName
+      ..selection = TextSelection.collapsed(offset: _parentName.length);
+    _profilePhoneCtrl
+      ..text = _parentPhone
+      ..selection = TextSelection.collapsed(offset: _parentPhone.length);
 
-    await showModalBottomSheet<void>(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (sheetCtx) {
-        bool isSaving = false;
-        return StatefulBuilder(
-          builder: (context, setSheet) {
-            return Padding(
-              padding: EdgeInsets.only(
-                  bottom: MediaQuery.of(context).viewInsets.bottom),
-              child: Container(
-                decoration: const BoxDecoration(
-                  color: AppColors.offWhite,
-                  borderRadius:
-                      BorderRadius.vertical(top: Radius.circular(28)),
+    try {
+      await showModalBottomSheet<void>(
+        context: context,
+        isScrollControlled: true,
+        backgroundColor: Colors.transparent,
+        builder: (sheetCtx) {
+          bool isSaving = false;
+          return StatefulBuilder(
+            builder: (context, setSheet) {
+              return Padding(
+                padding: EdgeInsets.only(
+                  bottom: MediaQuery.of(context).viewInsets.bottom,
                 ),
-                child: SingleChildScrollView(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Container(
-                        height: 1,
-                        decoration: const BoxDecoration(
-                          gradient: LinearGradient(colors: [
-                            Colors.transparent,
-                            AppColors.gold,
-                            Colors.transparent,
-                          ]),
+                child: Container(
+                  decoration: const BoxDecoration(
+                    color: AppColors.offWhite,
+                    borderRadius: BorderRadius.vertical(
+                      top: Radius.circular(28),
+                    ),
+                  ),
+                  child: SingleChildScrollView(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Container(
+                          height: 1,
+                          decoration: const BoxDecoration(
+                            gradient: LinearGradient(
+                              colors: [
+                                Colors.transparent,
+                                AppColors.gold,
+                                Colors.transparent,
+                              ],
+                            ),
+                          ),
                         ),
-                      ),
-                      const SizedBox(height: 14),
-                      Container(
-                        width: 36,
-                        height: 4,
-                        decoration: BoxDecoration(
-                          color: AppColors.border,
-                          borderRadius: BorderRadius.circular(99),
+                        const SizedBox(height: 14),
+                        Container(
+                          width: 36,
+                          height: 4,
+                          decoration: BoxDecoration(
+                            color: AppColors.border,
+                            borderRadius: BorderRadius.circular(99),
+                          ),
                         ),
-                      ),
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(24, 20, 24, 36),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text('EDIT PROFILE',
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(24, 20, 24, 36),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'EDIT PROFILE',
                                 style: TextStyle(
                                   fontFamily: _bf,
                                   fontSize: 9,
                                   letterSpacing: 4,
                                   color: AppColors.gold,
                                   fontWeight: FontWeight.w300,
-                                )),
-                            const SizedBox(height: 6),
-                            RichText(
-                              text: const TextSpan(
-                                style: TextStyle(
-                                  fontFamily: _hf,
-                                  fontSize: 34,
-                                  height: 1.05,
-                                  color: AppColors.green,
-                                  fontWeight: FontWeight.w300,
                                 ),
-                                children: [
-                                  TextSpan(text: 'Parent\n'),
-                                  TextSpan(
-                                    text: 'Information',
-                                    style: TextStyle(
-                                      fontStyle: FontStyle.italic,
-                                      color: AppColors.goldDark,
-                                    ),
-                                  ),
-                                ],
                               ),
-                            ),
-                            const SizedBox(height: 24),
-
-                            // Avatar
-                            Center(
-                              child: Stack(
-                                alignment: Alignment.bottomRight,
-                                children: [
-                                  Container(
-                                    width: 76,
-                                    height: 76,
-                                    decoration: BoxDecoration(
-                                      shape: BoxShape.circle,
-                                      color: AppColors.green,
-                                      border: Border.all(
-                                          color: AppColors.gold, width: 1.5),
-                                      boxShadow: [
-                                        BoxShadow(
-                                          color:
-                                              AppColors.green.withOpacity(0.2),
-                                          blurRadius: 20,
-                                          spreadRadius: 2,
-                                        ),
-                                      ],
+                              const SizedBox(height: 6),
+                              RichText(
+                                text: const TextSpan(
+                                  style: TextStyle(
+                                    fontFamily: _hf,
+                                    fontSize: 34,
+                                    height: 1.05,
+                                    color: AppColors.green,
+                                    fontWeight: FontWeight.w300,
+                                  ),
+                                  children: [
+                                    TextSpan(text: 'Parent\n'),
+                                    TextSpan(
+                                      text: 'Information',
+                                      style: TextStyle(
+                                        fontStyle: FontStyle.italic,
+                                        color: AppColors.goldDark,
+                                      ),
                                     ),
-                                    child: Center(
-                                      child: Text(
-                                        _parentName.isNotEmpty
-                                            ? _parentName[0].toUpperCase()
-                                            : 'P',
-                                        style: const TextStyle(
-                                          fontFamily: _hf,
-                                          fontSize: 32,
+                                  ],
+                                ),
+                              ),
+                              const SizedBox(height: 24),
+
+                              // Avatar
+                              Center(
+                                child: Stack(
+                                  alignment: Alignment.bottomRight,
+                                  children: [
+                                    Container(
+                                      width: 76,
+                                      height: 76,
+                                      decoration: BoxDecoration(
+                                        shape: BoxShape.circle,
+                                        color: AppColors.green,
+                                        border: Border.all(
                                           color: AppColors.gold,
-                                          fontWeight: FontWeight.w300,
+                                          width: 1.5,
+                                        ),
+                                        boxShadow: [
+                                          BoxShadow(
+                                            color: AppColors.green.withOpacity(
+                                              0.2,
+                                            ),
+                                            blurRadius: 20,
+                                            spreadRadius: 2,
+                                          ),
+                                        ],
+                                      ),
+                                      child: Center(
+                                        child: Text(
+                                          _parentName.isNotEmpty
+                                              ? _parentName[0].toUpperCase()
+                                              : 'P',
+                                          style: const TextStyle(
+                                            fontFamily: _hf,
+                                            fontSize: 32,
+                                            color: AppColors.gold,
+                                            fontWeight: FontWeight.w300,
+                                          ),
                                         ),
                                       ),
                                     ),
-                                  ),
-                                  Container(
-                                    width: 22,
-                                    height: 22,
-                                    decoration: BoxDecoration(
-                                      shape: BoxShape.circle,
-                                      color: AppColors.gold,
-                                      border: Border.all(
-                                          color: AppColors.offWhite, width: 2),
+                                    Container(
+                                      width: 22,
+                                      height: 22,
+                                      decoration: BoxDecoration(
+                                        shape: BoxShape.circle,
+                                        color: AppColors.gold,
+                                        border: Border.all(
+                                          color: AppColors.offWhite,
+                                          width: 2,
+                                        ),
+                                      ),
+                                      child: const Icon(
+                                        Icons.edit,
+                                        size: 11,
+                                        color: AppColors.green,
+                                      ),
                                     ),
-                                    child: const Icon(Icons.edit,
-                                        size: 11, color: AppColors.green),
-                                  ),
-                                ],
+                                  ],
+                                ),
                               ),
-                            ),
-                            const SizedBox(height: 8),
-                            Center(
-                              child: Text('PARENT / GUARDIAN',
+                              const SizedBox(height: 8),
+                              Center(
+                                child: Text(
+                                  'PARENT / GUARDIAN',
                                   style: TextStyle(
                                     fontFamily: _bf,
                                     fontSize: 9,
                                     letterSpacing: 4,
                                     color: AppColors.textSub,
                                     fontWeight: FontWeight.w300,
-                                  )),
-                            ),
-                            const SizedBox(height: 28),
-                            Container(
-                              height: 1,
-                              decoration: const BoxDecoration(
-                                gradient: LinearGradient(colors: [
-                                  AppColors.gold,
-                                  Colors.transparent,
-                                ]),
+                                  ),
+                                ),
                               ),
-                            ),
-                            const SizedBox(height: 24),
+                              const SizedBox(height: 28),
+                              Container(
+                                height: 1,
+                                decoration: const BoxDecoration(
+                                  gradient: LinearGradient(
+                                    colors: [
+                                      AppColors.gold,
+                                      Colors.transparent,
+                                    ],
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(height: 24),
 
-                            // Email read-only
-                            Container(
-                              width: double.infinity,
-                              padding: const EdgeInsets.symmetric(
-                                  horizontal: 14, vertical: 12),
-                              decoration: BoxDecoration(
-                                color: AppColors.cream,
-                                borderRadius: BorderRadius.circular(2),
-                                border: Border.all(
-                                    color: AppColors.border.withOpacity(0.5)),
-                              ),
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text('EMAIL ADDRESS',
+                              // Email read-only
+                              Container(
+                                width: double.infinity,
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 14,
+                                  vertical: 12,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: AppColors.cream,
+                                  borderRadius: BorderRadius.circular(2),
+                                  border: Border.all(
+                                    color: AppColors.border.withOpacity(0.5),
+                                  ),
+                                ),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      'EMAIL ADDRESS',
                                       style: TextStyle(
                                         fontFamily: _bf,
                                         fontSize: 9,
                                         letterSpacing: 4,
                                         color: AppColors.gold.withOpacity(0.8),
                                         fontWeight: FontWeight.w300,
-                                      )),
-                                  const SizedBox(height: 5),
-                                  Text(
-                                    _parentEmail.isEmpty
-                                        ? 'Not set'
-                                        : _parentEmail,
-                                    style: TextStyle(
-                                      fontFamily: _bf,
-                                      fontSize: 14,
-                                      letterSpacing: 0.5,
-                                      color: AppColors.textSub,
-                                      fontWeight: FontWeight.w300,
+                                      ),
                                     ),
-                                  ),
-                                  const SizedBox(height: 2),
-                                  Text('Read-only · Contact admin to change',
+                                    const SizedBox(height: 5),
+                                    Text(
+                                      _parentEmail.isEmpty
+                                          ? 'Not set'
+                                          : _parentEmail,
+                                      style: TextStyle(
+                                        fontFamily: _bf,
+                                        fontSize: 14,
+                                        letterSpacing: 0.5,
+                                        color: AppColors.textSub,
+                                        fontWeight: FontWeight.w300,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 2),
+                                    Text(
+                                      'Read-only · Contact admin to change',
                                       style: TextStyle(
                                         fontFamily: _bf,
                                         fontSize: 9,
                                         letterSpacing: 1,
-                                        color: AppColors.textSub
-                                            .withOpacity(0.6),
-                                      )),
-                                ],
-                              ),
-                            ),
-                            const SizedBox(height: 20),
-
-                            _DashLuxuryField(
-                              label: 'FULL NAME',
-                              hint: 'Enter your full name',
-                              controller: nameCtrl,
-                            ),
-                            const SizedBox(height: 20),
-
-                            _DashLuxuryField(
-                              label: 'PHONE NUMBER',
-                              hint: 'e.g. 09XXXXXXXXX',
-                              controller: phoneCtrl,
-                              keyboardType: TextInputType.phone,
-                            ),
-                            const SizedBox(height: 32),
-
-                            // Save button
-                            SizedBox(
-                              width: double.infinity,
-                              child: Material(
-                                color: AppColors.green,
-                                child: InkWell(
-                                  onTap: isSaving
-                                      ? null
-                                      : () async {
-                                          setSheet(() => isSaving = true);
-                                          await _saveProfile(nameCtrl.text,
-                                              phoneCtrl.text);
-                                          if (sheetCtx.mounted) {
-                                            Navigator.pop(sheetCtx);
-                                          }
-                                        },
-                                  child: Container(
-                                    padding: const EdgeInsets.symmetric(
-                                        vertical: 16),
-                                    alignment: Alignment.center,
-                                    decoration: BoxDecoration(
-                                      border: Border.all(
-                                          color: AppColors.gold
-                                              .withOpacity(0.65)),
+                                        color: AppColors.textSub.withOpacity(
+                                          0.6,
+                                        ),
+                                      ),
                                     ),
-                                    child: isSaving
-                                        ? const SizedBox(
-                                            width: 18,
-                                            height: 18,
-                                            child: CircularProgressIndicator(
-                                              strokeWidth: 2,
-                                              color: AppColors.gold,
+                                  ],
+                                ),
+                              ),
+                              const SizedBox(height: 20),
+
+                              _DashLuxuryField(
+                                label: 'FULL NAME',
+                                hint: 'Enter your full name',
+                                controller: _profileNameCtrl,
+                              ),
+                              const SizedBox(height: 20),
+
+                              _DashLuxuryField(
+                                label: 'PHONE NUMBER',
+                                hint: 'e.g. 09XXXXXXXXX',
+                                controller: _profilePhoneCtrl,
+                                keyboardType: TextInputType.phone,
+                              ),
+                              const SizedBox(height: 32),
+
+                              // Save button
+                              SizedBox(
+                                width: double.infinity,
+                                child: Material(
+                                  color: AppColors.green,
+                                  child: InkWell(
+                                    onTap: isSaving
+                                        ? null
+                                        : () async {
+                                            setSheet(() => isSaving = true);
+                                            await _saveProfile(
+                                              _profileNameCtrl.text,
+                                              _profilePhoneCtrl.text,
+                                            );
+                                            if (sheetCtx.mounted) {
+                                              Navigator.pop(sheetCtx);
+                                            }
+                                          },
+                                    child: Container(
+                                      padding: const EdgeInsets.symmetric(
+                                        vertical: 16,
+                                      ),
+                                      alignment: Alignment.center,
+                                      decoration: BoxDecoration(
+                                        border: Border.all(
+                                          color: AppColors.gold.withOpacity(
+                                            0.65,
+                                          ),
+                                        ),
+                                      ),
+                                      child: isSaving
+                                          ? const SizedBox(
+                                              width: 18,
+                                              height: 18,
+                                              child: CircularProgressIndicator(
+                                                strokeWidth: 2,
+                                                color: AppColors.gold,
+                                              ),
+                                            )
+                                          : Text(
+                                              'SAVE CHANGES',
+                                              style: TextStyle(
+                                                fontFamily: _bf,
+                                                color: AppColors.white,
+                                                letterSpacing: 4,
+                                                fontSize: 11,
+                                                fontWeight: FontWeight.w400,
+                                              ),
                                             ),
-                                          )
-                                        : Text('SAVE CHANGES',
-                                            style: TextStyle(
-                                              fontFamily: _bf,
-                                              color: AppColors.white,
-                                              letterSpacing: 4,
-                                              fontSize: 11,
-                                              fontWeight: FontWeight.w400,
-                                            )),
+                                    ),
                                   ),
                                 ),
                               ),
-                            ),
-                            const SizedBox(height: 14),
-                            Center(
-                              child: GestureDetector(
-                                onTap: () => Navigator.pop(sheetCtx),
-                                child: Text('CANCEL',
+                              const SizedBox(height: 14),
+                              Center(
+                                child: GestureDetector(
+                                  onTap: () => Navigator.pop(sheetCtx),
+                                  child: Text(
+                                    'CANCEL',
                                     style: TextStyle(
                                       fontFamily: _bf,
                                       fontSize: 9,
                                       letterSpacing: 3,
                                       color: AppColors.textSub,
                                       fontWeight: FontWeight.w300,
-                                    )),
+                                    ),
+                                  ),
+                                ),
                               ),
-                            ),
-                          ],
+                            ],
+                          ),
                         ),
-                      ),
-                    ],
+                      ],
+                    ),
                   ),
                 ),
-              ),
-            );
-          },
-        );
-      },
-    );
-
-    nameCtrl.dispose();
-    phoneCtrl.dispose();
+              );
+            },
+          );
+        },
+      );
+    } finally {
+      _isProfileSheetOpen = false;
+    }
   }
 
   // ─── LUXURY SETTINGS SHEET ─────────────────────────────────────
@@ -1165,12 +1268,12 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
           builder: (context, setSheet) {
             return Padding(
               padding: EdgeInsets.only(
-                  bottom: MediaQuery.of(context).viewInsets.bottom),
+                bottom: MediaQuery.of(context).viewInsets.bottom,
+              ),
               child: Container(
                 decoration: const BoxDecoration(
                   color: AppColors.offWhite,
-                  borderRadius:
-                      BorderRadius.vertical(top: Radius.circular(28)),
+                  borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
                 ),
                 child: SingleChildScrollView(
                   child: Column(
@@ -1179,11 +1282,13 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                       Container(
                         height: 1,
                         decoration: const BoxDecoration(
-                          gradient: LinearGradient(colors: [
-                            Colors.transparent,
-                            AppColors.gold,
-                            Colors.transparent,
-                          ]),
+                          gradient: LinearGradient(
+                            colors: [
+                              Colors.transparent,
+                              AppColors.gold,
+                              Colors.transparent,
+                            ],
+                          ),
                         ),
                       ),
                       const SizedBox(height: 14),
@@ -1200,14 +1305,16 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text('PREFERENCES',
-                                style: TextStyle(
-                                  fontFamily: _bf,
-                                  fontSize: 9,
-                                  letterSpacing: 4,
-                                  color: AppColors.gold,
-                                  fontWeight: FontWeight.w300,
-                                )),
+                            Text(
+                              'PREFERENCES',
+                              style: TextStyle(
+                                fontFamily: _bf,
+                                fontSize: 9,
+                                letterSpacing: 4,
+                                color: AppColors.gold,
+                                fontWeight: FontWeight.w300,
+                              ),
+                            ),
                             const SizedBox(height: 6),
                             RichText(
                               text: const TextSpan(
@@ -1234,23 +1341,24 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                             Container(
                               height: 1,
                               decoration: const BoxDecoration(
-                                gradient: LinearGradient(colors: [
-                                  AppColors.gold,
-                                  Colors.transparent,
-                                ]),
+                                gradient: LinearGradient(
+                                  colors: [AppColors.gold, Colors.transparent],
+                                ),
                               ),
                             ),
                             const SizedBox(height: 22),
 
                             // Section: Notifications
-                            Text('NOTIFICATIONS',
-                                style: TextStyle(
-                                  fontFamily: _bf,
-                                  fontSize: 9,
-                                  letterSpacing: 4,
-                                  color: AppColors.gold,
-                                  fontWeight: FontWeight.w300,
-                                )),
+                            Text(
+                              'NOTIFICATIONS',
+                              style: TextStyle(
+                                fontFamily: _bf,
+                                fontSize: 9,
+                                letterSpacing: 4,
+                                color: AppColors.gold,
+                                fontWeight: FontWeight.w300,
+                              ),
+                            ),
                             const SizedBox(height: 14),
 
                             _DashSettingsTile(
@@ -1258,8 +1366,7 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                               subtitle: 'Receive emergency notifications',
                               icon: Icons.notifications_outlined,
                               value: localAlerts,
-                              onChanged: (v) =>
-                                  setSheet(() => localAlerts = v),
+                              onChanged: (v) => setSheet(() => localAlerts = v),
                             ),
                             const SizedBox(height: 10),
 
@@ -1277,33 +1384,37 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                               subtitle: 'Receive alerts via email',
                               icon: Icons.email_outlined,
                               value: localEmail,
-                              onChanged: (v) =>
-                                  setSheet(() => localEmail = v),
+                              onChanged: (v) => setSheet(() => localEmail = v),
                             ),
 
                             const SizedBox(height: 22),
 
                             // Section: Child Link
-                            Text('LINKED STUDENT',
-                                style: TextStyle(
-                                  fontFamily: _bf,
-                                  fontSize: 9,
-                                  letterSpacing: 4,
-                                  color: AppColors.gold,
-                                  fontWeight: FontWeight.w300,
-                                )),
+                            Text(
+                              'LINKED STUDENT',
+                              style: TextStyle(
+                                fontFamily: _bf,
+                                fontSize: 9,
+                                letterSpacing: 4,
+                                color: AppColors.gold,
+                                fontWeight: FontWeight.w300,
+                              ),
+                            ),
                             const SizedBox(height: 14),
 
                             // Current child display
                             if (_childName.isNotEmpty && _childUid.isNotEmpty)
                               Container(
                                 padding: const EdgeInsets.symmetric(
-                                    horizontal: 14, vertical: 12),
+                                  horizontal: 14,
+                                  vertical: 12,
+                                ),
                                 decoration: BoxDecoration(
                                   color: AppColors.green.withOpacity(0.04),
                                   borderRadius: BorderRadius.circular(12),
                                   border: Border.all(
-                                      color: AppColors.gold.withOpacity(0.3)),
+                                    color: AppColors.gold.withOpacity(0.3),
+                                  ),
                                 ),
                                 child: Row(
                                   children: [
@@ -1314,7 +1425,9 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                                         shape: BoxShape.circle,
                                         color: AppColors.green,
                                         border: Border.all(
-                                            color: AppColors.gold, width: 0.8),
+                                          color: AppColors.gold,
+                                          width: 0.8,
+                                        ),
                                       ),
                                       child: Center(
                                         child: Text(
@@ -1335,27 +1448,33 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                                       crossAxisAlignment:
                                           CrossAxisAlignment.start,
                                       children: [
-                                        Text(_childName,
-                                            style: const TextStyle(
-                                              fontFamily: _bf,
-                                              fontSize: 14,
-                                              letterSpacing: 0.5,
-                                              color: AppColors.green,
-                                              fontWeight: FontWeight.w600,
-                                            )),
-                                        Text('Currently linked student',
-                                            style: TextStyle(
-                                              fontFamily: _bf,
-                                              fontSize: 10,
-                                              color: AppColors.textSub,
-                                              letterSpacing: 0.3,
-                                            )),
+                                        Text(
+                                          _childName,
+                                          style: const TextStyle(
+                                            fontFamily: _bf,
+                                            fontSize: 14,
+                                            letterSpacing: 0.5,
+                                            color: AppColors.green,
+                                            fontWeight: FontWeight.w600,
+                                          ),
+                                        ),
+                                        Text(
+                                          'Currently linked student',
+                                          style: TextStyle(
+                                            fontFamily: _bf,
+                                            fontSize: 10,
+                                            color: AppColors.textSub,
+                                            letterSpacing: 0.3,
+                                          ),
+                                        ),
                                       ],
                                     ),
                                     const Spacer(),
-                                    Icon(Icons.verified,
-                                        color: AppColors.gold.withOpacity(0.7),
-                                        size: 18),
+                                    Icon(
+                                      Icons.verified,
+                                      color: AppColors.gold.withOpacity(0.7),
+                                      size: 18,
+                                    ),
                                   ],
                                 ),
                               ),
@@ -1363,8 +1482,7 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
 
                             _DashLuxuryField(
                               label: 'CHANGE STUDENT UID',
-                              hint:
-                                  'Leave blank to keep current',
+                              hint: 'Leave blank to keep current',
                               controller: childUidCtrl,
                             ),
 
@@ -1386,9 +1504,8 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                                             emailAlertsEnabled: localEmail,
                                             childUid:
                                                 childUidCtrl.text.trim().isEmpty
-                                                    ? _childUid
-                                                    : childUidCtrl.text
-                                                        .trim(),
+                                                ? _childUid
+                                                : childUidCtrl.text.trim(),
                                           );
                                           childUidCtrl.dispose();
                                           if (sheetCtx.mounted) {
@@ -1397,12 +1514,13 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                                         },
                                   child: Container(
                                     padding: const EdgeInsets.symmetric(
-                                        vertical: 16),
+                                      vertical: 16,
+                                    ),
                                     alignment: Alignment.center,
                                     decoration: BoxDecoration(
                                       border: Border.all(
-                                          color: AppColors.gold
-                                              .withOpacity(0.65)),
+                                        color: AppColors.gold.withOpacity(0.65),
+                                      ),
                                     ),
                                     child: isSaving
                                         ? const SizedBox(
@@ -1413,14 +1531,16 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                                               color: AppColors.gold,
                                             ),
                                           )
-                                        : Text('SAVE SETTINGS',
+                                        : Text(
+                                            'SAVE SETTINGS',
                                             style: TextStyle(
                                               fontFamily: _bf,
                                               color: AppColors.white,
                                               letterSpacing: 4,
                                               fontSize: 11,
                                               fontWeight: FontWeight.w400,
-                                            )),
+                                            ),
+                                          ),
                                   ),
                                 ),
                               ),
@@ -1429,14 +1549,16 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                             Center(
                               child: GestureDetector(
                                 onTap: () => Navigator.pop(sheetCtx),
-                                child: Text('CANCEL',
-                                    style: TextStyle(
-                                      fontFamily: _bf,
-                                      fontSize: 9,
-                                      letterSpacing: 3,
-                                      color: AppColors.textSub,
-                                      fontWeight: FontWeight.w300,
-                                    )),
+                                child: Text(
+                                  'CANCEL',
+                                  style: TextStyle(
+                                    fontFamily: _bf,
+                                    fontSize: 9,
+                                    letterSpacing: 3,
+                                    color: AppColors.textSub,
+                                    fontWeight: FontWeight.w300,
+                                  ),
+                                ),
                               ),
                             ),
                           ],
@@ -1552,7 +1674,8 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
               height: 3,
               decoration: const BoxDecoration(
                 gradient: LinearGradient(
-                    colors: [AppColors.green, AppColors.bright, AppColors.gold]),
+                  colors: [AppColors.green, AppColors.bright, AppColors.gold],
+                ),
               ),
             ),
           ),
@@ -1615,41 +1738,49 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                   border: Border.all(color: AppColors.gold, width: 1.4),
                 ),
                 child: Center(
-                  child: Text('SW',
-                      style: TextStyle(
-                        fontFamily: _hf,
-                        color: AppColors.gold,
-                        fontSize: 14,
-                        fontWeight: FontWeight.w300,
-                      )),
+                  child: Text(
+                    'SW',
+                    style: TextStyle(
+                      fontFamily: _hf,
+                      color: AppColors.gold,
+                      fontSize: 14,
+                      fontWeight: FontWeight.w300,
+                    ),
+                  ),
                 ),
               ),
               const SizedBox(width: 10),
               Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text('SafeWalk',
-                      style: TextStyle(
-                        fontFamily: _hf,
-                        color: AppColors.white,
-                        fontSize: 22,
-                        height: 1,
-                        fontWeight: FontWeight.w300,
-                      )),
-                  Text('PARENT / GUARDIAN',
-                      style: TextStyle(
-                        fontFamily: _bf,
-                        color: AppColors.gold.withOpacity(0.7),
-                        fontSize: 9,
-                        letterSpacing: 3,
-                        fontWeight: FontWeight.w300,
-                      )),
+                  Text(
+                    'SafeWalk',
+                    style: TextStyle(
+                      fontFamily: _hf,
+                      color: AppColors.white,
+                      fontSize: 22,
+                      height: 1,
+                      fontWeight: FontWeight.w300,
+                    ),
+                  ),
+                  Text(
+                    'PARENT / GUARDIAN',
+                    style: TextStyle(
+                      fontFamily: _bf,
+                      color: AppColors.gold.withOpacity(0.7),
+                      fontSize: 9,
+                      letterSpacing: 3,
+                      fontWeight: FontWeight.w300,
+                    ),
+                  ),
                 ],
               ),
               const Spacer(),
               Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 6,
+                ),
                 decoration: BoxDecoration(
                   color: const Color(0xFF0E5B3C),
                   borderRadius: BorderRadius.circular(999),
@@ -1658,17 +1789,18 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    const Icon(Icons.circle,
-                        color: Color(0xFF5DF0A0), size: 7),
+                    const Icon(Icons.circle, color: Color(0xFF5DF0A0), size: 7),
                     const SizedBox(width: 6),
-                    Text('ONLINE',
-                        style: TextStyle(
-                          fontFamily: _bf,
-                          color: const Color(0xFF5DF0A0),
-                          fontSize: 10,
-                          letterSpacing: 2,
-                          fontWeight: FontWeight.w600,
-                        )),
+                    Text(
+                      'ONLINE',
+                      style: TextStyle(
+                        fontFamily: _bf,
+                        color: const Color(0xFF5DF0A0),
+                        fontSize: 10,
+                        letterSpacing: 2,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
                   ],
                 ),
               ),
@@ -1683,41 +1815,51 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                     color: const Color(0xFF124733),
                     borderRadius: BorderRadius.circular(10),
                     border: Border.all(
-                        color: AppColors.gold.withOpacity(0.3), width: 0.8),
+                      color: AppColors.gold.withOpacity(0.3),
+                      width: 0.8,
+                    ),
                   ),
-                  child: const Icon(Icons.logout_rounded,
-                      color: Color(0xFFF0F5F2), size: 18),
+                  child: const Icon(
+                    Icons.logout_rounded,
+                    color: Color(0xFFF0F5F2),
+                    size: 18,
+                  ),
                 ),
               ),
             ],
           ),
           const SizedBox(height: 20),
-          Text('Good morning,',
-              style: TextStyle(
-                fontFamily: _bf,
-                color: AppColors.white.withOpacity(0.7),
-                fontSize: 13,
-                letterSpacing: 1,
-                fontWeight: FontWeight.w300,
-              )),
+          Text(
+            'Good morning,',
+            style: TextStyle(
+              fontFamily: _bf,
+              color: AppColors.white.withOpacity(0.7),
+              fontSize: 13,
+              letterSpacing: 1,
+              fontWeight: FontWeight.w300,
+            ),
+          ),
           const SizedBox(height: 4),
-          Text(_parentName,
-              style: TextStyle(
-                fontFamily: _hf,
-                color: AppColors.gold,
-                fontSize: 44,
-                height: 1,
-                fontWeight: FontWeight.w300,
-                fontStyle: FontStyle.italic,
-              )),
+          Text(
+            _parentName,
+            style: TextStyle(
+              fontFamily: _hf,
+              color: AppColors.gold,
+              fontSize: 44,
+              height: 1,
+              fontWeight: FontWeight.w300,
+              fontStyle: FontStyle.italic,
+            ),
+          ),
           const SizedBox(height: 16),
           Wrap(
             spacing: 8,
             runSpacing: 8,
             children: [
               _StatusPill(
-                label:
-                    _childSessionActive ? 'Student Online' : 'Student Offline',
+                label: _childSessionActive
+                    ? 'Student Online'
+                    : 'Student Offline',
                 dotColor: _childSessionActive
                     ? const Color(0xFF4ADE80)
                     : const Color(0xFFFF7F7F),
@@ -1731,8 +1873,7 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                     : AppColors.goldLt,
               ),
               _StatusPill(
-                label:
-                    _alertsEnabled ? 'Alerts Enabled' : 'Alerts Paused',
+                label: _alertsEnabled ? 'Alerts Enabled' : 'Alerts Paused',
                 dotColor: _alertsEnabled
                     ? const Color(0xFF4ADE80)
                     : const Color(0xFFFF7F7F),
@@ -1747,23 +1888,24 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
   Widget _buildSectionLabel(String title) {
     return Row(
       children: [
-        Text(title,
-            style: TextStyle(
-              fontFamily: _bf,
-              color: AppColors.textSub,
-              fontSize: 9,
-              letterSpacing: 4,
-              fontWeight: FontWeight.w400,
-            )),
+        Text(
+          title,
+          style: TextStyle(
+            fontFamily: _bf,
+            color: AppColors.textSub,
+            fontSize: 9,
+            letterSpacing: 4,
+            fontWeight: FontWeight.w400,
+          ),
+        ),
         const SizedBox(width: 12),
         Expanded(
           child: Container(
             height: 1,
             decoration: BoxDecoration(
-              gradient: LinearGradient(colors: [
-                AppColors.gold.withOpacity(0.3),
-                Colors.transparent,
-              ]),
+              gradient: LinearGradient(
+                colors: [AppColors.gold.withOpacity(0.3), Colors.transparent],
+              ),
             ),
           ),
         ),
@@ -1796,23 +1938,27 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text('Safe Walk',
-                        style: TextStyle(
-                          fontFamily: _hf,
-                          color: AppColors.green,
-                          fontSize: 36,
-                          height: 1,
-                          fontWeight: FontWeight.w300,
-                          fontStyle: FontStyle.italic,
-                        )),
-                    Text('Session',
-                        style: TextStyle(
-                          fontFamily: _hf,
-                          color: AppColors.goldDark,
-                          fontSize: 28,
-                          height: 1.1,
-                          fontWeight: FontWeight.w300,
-                        )),
+                    Text(
+                      'Safe Walk',
+                      style: TextStyle(
+                        fontFamily: _hf,
+                        color: AppColors.green,
+                        fontSize: 36,
+                        height: 1,
+                        fontWeight: FontWeight.w300,
+                        fontStyle: FontStyle.italic,
+                      ),
+                    ),
+                    Text(
+                      'Session',
+                      style: TextStyle(
+                        fontFamily: _hf,
+                        color: AppColors.goldDark,
+                        fontSize: 28,
+                        height: 1.1,
+                        fontWeight: FontWeight.w300,
+                      ),
+                    ),
                     const SizedBox(height: 6),
                     Text(
                       _childSessionActive
@@ -1831,7 +1977,9 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
               ),
               Container(
                 padding: const EdgeInsets.symmetric(
-                    horizontal: 12, vertical: 6),
+                  horizontal: 12,
+                  vertical: 6,
+                ),
                 decoration: BoxDecoration(
                   color: const Color(0xFFF4F8F6),
                   borderRadius: BorderRadius.circular(999),
@@ -1840,20 +1988,24 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Icon(Icons.circle,
-                        size: 7,
-                        color: _childSessionActive
-                            ? const Color(0xFF60CC8A)
-                            : const Color(0xFFFF7F7F)),
+                    Icon(
+                      Icons.circle,
+                      size: 7,
+                      color: _childSessionActive
+                          ? const Color(0xFF60CC8A)
+                          : const Color(0xFFFF7F7F),
+                    ),
                     const SizedBox(width: 5),
-                    Text(_childSessionActive ? 'Active' : 'Inactive',
-                        style: TextStyle(
-                          fontFamily: _bf,
-                          color: AppColors.green,
-                          fontSize: 11,
-                          letterSpacing: 1,
-                          fontWeight: FontWeight.w600,
-                        )),
+                    Text(
+                      _childSessionActive ? 'Active' : 'Inactive',
+                      style: TextStyle(
+                        fontFamily: _bf,
+                        color: AppColors.green,
+                        fontSize: 11,
+                        letterSpacing: 1,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
                   ],
                 ),
               ),
@@ -1863,24 +2015,30 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
           Container(
             height: 1,
             decoration: const BoxDecoration(
-              gradient: LinearGradient(colors: [
-                Colors.transparent,
-                AppColors.border,
-                Colors.transparent,
-              ]),
+              gradient: LinearGradient(
+                colors: [
+                  Colors.transparent,
+                  AppColors.border,
+                  Colors.transparent,
+                ],
+              ),
             ),
           ),
           const SizedBox(height: 14),
           Row(
             children: [
               Expanded(
-                  child: _MetricCell(value: _routeMetric, label: 'ROUTE')),
+                child: _MetricCell(value: _routeMetric, label: 'ROUTE'),
+              ),
               Expanded(
-                  child: _MetricCell(value: _elapsedLabel, label: 'ELAPSED')),
+                child: _MetricCell(value: _elapsedLabel, label: 'ELAPSED'),
+              ),
               Expanded(
-                  child: _MetricCell(
-                      value: '${_childDistanceKm.toStringAsFixed(1)} km',
-                      label: 'DISTANCE')),
+                child: _MetricCell(
+                  value: '${_childDistanceKm.toStringAsFixed(1)} km',
+                  label: 'DISTANCE',
+                ),
+              ),
             ],
           ),
           const SizedBox(height: 16),
@@ -1899,14 +2057,16 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                     borderRadius: BorderRadius.circular(12),
                     border: Border.all(color: AppColors.gold.withOpacity(0.5)),
                   ),
-                  child: Text('VIEW DETAILS',
-                      style: TextStyle(
-                        fontFamily: _bf,
-                        color: AppColors.white,
-                        fontSize: 11,
-                        letterSpacing: 4,
-                        fontWeight: FontWeight.w400,
-                      )),
+                  child: Text(
+                    'VIEW DETAILS',
+                    style: TextStyle(
+                      fontFamily: _bf,
+                      color: AppColors.white,
+                      fontSize: 11,
+                      letterSpacing: 4,
+                      fontWeight: FontWeight.w400,
+                    ),
+                  ),
                 ),
               ),
             ),
@@ -1925,8 +2085,7 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
             onTap: () => _handleToolTap(item.title),
             borderRadius: BorderRadius.circular(18),
             child: Container(
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
               decoration: BoxDecoration(
                 color: AppColors.white,
                 borderRadius: BorderRadius.circular(18),
@@ -1955,23 +2114,27 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(item.title,
-                            style: TextStyle(
-                              fontFamily: _bf,
-                              color: AppColors.green,
-                              fontSize: 14,
-                              letterSpacing: 0.5,
-                              fontWeight: FontWeight.w600,
-                            )),
+                        Text(
+                          item.title,
+                          style: TextStyle(
+                            fontFamily: _bf,
+                            color: AppColors.green,
+                            fontSize: 14,
+                            letterSpacing: 0.5,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
                         const SizedBox(height: 2),
-                        Text(item.subtitle,
-                            style: TextStyle(
-                              fontFamily: _bf,
-                              color: AppColors.textSub,
-                              fontSize: 11,
-                              letterSpacing: 0.3,
-                              fontWeight: FontWeight.w300,
-                            )),
+                        Text(
+                          item.subtitle,
+                          style: TextStyle(
+                            fontFamily: _bf,
+                            color: AppColors.textSub,
+                            fontSize: 11,
+                            letterSpacing: 0.3,
+                            fontWeight: FontWeight.w300,
+                          ),
+                        ),
                       ],
                     ),
                   ),
@@ -1983,8 +2146,11 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                       borderRadius: BorderRadius.circular(8),
                       border: Border.all(color: AppColors.border),
                     ),
-                    child: const Icon(Icons.chevron_right,
-                        color: AppColors.textSub, size: 18),
+                    child: const Icon(
+                      Icons.chevron_right,
+                      color: AppColors.textSub,
+                      size: 18,
+                    ),
                   ),
                 ],
               ),
@@ -2037,28 +2203,33 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                           border: selected
                               ? Border.all(
                                   color: AppColors.gold.withOpacity(0.3),
-                                  width: 0.5)
+                                  width: 0.5,
+                                )
                               : null,
                         ),
-                        child: Icon(item.icon,
-                            size: 20,
-                            color: selected
-                                ? AppColors.green
-                                : const Color(0xFFA6A49D)),
+                        child: Icon(
+                          item.icon,
+                          size: 20,
+                          color: selected
+                              ? AppColors.green
+                              : const Color(0xFFA6A49D),
+                        ),
                       ),
                       const SizedBox(height: 4),
-                      Text(item.label,
-                          style: TextStyle(
-                            fontFamily: _bf,
-                            color: selected
-                                ? AppColors.green
-                                : const Color(0xFFA6A49D),
-                            fontSize: 9,
-                            letterSpacing: 1,
-                            fontWeight: selected
-                                ? FontWeight.w600
-                                : FontWeight.w300,
-                          )),
+                      Text(
+                        item.label,
+                        style: TextStyle(
+                          fontFamily: _bf,
+                          color: selected
+                              ? AppColors.green
+                              : const Color(0xFFA6A49D),
+                          fontSize: 9,
+                          letterSpacing: 1,
+                          fontWeight: selected
+                              ? FontWeight.w600
+                              : FontWeight.w300,
+                        ),
+                      ),
                     ],
                   ),
                 ),
@@ -2115,24 +2286,28 @@ class _MetricCell extends StatelessWidget {
   Widget build(BuildContext context) {
     return Column(
       children: [
-        Text(value,
-            style: const TextStyle(
-              fontFamily: 'CormorantGaramond',
-              color: AppColors.green,
-              fontSize: 32,
-              height: 1,
-              fontWeight: FontWeight.w300,
-              fontStyle: FontStyle.italic,
-            )),
+        Text(
+          value,
+          style: const TextStyle(
+            fontFamily: 'CormorantGaramond',
+            color: AppColors.green,
+            fontSize: 32,
+            height: 1,
+            fontWeight: FontWeight.w300,
+            fontStyle: FontStyle.italic,
+          ),
+        ),
         const SizedBox(height: 4),
-        Text(label,
-            style: const TextStyle(
-              fontFamily: 'JosefinSans',
-              color: AppColors.textSub,
-              fontSize: 9,
-              letterSpacing: 3,
-              fontWeight: FontWeight.w300,
-            )),
+        Text(
+          label,
+          style: const TextStyle(
+            fontFamily: 'JosefinSans',
+            color: AppColors.textSub,
+            fontSize: 9,
+            letterSpacing: 3,
+            fontWeight: FontWeight.w300,
+          ),
+        ),
       ],
     );
   }
@@ -2157,14 +2332,16 @@ class _StatusPill extends StatelessWidget {
         children: [
           Icon(Icons.circle, color: dotColor, size: 6),
           const SizedBox(width: 6),
-          Text(label,
-              style: const TextStyle(
-                fontFamily: 'JosefinSans',
-                color: Color(0xFFEAF2ED),
-                fontSize: 10,
-                letterSpacing: 1,
-                fontWeight: FontWeight.w400,
-              )),
+          Text(
+            label,
+            style: const TextStyle(
+              fontFamily: 'JosefinSans',
+              color: Color(0xFFEAF2ED),
+              fontSize: 10,
+              letterSpacing: 1,
+              fontWeight: FontWeight.w400,
+            ),
+          ),
         ],
       ),
     );
@@ -2191,15 +2368,16 @@ class _AlertBadge extends StatelessWidget {
               : AppColors.border,
         ),
       ),
-      child: Text(label,
-          style: TextStyle(
-            fontFamily: 'JosefinSans',
-            fontSize: 9,
-            letterSpacing: 2,
-            color:
-                isActive ? const Color(0xFFCB392B) : AppColors.textSub,
-            fontWeight: FontWeight.w600,
-          )),
+      child: Text(
+        label,
+        style: TextStyle(
+          fontFamily: 'JosefinSans',
+          fontSize: 9,
+          letterSpacing: 2,
+          color: isActive ? const Color(0xFFCB392B) : AppColors.textSub,
+          fontWeight: FontWeight.w600,
+        ),
+      ),
     );
   }
 }
@@ -2238,9 +2416,13 @@ class _DashLuxuryFieldState extends State<_DashLuxuryField>
   void initState() {
     super.initState();
     _lineAnim = AnimationController(
-        vsync: this, duration: const Duration(milliseconds: 380));
-    _lineWidth = Tween<double>(begin: 0, end: 1).animate(
-        CurvedAnimation(parent: _lineAnim, curve: Curves.easeOutCubic));
+      vsync: this,
+      duration: const Duration(milliseconds: 380),
+    );
+    _lineWidth = Tween<double>(
+      begin: 0,
+      end: 1,
+    ).animate(CurvedAnimation(parent: _lineAnim, curve: Curves.easeOutCubic));
   }
 
   @override
@@ -2257,14 +2439,16 @@ class _DashLuxuryFieldState extends State<_DashLuxuryField>
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(widget.label,
-              style: const TextStyle(
-                fontFamily: 'JosefinSans',
-                fontSize: 9,
-                letterSpacing: 4,
-                color: AppColors.gold,
-                fontWeight: FontWeight.w300,
-              )),
+          Text(
+            widget.label,
+            style: const TextStyle(
+              fontFamily: 'JosefinSans',
+              fontSize: 9,
+              letterSpacing: 4,
+              color: AppColors.gold,
+              fontWeight: FontWeight.w300,
+            ),
+          ),
           const SizedBox(height: 8),
           Stack(
             children: [
@@ -2273,7 +2457,9 @@ class _DashLuxuryFieldState extends State<_DashLuxuryField>
                   color: AppColors.white,
                   borderRadius: BorderRadius.circular(2),
                   border: Border.all(
-                      color: AppColors.border.withOpacity(0.6), width: 1),
+                    color: AppColors.border.withOpacity(0.6),
+                    width: 1,
+                  ),
                 ),
                 child: TextField(
                   controller: widget.controller,
@@ -2298,7 +2484,9 @@ class _DashLuxuryFieldState extends State<_DashLuxuryField>
                     suffixIcon: widget.suffixIcon,
                     border: InputBorder.none,
                     contentPadding: const EdgeInsets.symmetric(
-                        horizontal: 14, vertical: 14),
+                      horizontal: 14,
+                      vertical: 14,
+                    ),
                     isDense: true,
                   ),
                 ),
@@ -2367,37 +2555,44 @@ class _DashSettingsTile extends StatelessWidget {
               color: value ? AppColors.green : AppColors.cream,
               borderRadius: BorderRadius.circular(12),
               border: Border.all(
-                  color: value
-                      ? AppColors.gold.withOpacity(0.4)
-                      : AppColors.border,
-                  width: 0.8),
+                color: value
+                    ? AppColors.gold.withOpacity(0.4)
+                    : AppColors.border,
+                width: 0.8,
+              ),
             ),
-            child: Icon(icon,
-                size: 18,
-                color: value ? AppColors.gold : AppColors.textSub),
+            child: Icon(
+              icon,
+              size: 18,
+              color: value ? AppColors.gold : AppColors.textSub,
+            ),
           ),
           const SizedBox(width: 14),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(title,
-                    style: TextStyle(
-                      fontFamily: 'JosefinSans',
-                      fontSize: 13,
-                      letterSpacing: 0.5,
-                      color: value ? AppColors.green : AppColors.textMain,
-                      fontWeight: FontWeight.w600,
-                    )),
+                Text(
+                  title,
+                  style: TextStyle(
+                    fontFamily: 'JosefinSans',
+                    fontSize: 13,
+                    letterSpacing: 0.5,
+                    color: value ? AppColors.green : AppColors.textMain,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
                 const SizedBox(height: 2),
-                Text(subtitle,
-                    style: const TextStyle(
-                      fontFamily: 'JosefinSans',
-                      fontSize: 10,
-                      letterSpacing: 0.3,
-                      color: AppColors.textSub,
-                      fontWeight: FontWeight.w300,
-                    )),
+                Text(
+                  subtitle,
+                  style: const TextStyle(
+                    fontFamily: 'JosefinSans',
+                    fontSize: 10,
+                    letterSpacing: 0.3,
+                    color: AppColors.textSub,
+                    fontWeight: FontWeight.w300,
+                  ),
+                ),
               ],
             ),
           ),
