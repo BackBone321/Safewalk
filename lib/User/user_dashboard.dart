@@ -1,6 +1,10 @@
 import 'package:flutter/material.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 
+import '../auth/auth_service.dart';
 import '../login_dashboard/login_page.dart';
+import '../services/notification_service.dart';
 
 class UserDashboardPage extends StatefulWidget {
   const UserDashboardPage({super.key});
@@ -11,6 +15,34 @@ class UserDashboardPage extends StatefulWidget {
 
 class _UserDashboardPageState extends State<UserDashboardPage> {
   int _selectedNavIndex = 0;
+  static const String _headingFont = 'CormorantGaramond';
+  static const String _bodyFont = 'JosefinSans';
+  final AuthService _authService = AuthService();
+  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  final NotificationService _notificationService = NotificationService();
+
+  bool _isLoading = true;
+  bool _isSavingProfile = false;
+  bool _isSavingSettings = false;
+  bool _isProcessingWalk = false;
+  bool _sessionActive = true;
+
+  String _fullName = 'Student';
+  String _email = '';
+  String _phoneNumber = '';
+  String _activeRoute = 'Main Campus -> Dorm Block C';
+  DateTime? _sessionStartedAt = DateTime.now().subtract(const Duration(minutes: 16));
+  double _distanceKm = 1.2;
+  String? _activeWalkSessionId;
+
+  String _deviceId = 'Not linked';
+  String _deviceName = 'No linked device';
+  String _deviceLocation = 'Unknown';
+  String _deviceStatus = 'offline';
+
+  bool _alertsEnabled = true;
+  bool _safeModeEnabled = true;
+  bool _locationSharingEnabled = true;
 
   final List<_ActionItem> _quickActions = const [
     _ActionItem(
@@ -82,16 +114,744 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
     _NavItem('Profile', Icons.person_outline),
   ];
 
-  void _showActionSnack(String label) {
+  @override
+  void initState() {
+    super.initState();
+    _loadDashboard();
+  }
+
+  String _normalizePhoneForLookup(String raw) {
+    final cleaned = raw.trim().replaceAll(RegExp(r'\s+|-'), '');
+    if (cleaned.startsWith('+')) return cleaned;
+    if (cleaned.startsWith('09') && cleaned.length == 11) {
+      return '+63${cleaned.substring(1)}';
+    }
+    if (cleaned.startsWith('639') && cleaned.length == 12) {
+      return '+$cleaned';
+    }
+    return cleaned;
+  }
+
+  String get _elapsedLabel {
+    if (!_sessionActive || _sessionStartedAt == null) return '--';
+    final duration = DateTime.now().difference(_sessionStartedAt!);
+    return '${duration.inMinutes} min';
+  }
+
+  String get _routeMetric {
+    final route = _activeRoute.split('->').first.trim();
+    if (route.isEmpty) return 'Campus';
+    return route.length > 10 ? '${route.substring(0, 10)}.' : route;
+  }
+
+  String _formatTimestamp(Timestamp? timestamp) {
+    if (timestamp == null) return 'Unknown time';
+    final dt = timestamp.toDate().toLocal();
+    final month = dt.month.toString().padLeft(2, '0');
+    final day = dt.day.toString().padLeft(2, '0');
+    final hour = dt.hour.toString().padLeft(2, '0');
+    final minute = dt.minute.toString().padLeft(2, '0');
+    return '$month/$day ${dt.year} $hour:$minute';
+  }
+
+  void _showActionSnack(String label, {bool isError = false}) {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text('$label tapped'),
-        backgroundColor: AppColors.green,
+        content: Text(
+          label,
+          style: const TextStyle(fontFamily: _bodyFont),
+        ),
+        backgroundColor: isError ? Colors.red.shade700 : AppColors.green,
       ),
     );
   }
 
-  void _logout() {
+  Future<void> _loadDashboard() async {
+    final currentUser = FirebaseAuth.instance.currentUser;
+    if (currentUser == null) {
+      if (!mounted) return;
+      setState(() => _isLoading = false);
+      return;
+    }
+
+    try {
+      final userDoc = await _firestore.collection('users').doc(currentUser.uid).get();
+      final settingsDoc = await _firestore.collection('user_settings').doc(currentUser.uid).get();
+
+      if (!mounted) return;
+      setState(() {
+        _fullName = (userDoc.data()?['fullName'] ?? 'Student').toString();
+        _email = (userDoc.data()?['email'] ?? '').toString();
+        _phoneNumber = (userDoc.data()?['phoneNumber'] ?? '').toString();
+        _alertsEnabled = (settingsDoc.data()?['alertsEnabled'] as bool?) ?? true;
+        _safeModeEnabled = (settingsDoc.data()?['safeModeEnabled'] as bool?) ?? true;
+        _locationSharingEnabled = (settingsDoc.data()?['locationSharingEnabled'] as bool?) ?? true;
+      });
+
+      await _loadLinkedDevice();
+      await _loadActiveWalkSession();
+    } catch (e) {
+      _showActionSnack('Failed to load dashboard data: $e', isError: true);
+    } finally {
+      if (mounted) {
+        setState(() => _isLoading = false);
+      }
+    }
+  }
+
+  Future<void> _loadLinkedDevice() async {
+    if (_phoneNumber.trim().isEmpty) return;
+
+    final rawPhone = _phoneNumber.trim();
+    final normalizedPhone = _normalizePhoneForLookup(rawPhone);
+    var q = await _firestore
+        .collection('devices')
+        .where('phoneNumber', isEqualTo: rawPhone)
+        .limit(1)
+        .get();
+
+    if (q.docs.isEmpty && normalizedPhone != rawPhone) {
+      q = await _firestore
+          .collection('devices')
+          .where('phoneNumber', isEqualTo: normalizedPhone)
+          .limit(1)
+          .get();
+    }
+
+    if (q.docs.isEmpty) {
+      if (!mounted) return;
+      setState(() {
+        _deviceId = 'Not linked';
+        _deviceName = 'No linked device';
+        _deviceLocation = 'Unknown';
+        _deviceStatus = 'offline';
+      });
+      return;
+    }
+
+    final data = q.docs.first.data();
+    if (!mounted) return;
+    setState(() {
+      _deviceId = (data['deviceId'] ?? '').toString().isEmpty
+          ? q.docs.first.id
+          : (data['deviceId'] ?? q.docs.first.id).toString();
+      _deviceName = (data['deviceName'] ?? 'Emergency Device').toString();
+      _deviceLocation = (data['location'] ?? 'Unknown').toString();
+      _deviceStatus = (data['status'] ?? 'active').toString().toLowerCase();
+    });
+  }
+
+  Future<void> _loadActiveWalkSession() async {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) return;
+
+    final q = await _firestore
+        .collection('walk_sessions')
+        .where('uid', isEqualTo: uid)
+        .where('status', isEqualTo: 'active')
+        .limit(1)
+        .get();
+
+    if (q.docs.isEmpty) {
+      if (!mounted) return;
+      setState(() {
+        _sessionActive = false;
+        _activeWalkSessionId = null;
+      });
+      return;
+    }
+
+    final data = q.docs.first.data();
+    if (!mounted) return;
+    setState(() {
+      _sessionActive = true;
+      _activeWalkSessionId = q.docs.first.id;
+      _sessionStartedAt = (data['startAt'] as Timestamp?)?.toDate();
+      _activeRoute = (data['route'] ?? _activeRoute).toString();
+      _distanceKm = (data['distanceKm'] as num?)?.toDouble() ?? _distanceKm;
+    });
+  }
+
+  Future<void> _createSosAlert() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) {
+      _showActionSnack('Please login again.', isError: true);
+      return;
+    }
+
+    try {
+      await _firestore.collection('emergency_alerts').add({
+        'uid': user.uid,
+        'fullName': _fullName,
+        'email': _email,
+        'phoneNumber': _phoneNumber,
+        'type': 'sos',
+        'severity': 'high',
+        'status': 'active',
+        'message': 'SOS button pressed by $_fullName.',
+        'location': _deviceLocation,
+        'triggeredBy': 'student_dashboard',
+        'timestamp': FieldValue.serverTimestamp(),
+      });
+
+      if (_alertsEnabled && _email.isNotEmpty) {
+        try {
+          await _notificationService.sendEmailNotification(
+            toEmail: _email,
+            toName: _fullName,
+            subject: 'SafeWalk SOS Alert Submitted',
+            message:
+                'Your SOS alert has been recorded at $_deviceLocation. Help workflow is now active.',
+            triggeredBy: 'student_dashboard',
+          );
+        } catch (_) {
+          // Keep SOS flow successful even if external email delivery is unavailable.
+        }
+      }
+
+      _showActionSnack('SOS alert sent. Admin and guardians can now see the alert.');
+    } catch (e) {
+      _showActionSnack('Failed to send SOS alert: $e', isError: true);
+    }
+  }
+
+  Future<void> _toggleWalkSession() async {
+    if (_isProcessingWalk) return;
+
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) {
+      _showActionSnack('Please login again.', isError: true);
+      return;
+    }
+
+    setState(() => _isProcessingWalk = true);
+
+    try {
+      if (_sessionActive && _activeWalkSessionId != null) {
+        await _firestore.collection('walk_sessions').doc(_activeWalkSessionId).update({
+          'status': 'completed',
+          'endAt': FieldValue.serverTimestamp(),
+          'distanceKm': _distanceKm,
+        });
+        if (!mounted) return;
+        setState(() {
+          _sessionActive = false;
+          _sessionStartedAt = null;
+          _activeWalkSessionId = null;
+        });
+        _showActionSnack('Walk session ended.');
+      } else {
+        final now = DateTime.now();
+        final doc = await _firestore.collection('walk_sessions').add({
+          'uid': user.uid,
+          'fullName': _fullName,
+          'route': _activeRoute,
+          'status': 'active',
+          'startAt': FieldValue.serverTimestamp(),
+          'distanceKm': _distanceKm,
+          'createdAt': FieldValue.serverTimestamp(),
+        });
+        if (!mounted) return;
+        setState(() {
+          _sessionActive = true;
+          _sessionStartedAt = now;
+          _activeWalkSessionId = doc.id;
+        });
+        _showActionSnack('Walk session started.');
+      }
+    } catch (e) {
+      _showActionSnack('Failed to update walk session: $e', isError: true);
+    } finally {
+      if (mounted) {
+        setState(() => _isProcessingWalk = false);
+      }
+    }
+  }
+
+  Future<void> _showLocationDialog() async {
+    await showDialog<void>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Current Location'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Route: $_activeRoute'),
+              const SizedBox(height: 6),
+              Text('Device location: $_deviceLocation'),
+              const SizedBox(height: 6),
+              Text('Sharing: ${_locationSharingEnabled ? 'Enabled' : 'Disabled'}'),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Close'),
+            ),
+            TextButton(
+              onPressed: () async {
+                Navigator.pop(context);
+                await _loadLinkedDevice();
+                _showActionSnack('Location info refreshed.');
+              },
+              child: const Text('Refresh'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Future<void> _showSessionDetailsDialog() async {
+    await showDialog<void>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Walk Session Details'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Status: ${_sessionActive ? 'Active' : 'Inactive'}'),
+              const SizedBox(height: 6),
+              Text('Route: $_activeRoute'),
+              const SizedBox(height: 6),
+              Text('Elapsed: $_elapsedLabel'),
+              const SizedBox(height: 6),
+              Text('Distance: ${_distanceKm.toStringAsFixed(1)} km'),
+              const SizedBox(height: 6),
+              Text('Device: $_deviceName ($_deviceId)'),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Close'),
+            ),
+            TextButton(
+              onPressed: () async {
+                Navigator.pop(context);
+                await _toggleWalkSession();
+              },
+              child: Text(_sessionActive ? 'End Session' : 'Start Session'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Future<void> _showDeviceDialog() async {
+    await showDialog<void>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Device Connection'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Device name: $_deviceName'),
+              const SizedBox(height: 6),
+              Text('Device ID: $_deviceId'),
+              const SizedBox(height: 6),
+              Text('Location: $_deviceLocation'),
+              const SizedBox(height: 6),
+              Text('Status: ${_deviceStatus.toUpperCase()}'),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Close'),
+            ),
+            TextButton(
+              onPressed: () async {
+                Navigator.pop(context);
+                await _loadLinkedDevice();
+                _showActionSnack('Device status refreshed.');
+              },
+              child: const Text('Refresh'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Future<void> _showAlertHistorySheet() async {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) {
+      _showActionSnack('Please login again.', isError: true);
+      return;
+    }
+
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) {
+        return DraggableScrollableSheet(
+          initialChildSize: 0.8,
+          minChildSize: 0.55,
+          maxChildSize: 0.95,
+          expand: false,
+          builder: (context, scrollController) {
+            return Container(
+              decoration: const BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+              ),
+              child: Column(
+                children: [
+                  const SizedBox(height: 8),
+                  Container(
+                    width: 36,
+                    height: 4,
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFD8D8D8),
+                      borderRadius: BorderRadius.circular(99),
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                  const Text(
+                    'Alert History',
+                    style: TextStyle(
+                      fontSize: 22,
+                      color: AppColors.green,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  Expanded(
+                    child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+                      stream: _firestore
+                          .collection('emergency_alerts')
+                          .where('uid', isEqualTo: uid)
+                          .limit(100)
+                          .snapshots(),
+                      builder: (context, snapshot) {
+                        if (snapshot.hasError) {
+                          return Center(
+                            child: Text('Failed to load alerts: ${snapshot.error}'),
+                          );
+                        }
+                        if (!snapshot.hasData) {
+                          return const Center(child: CircularProgressIndicator());
+                        }
+
+                        final docs = snapshot.data!.docs.toList()
+                          ..sort((a, b) {
+                            final aTs = a.data()['timestamp'] as Timestamp?;
+                            final bTs = b.data()['timestamp'] as Timestamp?;
+                            return (bTs?.millisecondsSinceEpoch ?? 0)
+                                .compareTo(aTs?.millisecondsSinceEpoch ?? 0);
+                          });
+                        if (docs.isEmpty) {
+                          return const Center(
+                            child: Text('No alerts found for this account.'),
+                          );
+                        }
+
+                        return ListView.separated(
+                          controller: scrollController,
+                          padding: const EdgeInsets.fromLTRB(16, 0, 16, 20),
+                          itemCount: docs.length,
+                          separatorBuilder: (_, __) => const SizedBox(height: 8),
+                          itemBuilder: (context, index) {
+                            final data = docs[index].data();
+                            final status = (data['status'] ?? 'unknown').toString();
+                            final message = (data['message'] ?? 'No details').toString();
+                            final timestamp = data['timestamp'] as Timestamp?;
+                            return Container(
+                              padding: const EdgeInsets.all(12),
+                              decoration: BoxDecoration(
+                                border: Border.all(color: AppColors.border),
+                                borderRadius: BorderRadius.circular(14),
+                              ),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Row(
+                                    children: [
+                                      const Icon(
+                                        Icons.warning_amber_rounded,
+                                        size: 18,
+                                        color: Color(0xFFCB392B),
+                                      ),
+                                      const SizedBox(width: 8),
+                                      Expanded(
+                                        child: Text(
+                                          message,
+                                          style: const TextStyle(fontWeight: FontWeight.w700),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 6),
+                                  Text('Status: $status'),
+                                  const SizedBox(height: 2),
+                                  Text('Time: ${_formatTimestamp(timestamp)}'),
+                                ],
+                              ),
+                            );
+                          },
+                        );
+                      },
+                    ),
+                  ),
+                ],
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Future<void> _saveProfile(String fullName, String phoneNumber) async {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) {
+      _showActionSnack('Please login again.', isError: true);
+      return;
+    }
+
+    setState(() => _isSavingProfile = true);
+    try {
+      await _firestore.collection('users').doc(uid).set({
+        'fullName': fullName.trim(),
+        'phoneNumber': phoneNumber.trim(),
+      }, SetOptions(merge: true));
+      if (!mounted) return;
+      setState(() {
+        _fullName = fullName.trim();
+        _phoneNumber = phoneNumber.trim();
+      });
+      await _loadLinkedDevice();
+      _showActionSnack('Profile updated.');
+    } catch (e) {
+      _showActionSnack('Failed to update profile: $e', isError: true);
+    } finally {
+      if (mounted) {
+        setState(() => _isSavingProfile = false);
+      }
+    }
+  }
+
+  Future<void> _showProfileDialog() async {
+    final nameCtrl = TextEditingController(text: _fullName);
+    final phoneCtrl = TextEditingController(text: _phoneNumber);
+
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('Edit Profile'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: nameCtrl,
+                decoration: const InputDecoration(labelText: 'Full name'),
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                controller: phoneCtrl,
+                keyboardType: TextInputType.phone,
+                decoration: const InputDecoration(labelText: 'Phone number'),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('Cancel'),
+            ),
+            TextButton(
+              onPressed: _isSavingProfile
+                  ? null
+                  : () async {
+                      await _saveProfile(nameCtrl.text, phoneCtrl.text);
+                      if (!dialogContext.mounted) return;
+                      Navigator.pop(dialogContext);
+                    },
+              child: const Text('Save'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Future<void> _saveSettings({
+    required bool alertsEnabled,
+    required bool safeModeEnabled,
+    required bool locationSharingEnabled,
+  }) async {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) {
+      _showActionSnack('Please login again.', isError: true);
+      return;
+    }
+
+    setState(() => _isSavingSettings = true);
+    try {
+      await _firestore.collection('user_settings').doc(uid).set({
+        'alertsEnabled': alertsEnabled,
+        'safeModeEnabled': safeModeEnabled,
+        'locationSharingEnabled': locationSharingEnabled,
+        'updatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+
+      if (!mounted) return;
+      setState(() {
+        _alertsEnabled = alertsEnabled;
+        _safeModeEnabled = safeModeEnabled;
+        _locationSharingEnabled = locationSharingEnabled;
+      });
+      _showActionSnack('Settings saved.');
+    } catch (e) {
+      _showActionSnack('Failed to save settings: $e', isError: true);
+    } finally {
+      if (mounted) {
+        setState(() => _isSavingSettings = false);
+      }
+    }
+  }
+
+  Future<void> _showSettingsDialog() async {
+    var localAlerts = _alertsEnabled;
+    var localSafeMode = _safeModeEnabled;
+    var localLocationSharing = _locationSharingEnabled;
+
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              title: const Text('Settings'),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  SwitchListTile(
+                    dense: true,
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('Enable alerts'),
+                    value: localAlerts,
+                    onChanged: (value) => setDialogState(() => localAlerts = value),
+                  ),
+                  SwitchListTile(
+                    dense: true,
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('Safe mode'),
+                    value: localSafeMode,
+                    onChanged: (value) => setDialogState(() => localSafeMode = value),
+                  ),
+                  SwitchListTile(
+                    dense: true,
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('Location sharing'),
+                    value: localLocationSharing,
+                    onChanged: (value) => setDialogState(() => localLocationSharing = value),
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(dialogContext),
+                  child: const Text('Cancel'),
+                ),
+                TextButton(
+                  onPressed: _isSavingSettings
+                      ? null
+                      : () async {
+                          await _saveSettings(
+                            alertsEnabled: localAlerts,
+                            safeModeEnabled: localSafeMode,
+                            locationSharingEnabled: localLocationSharing,
+                          );
+                          if (!dialogContext.mounted) return;
+                          Navigator.pop(dialogContext);
+                        },
+                  child: const Text('Save'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Future<void> _handleQuickAction(String label) async {
+    switch (label) {
+      case 'SOS':
+        await _createSosAlert();
+        return;
+      case 'Location':
+        await _showLocationDialog();
+        return;
+      case 'Walk':
+        await _toggleWalkSession();
+        return;
+      case 'Device':
+        await _showDeviceDialog();
+        return;
+      default:
+        _showActionSnack('$label tapped');
+    }
+  }
+
+  Future<void> _handleToolTap(String title) async {
+    switch (title) {
+      case 'Device Connection':
+        await _showDeviceDialog();
+        return;
+      case 'Alert History':
+        await _showAlertHistorySheet();
+        return;
+      case 'Profile':
+        await _showProfileDialog();
+        return;
+      case 'Settings':
+        await _showSettingsDialog();
+        return;
+      default:
+        _showActionSnack('$title tapped');
+    }
+  }
+
+  Future<void> _onBottomNavTap(int index) async {
+    setState(() => _selectedNavIndex = index);
+    final label = _navItems[index].label;
+    switch (label) {
+      case 'Map':
+        await _showLocationDialog();
+        return;
+      case 'Walk':
+        await _toggleWalkSession();
+        return;
+      case 'Alerts':
+        await _showAlertHistorySheet();
+        return;
+      case 'Profile':
+        await _showProfileDialog();
+        return;
+      default:
+        return;
+    }
+  }
+
+  Future<void> _logout() async {
+    try {
+      await _authService.signOut();
+    } catch (_) {
+      // Continue logout navigation even if sign out throws.
+    }
+    if (!mounted) return;
     Navigator.pushAndRemoveUntil(
       context,
       MaterialPageRoute(builder: (_) => const LoginPage()),
@@ -101,32 +861,69 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
 
   @override
   Widget build(BuildContext context) {
+    if (_isLoading) {
+      return const Scaffold(
+        backgroundColor: AppColors.offWhite,
+        body: Center(
+          child: CircularProgressIndicator(color: AppColors.green),
+        ),
+      );
+    }
+
     return Scaffold(
       backgroundColor: AppColors.offWhite,
-      body: SafeArea(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.fromLTRB(16, 14, 16, 20),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              _buildHeroCard(),
-              const SizedBox(height: 16),
-              _buildRouteCard(),
-              const SizedBox(height: 16),
-              _buildSectionLabel('QUICK ACTIONS'),
-              const SizedBox(height: 10),
-              _buildQuickActions(),
-              const SizedBox(height: 18),
-              _buildSectionLabel('CURRENT SESSION'),
-              const SizedBox(height: 10),
-              _buildSessionCard(),
-              const SizedBox(height: 18),
-              _buildSectionLabel('TOOLS'),
-              const SizedBox(height: 10),
-              _buildToolList(),
-            ],
+      body: Stack(
+        children: [
+          Positioned(
+            top: -70,
+            left: -30,
+            child: Container(
+              width: 220,
+              height: 220,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: const Color(0xFFD9B255).withValues(alpha: 0.08),
+              ),
+            ),
           ),
-        ),
+          Positioned(
+            top: 140,
+            right: -80,
+            child: Container(
+              width: 250,
+              height: 250,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: AppColors.green.withValues(alpha: 0.05),
+              ),
+            ),
+          ),
+          SafeArea(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.fromLTRB(16, 14, 16, 20),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _buildHeroCard(),
+                  const SizedBox(height: 16),
+                  _buildRouteCard(),
+                  const SizedBox(height: 16),
+                  _buildSectionLabel('QUICK ACTIONS'),
+                  const SizedBox(height: 10),
+                  _buildQuickActions(),
+                  const SizedBox(height: 18),
+                  _buildSectionLabel('CURRENT SESSION'),
+                  const SizedBox(height: 10),
+                  _buildSessionCard(),
+                  const SizedBox(height: 18),
+                  _buildSectionLabel('TOOLS'),
+                  const SizedBox(height: 10),
+                  _buildToolList(),
+                ],
+              ),
+            ),
+          ),
+        ],
       ),
       bottomNavigationBar: _buildBottomNav(),
     );
@@ -143,6 +940,13 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
           colors: [Color(0xFF05412B), Color(0xFF042D1F)],
         ),
         borderRadius: BorderRadius.circular(26),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.15),
+            blurRadius: 20,
+            offset: const Offset(0, 10),
+          ),
+        ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -163,8 +967,9 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                         'SW',
                         style: TextStyle(
                           color: Color(0xFFD9B255),
+                          fontFamily: _headingFont,
                           fontSize: 14,
-                          fontWeight: FontWeight.w500,
+                          fontWeight: FontWeight.w600,
                         ),
                       ),
                     ),
@@ -177,7 +982,8 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                         'SafeWalk',
                         style: TextStyle(
                           color: Colors.white,
-                          fontSize: 22,
+                          fontFamily: _headingFont,
+                          fontSize: 26,
                           height: 1,
                           fontWeight: FontWeight.w500,
                         ),
@@ -187,9 +993,10 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                         'STUDENT',
                         style: TextStyle(
                           color: Color(0xFF9DB2A9),
+                          fontFamily: _bodyFont,
                           fontSize: 10,
                           letterSpacing: 2,
-                          fontWeight: FontWeight.w600,
+                          fontWeight: FontWeight.w700,
                         ),
                       ),
                     ],
@@ -216,6 +1023,7 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                       'ONLINE',
                       style: TextStyle(
                         color: Color(0xFF5DF0A0),
+                        fontFamily: _bodyFont,
                         fontSize: 13,
                         letterSpacing: 2,
                         fontWeight: FontWeight.w700,
@@ -249,29 +1057,47 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
             'Good morning,',
             style: TextStyle(
               color: Colors.white,
+              fontFamily: _bodyFont,
               fontSize: 38,
               height: 1,
               fontWeight: FontWeight.w700,
             ),
           ),
           const SizedBox(height: 6),
-          const Text(
-            'Aria Santos',
-            style: TextStyle(
+          Text(
+            _fullName,
+            style: const TextStyle(
               color: Color(0xFFD9B255),
-              fontSize: 44,
+              fontFamily: _headingFont,
+              fontSize: 46,
               height: 1,
-              fontWeight: FontWeight.w400,
+              fontWeight: FontWeight.w500,
+              fontStyle: FontStyle.italic,
             ),
           ),
           const SizedBox(height: 14),
-          const Wrap(
+          Wrap(
             spacing: 8,
             runSpacing: 8,
             children: [
-              _StatusPill(label: 'GPS Active', dotColor: Color(0xFF4ADE80)),
-              _StatusPill(label: 'Device Linked', dotColor: Color(0xFFFFD166)),
-              _StatusPill(label: 'Safe Mode On', dotColor: Color(0xFF4ADE80)),
+              _StatusPill(
+                label: _locationSharingEnabled ? 'GPS Active' : 'GPS Paused',
+                dotColor: _locationSharingEnabled
+                    ? const Color(0xFF4ADE80)
+                    : const Color(0xFFFF7F7F),
+              ),
+              _StatusPill(
+                label: _deviceId == 'Not linked' ? 'Device Unlinked' : 'Device Linked',
+                dotColor: _deviceId == 'Not linked'
+                    ? const Color(0xFFFF7F7F)
+                    : const Color(0xFFFFD166),
+              ),
+              _StatusPill(
+                label: _safeModeEnabled ? 'Safe Mode On' : 'Safe Mode Off',
+                dotColor: _safeModeEnabled
+                    ? const Color(0xFF4ADE80)
+                    : const Color(0xFFFF7F7F),
+              ),
             ],
           ),
         ],
@@ -289,6 +1115,13 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
           colors: [Color(0xFF0F5E3E), Color(0xFF0A3D2A)],
         ),
         borderRadius: BorderRadius.circular(24),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.08),
+            blurRadius: 16,
+            offset: const Offset(0, 8),
+          ),
+        ],
       ),
       child: Stack(
         children: [
@@ -307,15 +1140,16 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                 color: const Color(0xFF27AE60),
                 borderRadius: BorderRadius.circular(999),
               ),
-              child: const Row(
+              child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Icon(Icons.shield_outlined, color: Colors.white, size: 15),
-                  SizedBox(width: 6),
+                  const Icon(Icons.shield_outlined, color: Colors.white, size: 15),
+                  const SizedBox(width: 6),
                   Text(
-                    'SAFE',
-                    style: TextStyle(
+                    _safeModeEnabled ? 'SAFE' : 'MONITOR',
+                    style: const TextStyle(
                       color: Colors.white,
+                      fontFamily: _bodyFont,
                       fontSize: 16,
                       fontWeight: FontWeight.w700,
                     ),
@@ -341,14 +1175,15 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.end,
               children: [
-                const Expanded(
+                Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(
+                      const Text(
                         'ACTIVE ROUTE',
                         style: TextStyle(
                           color: Color(0xFFE2C77D),
+                          fontFamily: _bodyFont,
                           fontSize: 18,
                           letterSpacing: 2,
                           fontWeight: FontWeight.w700,
@@ -356,9 +1191,10 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                       ),
                       SizedBox(height: 4),
                       Text(
-                        'Main Campus -> Dorm Block C',
-                        style: TextStyle(
+                        _activeRoute,
+                        style: const TextStyle(
                           color: Color(0xFFF8FBF9),
+                          fontFamily: _bodyFont,
                           fontSize: 30,
                           height: 1,
                           fontWeight: FontWeight.w700,
@@ -377,10 +1213,11 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                     color: const Color(0xFFD8B453),
                     borderRadius: BorderRadius.circular(999),
                   ),
-                  child: const Text(
-                    'LIVE',
-                    style: TextStyle(
+                  child: Text(
+                    _sessionActive ? 'LIVE' : 'PAUSED',
+                    style: const TextStyle(
                       color: Color(0xFF0B2C1E),
+                      fontFamily: _bodyFont,
                       fontSize: 16,
                       fontWeight: FontWeight.w700,
                     ),
@@ -399,6 +1236,7 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
       title,
       style: const TextStyle(
         color: Color(0xFFB6AEA2),
+        fontFamily: _bodyFont,
         fontSize: 17,
         letterSpacing: 5,
         fontWeight: FontWeight.w600,
@@ -413,7 +1251,7 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
           child: Padding(
             padding: const EdgeInsets.only(right: 8),
             child: InkWell(
-              onTap: () => _showActionSnack(item.label),
+              onTap: () => _handleQuickAction(item.label),
               borderRadius: BorderRadius.circular(18),
               child: Container(
                 padding: const EdgeInsets.symmetric(
@@ -424,6 +1262,13 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                   color: item.background,
                   borderRadius: BorderRadius.circular(18),
                   border: Border.all(color: AppColors.border),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: 0.04),
+                      blurRadius: 8,
+                      offset: const Offset(0, 3),
+                    ),
+                  ],
                 ),
                 child: Column(
                   children: [
@@ -441,6 +1286,7 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                       item.label,
                       style: const TextStyle(
                         color: AppColors.green,
+                        fontFamily: _bodyFont,
                         fontSize: 15,
                         fontWeight: FontWeight.w700,
                       ),
@@ -463,29 +1309,40 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
         color: AppColors.white,
         borderRadius: BorderRadius.circular(24),
         border: Border.all(color: AppColors.border),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.06),
+            blurRadius: 12,
+            offset: const Offset(0, 4),
+          ),
+        ],
       ),
       child: Column(
         children: [
           Row(
             children: [
-              const Expanded(
+              Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
+                    const Text(
                       'Safe Walk Session',
                       style: TextStyle(
                         color: AppColors.green,
-                        fontSize: 34,
+                        fontFamily: _headingFont,
+                        fontSize: 40,
                         height: 1,
-                        fontWeight: FontWeight.w700,
+                        fontWeight: FontWeight.w600,
                       ),
                     ),
                     SizedBox(height: 4),
                     Text(
-                      'Location sharing is active',
-                      style: TextStyle(
+                      _locationSharingEnabled
+                          ? 'Location sharing is active'
+                          : 'Location sharing is paused',
+                      style: const TextStyle(
                         color: Color(0xFF6E7A73),
+                        fontFamily: _bodyFont,
                         fontSize: 18,
                         fontWeight: FontWeight.w500,
                       ),
@@ -503,15 +1360,22 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                   borderRadius: BorderRadius.circular(999),
                   border: Border.all(color: const Color(0xFFCEE4D9)),
                 ),
-                child: const Row(
+                child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Icon(Icons.circle, size: 8, color: Color(0xFF60CC8A)),
-                    SizedBox(width: 6),
+                    Icon(
+                      Icons.circle,
+                      size: 8,
+                      color: _sessionActive
+                          ? const Color(0xFF60CC8A)
+                          : const Color(0xFFFF7F7F),
+                    ),
+                    const SizedBox(width: 6),
                     Text(
-                      'Active',
-                      style: TextStyle(
+                      _sessionActive ? 'Active' : 'Inactive',
+                      style: const TextStyle(
                         color: AppColors.green,
+                        fontFamily: _bodyFont,
                         fontSize: 16,
                         fontWeight: FontWeight.w700,
                       ),
@@ -524,16 +1388,19 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
           const SizedBox(height: 14),
           Divider(color: AppColors.border.withValues(alpha: 0.55), height: 1),
           const SizedBox(height: 13),
-          const Row(
+          Row(
             children: [
               Expanded(
-                child: _MetricCell(value: 'Campus', label: 'ROUTE'),
+                child: _MetricCell(value: _routeMetric, label: 'ROUTE'),
               ),
               Expanded(
-                child: _MetricCell(value: '16 min', label: 'ELAPSED'),
+                child: _MetricCell(value: _elapsedLabel, label: 'ELAPSED'),
               ),
               Expanded(
-                child: _MetricCell(value: '1.2 km', label: 'DISTANCE'),
+                child: _MetricCell(
+                  value: '${_distanceKm.toStringAsFixed(1)} km',
+                  label: 'DISTANCE',
+                ),
               ),
             ],
           ),
@@ -541,7 +1408,7 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
           SizedBox(
             width: double.infinity,
             child: ElevatedButton(
-              onPressed: () => _showActionSnack('View Details'),
+              onPressed: _showSessionDetailsDialog,
               style: ElevatedButton.styleFrom(
                 backgroundColor: AppColors.green,
                 foregroundColor: Colors.white,
@@ -554,6 +1421,7 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
               child: const Text(
                 'VIEW DETAILS',
                 style: TextStyle(
+                  fontFamily: _bodyFont,
                   fontSize: 21,
                   letterSpacing: 2,
                   fontWeight: FontWeight.w700,
@@ -573,7 +1441,7 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
             (item) => Padding(
               padding: const EdgeInsets.only(bottom: 10),
               child: InkWell(
-                onTap: () => _showActionSnack(item.title),
+                onTap: () => _handleToolTap(item.title),
                 borderRadius: BorderRadius.circular(18),
                 child: Container(
                   padding: const EdgeInsets.symmetric(
@@ -584,6 +1452,13 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                     color: AppColors.white,
                     borderRadius: BorderRadius.circular(18),
                     border: Border.all(color: AppColors.border),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withValues(alpha: 0.04),
+                        blurRadius: 8,
+                        offset: const Offset(0, 3),
+                      ),
+                    ],
                   ),
                   child: Row(
                     children: [
@@ -605,6 +1480,7 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                               item.title,
                               style: const TextStyle(
                                 color: AppColors.green,
+                                fontFamily: _bodyFont,
                                 fontSize: 18,
                                 fontWeight: FontWeight.w700,
                               ),
@@ -614,6 +1490,7 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                               item.subtitle,
                               style: const TextStyle(
                                 color: Color(0xFF6E7A73),
+                                fontFamily: _bodyFont,
                                 fontSize: 15,
                                 fontWeight: FontWeight.w500,
                               ),
@@ -649,10 +1526,7 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
 
             return Expanded(
               child: InkWell(
-                onTap: () {
-                  setState(() => _selectedNavIndex = index);
-                  _showActionSnack(item.label);
-                },
+                onTap: () => _onBottomNavTap(index),
                 borderRadius: BorderRadius.circular(14),
                 child: Padding(
                   padding: const EdgeInsets.symmetric(vertical: 5),
@@ -683,6 +1557,7 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                           color: selected
                               ? AppColors.green
                               : const Color(0xFFA6A49D),
+                          fontFamily: _bodyFont,
                           fontSize: 12,
                           fontWeight: selected
                               ? FontWeight.w700
@@ -705,6 +1580,9 @@ class _MetricCell extends StatelessWidget {
   final String value;
   final String label;
 
+  static const String _headingFont = 'CormorantGaramond';
+  static const String _bodyFont = 'JosefinSans';
+
   const _MetricCell({required this.value, required this.label});
 
   @override
@@ -715,9 +1593,10 @@ class _MetricCell extends StatelessWidget {
           value,
           style: const TextStyle(
             color: AppColors.green,
-            fontSize: 33,
+            fontFamily: _headingFont,
+            fontSize: 37,
             height: 1,
-            fontWeight: FontWeight.w700,
+            fontWeight: FontWeight.w600,
           ),
         ),
         const SizedBox(height: 4),
@@ -725,6 +1604,7 @@ class _MetricCell extends StatelessWidget {
           label,
           style: const TextStyle(
             color: Color(0xFFB5AEA1),
+            fontFamily: _bodyFont,
             fontSize: 14,
             letterSpacing: 3,
             fontWeight: FontWeight.w600,
@@ -738,6 +1618,8 @@ class _MetricCell extends StatelessWidget {
 class _StatusPill extends StatelessWidget {
   final String label;
   final Color dotColor;
+
+  static const String _bodyFont = 'JosefinSans';
 
   const _StatusPill({required this.label, required this.dotColor});
 
@@ -759,6 +1641,7 @@ class _StatusPill extends StatelessWidget {
             label,
             style: const TextStyle(
               color: Color(0xFFEAF2ED),
+              fontFamily: _bodyFont,
               fontSize: 14,
               fontWeight: FontWeight.w700,
             ),

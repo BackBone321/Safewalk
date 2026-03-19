@@ -633,8 +633,8 @@ class _LoginCard extends StatelessWidget {
                     ),
                     SizedBox(height: isCompact ? 24 : 36),
                     _LuxuryField(
-                      label: 'EMAIL OR PHONE NUMBER',
-                      hint: 'Enter email or phone number',
+                      label: 'EMAIL',
+                      hint: 'Enter your email',
                       controller: emailCtrl,
                       keyboardType: TextInputType.text,
                     ),
