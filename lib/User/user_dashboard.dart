@@ -15,8 +15,9 @@ class UserDashboardPage extends StatefulWidget {
 
 class _UserDashboardPageState extends State<UserDashboardPage> {
   int _selectedNavIndex = 0;
-  static const String _headingFont = 'CormorantGaramond';
-  static const String _bodyFont = 'JosefinSans';
+  static const String _hf = 'CormorantGaramond';
+  static const String _bf = 'JosefinSans';
+
   final AuthService _authService = AuthService();
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final NotificationService _notificationService = NotificationService();
@@ -31,7 +32,8 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
   String _email = '';
   String _phoneNumber = '';
   String _activeRoute = 'Main Campus -> Dorm Block C';
-  DateTime? _sessionStartedAt = DateTime.now().subtract(const Duration(minutes: 16));
+  DateTime? _sessionStartedAt =
+      DateTime.now().subtract(const Duration(minutes: 16));
   double _distanceKm = 1.2;
   String? _activeWalkSessionId;
 
@@ -43,37 +45,6 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
   bool _alertsEnabled = true;
   bool _safeModeEnabled = true;
   bool _locationSharingEnabled = true;
-
-  final List<_ActionItem> _quickActions = const [
-    _ActionItem(
-      label: 'SOS',
-      icon: Icons.warning_amber_rounded,
-      background: Color(0xFFFFF0EF),
-      iconWrap: Color(0xFFFFDFDC),
-      iconColor: Color(0xFFCB392B),
-    ),
-    _ActionItem(
-      label: 'Location',
-      icon: Icons.location_on_outlined,
-      background: Color(0xFFEFFAF4),
-      iconWrap: Color(0xFFD6F0E2),
-      iconColor: Color(0xFF1E7E55),
-    ),
-    _ActionItem(
-      label: 'Walk',
-      icon: Icons.directions_walk_outlined,
-      background: Color(0xFFFFFAEC),
-      iconWrap: Color(0xFFF4ECCD),
-      iconColor: Color(0xFF9C7A24),
-    ),
-    _ActionItem(
-      label: 'Device',
-      icon: Icons.smartphone_rounded,
-      background: Color(0xFFF2F4FF),
-      iconWrap: Color(0xFFE1E5FC),
-      iconColor: Color(0xFF4156B8),
-    ),
-  ];
 
   final List<_ToolItem> _tools = const [
     _ToolItem(
@@ -114,11 +85,7 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
     _NavItem('Profile', Icons.person_outline),
   ];
 
-  @override
-  void initState() {
-    super.initState();
-    _loadDashboard();
-  }
+  // ─── Helpers ──────────────────────────────────────────────────
 
   String _normalizePhoneForLookup(String raw) {
     final cleaned = raw.trim().replaceAll(RegExp(r'\s+|-'), '');
@@ -134,36 +101,42 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
 
   String get _elapsedLabel {
     if (!_sessionActive || _sessionStartedAt == null) return '--';
-    final duration = DateTime.now().difference(_sessionStartedAt!);
-    return '${duration.inMinutes} min';
+    final d = DateTime.now().difference(_sessionStartedAt!);
+    return '${d.inMinutes} min';
   }
 
   String get _routeMetric {
-    final route = _activeRoute.split('->').first.trim();
-    if (route.isEmpty) return 'Campus';
-    return route.length > 10 ? '${route.substring(0, 10)}.' : route;
+    final r = _activeRoute.split('->').first.trim();
+    if (r.isEmpty) return 'Campus';
+    return r.length > 10 ? '${r.substring(0, 10)}.' : r;
   }
 
-  String _formatTimestamp(Timestamp? timestamp) {
-    if (timestamp == null) return 'Unknown time';
-    final dt = timestamp.toDate().toLocal();
-    final month = dt.month.toString().padLeft(2, '0');
-    final day = dt.day.toString().padLeft(2, '0');
-    final hour = dt.hour.toString().padLeft(2, '0');
-    final minute = dt.minute.toString().padLeft(2, '0');
-    return '$month/$day ${dt.year} $hour:$minute';
+  String _formatTimestamp(Timestamp? ts) {
+    if (ts == null) return 'Unknown time';
+    final dt = ts.toDate().toLocal();
+    final m = dt.month.toString().padLeft(2, '0');
+    final d = dt.day.toString().padLeft(2, '0');
+    final h = dt.hour.toString().padLeft(2, '0');
+    final min = dt.minute.toString().padLeft(2, '0');
+    return '$m/$d ${dt.year} $h:$min';
   }
 
   void _showActionSnack(String label, {bool isError = false}) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(
-          label,
-          style: const TextStyle(fontFamily: _bodyFont),
-        ),
-        backgroundColor: isError ? Colors.red.shade700 : AppColors.green,
-      ),
-    );
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(label,
+          style: const TextStyle(fontFamily: _bf, letterSpacing: 0.5)),
+      backgroundColor: isError ? Colors.red.shade700 : AppColors.green,
+      behavior: SnackBarBehavior.floating,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+    ));
+  }
+
+  // ─── Data Loading ──────────────────────────────────────────────
+
+  @override
+  void initState() {
+    super.initState();
+    _loadDashboard();
   }
 
   Future<void> _loadDashboard() async {
@@ -173,35 +146,36 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
       setState(() => _isLoading = false);
       return;
     }
-
     try {
-      final userDoc = await _firestore.collection('users').doc(currentUser.uid).get();
-      final settingsDoc = await _firestore.collection('user_settings').doc(currentUser.uid).get();
-
+      final userDoc =
+          await _firestore.collection('users').doc(currentUser.uid).get();
+      final settingsDoc = await _firestore
+          .collection('user_settings')
+          .doc(currentUser.uid)
+          .get();
       if (!mounted) return;
       setState(() {
         _fullName = (userDoc.data()?['fullName'] ?? 'Student').toString();
         _email = (userDoc.data()?['email'] ?? '').toString();
         _phoneNumber = (userDoc.data()?['phoneNumber'] ?? '').toString();
-        _alertsEnabled = (settingsDoc.data()?['alertsEnabled'] as bool?) ?? true;
-        _safeModeEnabled = (settingsDoc.data()?['safeModeEnabled'] as bool?) ?? true;
-        _locationSharingEnabled = (settingsDoc.data()?['locationSharingEnabled'] as bool?) ?? true;
+        _alertsEnabled =
+            (settingsDoc.data()?['alertsEnabled'] as bool?) ?? true;
+        _safeModeEnabled =
+            (settingsDoc.data()?['safeModeEnabled'] as bool?) ?? true;
+        _locationSharingEnabled =
+            (settingsDoc.data()?['locationSharingEnabled'] as bool?) ?? true;
       });
-
       await _loadLinkedDevice();
       await _loadActiveWalkSession();
     } catch (e) {
       _showActionSnack('Failed to load dashboard data: $e', isError: true);
     } finally {
-      if (mounted) {
-        setState(() => _isLoading = false);
-      }
+      if (mounted) setState(() => _isLoading = false);
     }
   }
 
   Future<void> _loadLinkedDevice() async {
     if (_phoneNumber.trim().isEmpty) return;
-
     final rawPhone = _phoneNumber.trim();
     final normalizedPhone = _normalizePhoneForLookup(rawPhone);
     var q = await _firestore
@@ -209,7 +183,6 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
         .where('phoneNumber', isEqualTo: rawPhone)
         .limit(1)
         .get();
-
     if (q.docs.isEmpty && normalizedPhone != rawPhone) {
       q = await _firestore
           .collection('devices')
@@ -217,7 +190,6 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
           .limit(1)
           .get();
     }
-
     if (q.docs.isEmpty) {
       if (!mounted) return;
       setState(() {
@@ -228,7 +200,6 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
       });
       return;
     }
-
     final data = q.docs.first.data();
     if (!mounted) return;
     setState(() {
@@ -244,14 +215,12 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
   Future<void> _loadActiveWalkSession() async {
     final uid = FirebaseAuth.instance.currentUser?.uid;
     if (uid == null) return;
-
     final q = await _firestore
         .collection('walk_sessions')
         .where('uid', isEqualTo: uid)
         .where('status', isEqualTo: 'active')
         .limit(1)
         .get();
-
     if (q.docs.isEmpty) {
       if (!mounted) return;
       setState(() {
@@ -260,7 +229,6 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
       });
       return;
     }
-
     final data = q.docs.first.data();
     if (!mounted) return;
     setState(() {
@@ -272,13 +240,14 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
     });
   }
 
+  // ─── Actions ───────────────────────────────────────────────────
+
   Future<void> _createSosAlert() async {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) {
       _showActionSnack('Please login again.', isError: true);
       return;
     }
-
     try {
       await _firestore.collection('emergency_alerts').add({
         'uid': user.uid,
@@ -293,7 +262,6 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
         'triggeredBy': 'student_dashboard',
         'timestamp': FieldValue.serverTimestamp(),
       });
-
       if (_alertsEnabled && _email.isNotEmpty) {
         try {
           await _notificationService.sendEmailNotification(
@@ -304,11 +272,8 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                 'Your SOS alert has been recorded at $_deviceLocation. Help workflow is now active.',
             triggeredBy: 'student_dashboard',
           );
-        } catch (_) {
-          // Keep SOS flow successful even if external email delivery is unavailable.
-        }
+        } catch (_) {}
       }
-
       _showActionSnack('SOS alert sent. Admin and guardians can now see the alert.');
     } catch (e) {
       _showActionSnack('Failed to send SOS alert: $e', isError: true);
@@ -317,18 +282,18 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
 
   Future<void> _toggleWalkSession() async {
     if (_isProcessingWalk) return;
-
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) {
       _showActionSnack('Please login again.', isError: true);
       return;
     }
-
     setState(() => _isProcessingWalk = true);
-
     try {
       if (_sessionActive && _activeWalkSessionId != null) {
-        await _firestore.collection('walk_sessions').doc(_activeWalkSessionId).update({
+        await _firestore
+            .collection('walk_sessions')
+            .doc(_activeWalkSessionId)
+            .update({
           'status': 'completed',
           'endAt': FieldValue.serverTimestamp(),
           'distanceKm': _distanceKm,
@@ -362,120 +327,310 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
     } catch (e) {
       _showActionSnack('Failed to update walk session: $e', isError: true);
     } finally {
-      if (mounted) {
-        setState(() => _isProcessingWalk = false);
-      }
+      if (mounted) setState(() => _isProcessingWalk = false);
     }
   }
 
-  Future<void> _showLocationDialog() async {
-    await showDialog<void>(
-      context: context,
-      builder: (context) {
-        return AlertDialog(
-          title: const Text('Current Location'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text('Route: $_activeRoute'),
-              const SizedBox(height: 6),
-              Text('Device location: $_deviceLocation'),
-              const SizedBox(height: 6),
-              Text('Sharing: ${_locationSharingEnabled ? 'Enabled' : 'Disabled'}'),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('Close'),
-            ),
-            TextButton(
-              onPressed: () async {
-                Navigator.pop(context);
-                await _loadLinkedDevice();
-                _showActionSnack('Location info refreshed.');
-              },
-              child: const Text('Refresh'),
-            ),
-          ],
-        );
-      },
-    );
+  Future<void> _saveProfile(String fullName, String phoneNumber) async {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) {
+      _showActionSnack('Please login again.', isError: true);
+      return;
+    }
+    setState(() => _isSavingProfile = true);
+    try {
+      await _firestore.collection('users').doc(uid).set({
+        'fullName': fullName.trim(),
+        'phoneNumber': phoneNumber.trim(),
+      }, SetOptions(merge: true));
+      if (!mounted) return;
+      setState(() {
+        _fullName = fullName.trim();
+        _phoneNumber = phoneNumber.trim();
+      });
+      await _loadLinkedDevice();
+      _showActionSnack('Profile updated.');
+    } catch (e) {
+      _showActionSnack('Failed to update profile: $e', isError: true);
+    } finally {
+      if (mounted) setState(() => _isSavingProfile = false);
+    }
   }
 
-  Future<void> _showSessionDetailsDialog() async {
-    await showDialog<void>(
-      context: context,
-      builder: (context) {
-        return AlertDialog(
-          title: const Text('Walk Session Details'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text('Status: ${_sessionActive ? 'Active' : 'Inactive'}'),
-              const SizedBox(height: 6),
-              Text('Route: $_activeRoute'),
-              const SizedBox(height: 6),
-              Text('Elapsed: $_elapsedLabel'),
-              const SizedBox(height: 6),
-              Text('Distance: ${_distanceKm.toStringAsFixed(1)} km'),
-              const SizedBox(height: 6),
-              Text('Device: $_deviceName ($_deviceId)'),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('Close'),
-            ),
-            TextButton(
-              onPressed: () async {
-                Navigator.pop(context);
-                await _toggleWalkSession();
-              },
-              child: Text(_sessionActive ? 'End Session' : 'Start Session'),
-            ),
-          ],
-        );
+  Future<void> _saveSettings({
+    required bool alertsEnabled,
+    required bool safeModeEnabled,
+    required bool locationSharingEnabled,
+  }) async {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) {
+      _showActionSnack('Please login again.', isError: true);
+      return;
+    }
+    setState(() => _isSavingSettings = true);
+    try {
+      await _firestore.collection('user_settings').doc(uid).set({
+        'alertsEnabled': alertsEnabled,
+        'safeModeEnabled': safeModeEnabled,
+        'locationSharingEnabled': locationSharingEnabled,
+        'updatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+      if (!mounted) return;
+      setState(() {
+        _alertsEnabled = alertsEnabled;
+        _safeModeEnabled = safeModeEnabled;
+        _locationSharingEnabled = locationSharingEnabled;
+      });
+      _showActionSnack('Settings saved.');
+    } catch (e) {
+      _showActionSnack('Failed to save settings: $e', isError: true);
+    } finally {
+      if (mounted) setState(() => _isSavingSettings = false);
+    }
+  }
+
+  // ─── LUXURY DIALOGS ────────────────────────────────────────────
+
+  Future<void> _showLocationDialog() async {
+    await _showLuxuryInfoSheet(
+      title: 'Location Info',
+      subtitle: 'CURRENT LOCATION',
+      icon: Icons.location_on_outlined,
+      rows: [
+        _InfoRow('Route', _activeRoute),
+        _InfoRow('Device Location', _deviceLocation),
+        _InfoRow(
+            'Location Sharing', _locationSharingEnabled ? 'Enabled' : 'Disabled'),
+      ],
+      actionLabel: 'REFRESH',
+      onAction: () async {
+        await _loadLinkedDevice();
+        _showActionSnack('Location info refreshed.');
       },
     );
   }
 
   Future<void> _showDeviceDialog() async {
-    await showDialog<void>(
+    await _showLuxuryInfoSheet(
+      title: 'Device Connection',
+      subtitle: 'LINKED DEVICE',
+      icon: Icons.smartphone_rounded,
+      rows: [
+        _InfoRow('Device Name', _deviceName),
+        _InfoRow('Device ID', _deviceId),
+        _InfoRow('Location', _deviceLocation),
+        _InfoRow('Status', _deviceStatus.toUpperCase()),
+      ],
+      actionLabel: 'REFRESH',
+      onAction: () async {
+        await _loadLinkedDevice();
+        _showActionSnack('Device status refreshed.');
+      },
+    );
+  }
+
+  Future<void> _showSessionDetailsDialog() async {
+    await _showLuxuryInfoSheet(
+      title: 'Walk Session',
+      subtitle: 'SESSION DETAILS',
+      icon: Icons.directions_walk_outlined,
+      rows: [
+        _InfoRow('Status', _sessionActive ? 'Active' : 'Inactive'),
+        _InfoRow('Route', _activeRoute),
+        _InfoRow('Elapsed', _elapsedLabel),
+        _InfoRow('Distance', '${_distanceKm.toStringAsFixed(1)} km'),
+        _InfoRow('Device', '$_deviceName ($_deviceId)'),
+      ],
+      actionLabel: _sessionActive ? 'END SESSION' : 'START SESSION',
+      onAction: () async => await _toggleWalkSession(),
+    );
+  }
+
+  Future<void> _showLuxuryInfoSheet({
+    required String title,
+    required String subtitle,
+    required IconData icon,
+    required List<_InfoRow> rows,
+    String? actionLabel,
+    Future<void> Function()? onAction,
+  }) async {
+    await showModalBottomSheet<void>(
       context: context,
-      builder: (context) {
-        return AlertDialog(
-          title: const Text('Device Connection'),
-          content: Column(
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (ctx) {
+        return Container(
+          decoration: const BoxDecoration(
+            color: AppColors.offWhite,
+            borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+          ),
+          child: Column(
             mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text('Device name: $_deviceName'),
-              const SizedBox(height: 6),
-              Text('Device ID: $_deviceId'),
-              const SizedBox(height: 6),
-              Text('Location: $_deviceLocation'),
-              const SizedBox(height: 6),
-              Text('Status: ${_deviceStatus.toUpperCase()}'),
+              // Gold top accent
+              Container(
+                height: 1,
+                decoration: const BoxDecoration(
+                  gradient: LinearGradient(colors: [
+                    Colors.transparent,
+                    AppColors.gold,
+                    Colors.transparent,
+                  ]),
+                ),
+              ),
+              const SizedBox(height: 14),
+              Container(
+                width: 36,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: AppColors.border,
+                  borderRadius: BorderRadius.circular(99),
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(24, 20, 24, 32),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // Header
+                    Row(
+                      children: [
+                        Container(
+                          width: 46,
+                          height: 46,
+                          decoration: BoxDecoration(
+                            color: AppColors.green,
+                            borderRadius: BorderRadius.circular(14),
+                            border:
+                                Border.all(color: AppColors.gold, width: 1),
+                          ),
+                          child: Icon(icon, color: AppColors.gold, size: 22),
+                        ),
+                        const SizedBox(width: 14),
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(subtitle,
+                                style: const TextStyle(
+                                  fontFamily: _bf,
+                                  fontSize: 9,
+                                  letterSpacing: 4,
+                                  color: AppColors.gold,
+                                  fontWeight: FontWeight.w300,
+                                )),
+                            const SizedBox(height: 2),
+                            Text(title,
+                                style: const TextStyle(
+                                  fontFamily: _hf,
+                                  fontSize: 28,
+                                  height: 1,
+                                  color: AppColors.green,
+                                  fontWeight: FontWeight.w300,
+                                  fontStyle: FontStyle.italic,
+                                )),
+                          ],
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 20),
+                    Container(
+                      height: 1,
+                      decoration: const BoxDecoration(
+                        gradient: LinearGradient(colors: [
+                          AppColors.gold,
+                          Colors.transparent,
+                        ]),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    // Rows
+                    ...rows.map((row) => Padding(
+                          padding: const EdgeInsets.only(bottom: 12),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 14, vertical: 12),
+                            decoration: BoxDecoration(
+                              color: AppColors.white,
+                              borderRadius: BorderRadius.circular(10),
+                              border: Border.all(color: AppColors.border),
+                            ),
+                            child: Row(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(row.label,
+                                    style: const TextStyle(
+                                      fontFamily: _bf,
+                                      fontSize: 10,
+                                      letterSpacing: 2,
+                                      color: AppColors.gold,
+                                      fontWeight: FontWeight.w400,
+                                    )),
+                                const SizedBox(width: 12),
+                                Expanded(
+                                  child: Text(row.value,
+                                      textAlign: TextAlign.right,
+                                      style: const TextStyle(
+                                        fontFamily: _bf,
+                                        fontSize: 13,
+                                        letterSpacing: 0.5,
+                                        color: AppColors.green,
+                                        fontWeight: FontWeight.w600,
+                                      )),
+                                ),
+                              ],
+                            ),
+                          ),
+                        )),
+                    const SizedBox(height: 8),
+                    if (actionLabel != null && onAction != null)
+                      SizedBox(
+                        width: double.infinity,
+                        child: Material(
+                          color: AppColors.green,
+                          child: InkWell(
+                            onTap: () async {
+                              Navigator.pop(ctx);
+                              await onAction();
+                            },
+                            child: Container(
+                              padding:
+                                  const EdgeInsets.symmetric(vertical: 16),
+                              alignment: Alignment.center,
+                              decoration: BoxDecoration(
+                                border: Border.all(
+                                    color: AppColors.gold.withOpacity(0.65)),
+                              ),
+                              child: Text(actionLabel,
+                                  style: const TextStyle(
+                                    fontFamily: _bf,
+                                    color: AppColors.white,
+                                    letterSpacing: 4,
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w400,
+                                  )),
+                            ),
+                          ),
+                        ),
+                      ),
+                    const SizedBox(height: 12),
+                    Center(
+                      child: GestureDetector(
+                        onTap: () => Navigator.pop(ctx),
+                        child: Text('CLOSE',
+                            style: TextStyle(
+                              fontFamily: _bf,
+                              fontSize: 9,
+                              letterSpacing: 3,
+                              color: AppColors.textSub,
+                              fontWeight: FontWeight.w300,
+                            )),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             ],
           ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('Close'),
-            ),
-            TextButton(
-              onPressed: () async {
-                Navigator.pop(context);
-                await _loadLinkedDevice();
-                _showActionSnack('Device status refreshed.');
-              },
-              child: const Text('Refresh'),
-            ),
-          ],
         );
       },
     );
@@ -487,41 +642,97 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
       _showActionSnack('Please login again.', isError: true);
       return;
     }
-
     await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
-      builder: (context) {
+      builder: (ctx) {
         return DraggableScrollableSheet(
-          initialChildSize: 0.8,
+          initialChildSize: 0.82,
           minChildSize: 0.55,
           maxChildSize: 0.95,
           expand: false,
-          builder: (context, scrollController) {
+          builder: (ctx2, scrollController) {
             return Container(
               decoration: const BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+                color: AppColors.offWhite,
+                borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
               ),
               child: Column(
                 children: [
-                  const SizedBox(height: 8),
+                  Container(
+                    height: 1,
+                    decoration: const BoxDecoration(
+                      gradient: LinearGradient(colors: [
+                        Colors.transparent,
+                        AppColors.gold,
+                        Colors.transparent,
+                      ]),
+                    ),
+                  ),
+                  const SizedBox(height: 14),
                   Container(
                     width: 36,
                     height: 4,
                     decoration: BoxDecoration(
-                      color: const Color(0xFFD8D8D8),
+                      color: AppColors.border,
                       borderRadius: BorderRadius.circular(99),
                     ),
                   ),
+                  const SizedBox(height: 16),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 24),
+                    child: Row(
+                      children: [
+                        Container(
+                          width: 40,
+                          height: 40,
+                          decoration: BoxDecoration(
+                            color: AppColors.green,
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(
+                                color: AppColors.gold, width: 0.8),
+                          ),
+                          child: const Icon(Icons.history,
+                              color: AppColors.gold, size: 20),
+                        ),
+                        const SizedBox(width: 12),
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text('EMERGENCY LOGS',
+                                style: TextStyle(
+                                  fontFamily: _bf,
+                                  fontSize: 9,
+                                  letterSpacing: 4,
+                                  color: AppColors.gold,
+                                  fontWeight: FontWeight.w300,
+                                )),
+                            Text('Alert History',
+                                style: const TextStyle(
+                                  fontFamily: _hf,
+                                  fontSize: 26,
+                                  height: 1,
+                                  color: AppColors.green,
+                                  fontWeight: FontWeight.w300,
+                                  fontStyle: FontStyle.italic,
+                                )),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
                   const SizedBox(height: 14),
-                  const Text(
-                    'Alert History',
-                    style: TextStyle(
-                      fontSize: 22,
-                      color: AppColors.green,
-                      fontWeight: FontWeight.w700,
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 24),
+                    child: Container(
+                      height: 1,
+                      decoration: const BoxDecoration(
+                        gradient: LinearGradient(colors: [
+                          AppColors.gold,
+                          Colors.transparent,
+                        ]),
+                      ),
                     ),
                   ),
                   const SizedBox(height: 10),
@@ -535,13 +746,14 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                       builder: (context, snapshot) {
                         if (snapshot.hasError) {
                           return Center(
-                            child: Text('Failed to load alerts: ${snapshot.error}'),
-                          );
+                              child: Text('Failed to load alerts: ${snapshot.error}',
+                                  style: const TextStyle(fontFamily: _bf)));
                         }
                         if (!snapshot.hasData) {
-                          return const Center(child: CircularProgressIndicator());
+                          return const Center(
+                              child: CircularProgressIndicator(
+                                  color: AppColors.gold));
                         }
-
                         final docs = snapshot.data!.docs.toList()
                           ..sort((a, b) {
                             final aTs = a.data()['timestamp'] as Timestamp?;
@@ -550,50 +762,113 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                                 .compareTo(aTs?.millisecondsSinceEpoch ?? 0);
                           });
                         if (docs.isEmpty) {
-                          return const Center(
-                            child: Text('No alerts found for this account.'),
+                          return Center(
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(Icons.check_circle_outline,
+                                    size: 48,
+                                    color: AppColors.gold.withOpacity(0.4)),
+                                const SizedBox(height: 10),
+                                Text('No alerts found.',
+                                    style: TextStyle(
+                                      fontFamily: _bf,
+                                      color: AppColors.textSub,
+                                      fontSize: 13,
+                                      letterSpacing: 2,
+                                    )),
+                              ],
+                            ),
                           );
                         }
-
                         return ListView.separated(
                           controller: scrollController,
-                          padding: const EdgeInsets.fromLTRB(16, 0, 16, 20),
+                          padding:
+                              const EdgeInsets.fromLTRB(20, 6, 20, 32),
                           itemCount: docs.length,
-                          separatorBuilder: (_, __) => const SizedBox(height: 8),
-                          itemBuilder: (context, index) {
-                            final data = docs[index].data();
-                            final status = (data['status'] ?? 'unknown').toString();
-                            final message = (data['message'] ?? 'No details').toString();
+                          separatorBuilder: (_, __) =>
+                              const SizedBox(height: 10),
+                          itemBuilder: (context, i) {
+                            final data = docs[i].data();
+                            final status =
+                                (data['status'] ?? 'unknown').toString();
+                            final message =
+                                (data['message'] ?? 'No details').toString();
                             final timestamp = data['timestamp'] as Timestamp?;
+                            final isActive = status == 'active';
                             return Container(
-                              padding: const EdgeInsets.all(12),
+                              padding: const EdgeInsets.all(14),
                               decoration: BoxDecoration(
-                                border: Border.all(color: AppColors.border),
-                                borderRadius: BorderRadius.circular(14),
+                                color: AppColors.white,
+                                borderRadius: BorderRadius.circular(16),
+                                border: Border.all(
+                                  color: isActive
+                                      ? const Color(0xFFCB392B)
+                                          .withOpacity(0.35)
+                                      : AppColors.border,
+                                ),
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: Colors.black.withOpacity(0.04),
+                                    blurRadius: 8,
+                                    offset: const Offset(0, 3),
+                                  ),
+                                ],
                               ),
                               child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
+                                crossAxisAlignment:
+                                    CrossAxisAlignment.start,
                                 children: [
                                   Row(
                                     children: [
-                                      const Icon(
-                                        Icons.warning_amber_rounded,
-                                        size: 18,
-                                        color: Color(0xFFCB392B),
+                                      Container(
+                                        width: 32,
+                                        height: 32,
+                                        decoration: BoxDecoration(
+                                          color: isActive
+                                              ? const Color(0xFFFFEEEC)
+                                              : AppColors.cream,
+                                          borderRadius:
+                                              BorderRadius.circular(10),
+                                        ),
+                                        child: Icon(
+                                          Icons.warning_amber_rounded,
+                                          size: 17,
+                                          color: isActive
+                                              ? const Color(0xFFCB392B)
+                                              : AppColors.textSub,
+                                        ),
                                       ),
-                                      const SizedBox(width: 8),
+                                      const SizedBox(width: 10),
                                       Expanded(
-                                        child: Text(
-                                          message,
-                                          style: const TextStyle(fontWeight: FontWeight.w700),
+                                        child: Text(message,
+                                            style: const TextStyle(
+                                              fontFamily: _bf,
+                                              fontWeight: FontWeight.w600,
+                                              fontSize: 13,
+                                              color: AppColors.green,
+                                            )),
+                                      ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 10),
+                                  Row(
+                                    children: [
+                                      _AlertBadge(
+                                          label: status.toUpperCase(),
+                                          isActive: isActive),
+                                      const Spacer(),
+                                      Text(
+                                        _formatTimestamp(timestamp),
+                                        style: TextStyle(
+                                          fontFamily: _bf,
+                                          fontSize: 10,
+                                          letterSpacing: 1,
+                                          color: AppColors.textSub,
                                         ),
                                       ),
                                     ],
                                   ),
-                                  const SizedBox(height: 6),
-                                  Text('Status: $status'),
-                                  const SizedBox(height: 2),
-                                  Text('Time: ${_formatTimestamp(timestamp)}'),
                                 ],
                               ),
                             );
@@ -611,174 +886,512 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
     );
   }
 
-  Future<void> _saveProfile(String fullName, String phoneNumber) async {
-    final uid = FirebaseAuth.instance.currentUser?.uid;
-    if (uid == null) {
-      _showActionSnack('Please login again.', isError: true);
-      return;
-    }
-
-    setState(() => _isSavingProfile = true);
-    try {
-      await _firestore.collection('users').doc(uid).set({
-        'fullName': fullName.trim(),
-        'phoneNumber': phoneNumber.trim(),
-      }, SetOptions(merge: true));
-      if (!mounted) return;
-      setState(() {
-        _fullName = fullName.trim();
-        _phoneNumber = phoneNumber.trim();
-      });
-      await _loadLinkedDevice();
-      _showActionSnack('Profile updated.');
-    } catch (e) {
-      _showActionSnack('Failed to update profile: $e', isError: true);
-    } finally {
-      if (mounted) {
-        setState(() => _isSavingProfile = false);
-      }
-    }
-  }
+  // ─── LUXURY PROFILE SHEET ──────────────────────────────────────
 
   Future<void> _showProfileDialog() async {
     final nameCtrl = TextEditingController(text: _fullName);
     final phoneCtrl = TextEditingController(text: _phoneNumber);
 
-    await showDialog<void>(
+    await showModalBottomSheet<void>(
       context: context,
-      builder: (dialogContext) {
-        return AlertDialog(
-          title: const Text('Edit Profile'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(
-                controller: nameCtrl,
-                decoration: const InputDecoration(labelText: 'Full name'),
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (sheetCtx) {
+        bool isSaving = false;
+        return StatefulBuilder(
+          builder: (context, setSheet) {
+            return Padding(
+              padding: EdgeInsets.only(
+                  bottom: MediaQuery.of(context).viewInsets.bottom),
+              child: Container(
+                decoration: const BoxDecoration(
+                  color: AppColors.offWhite,
+                  borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+                ),
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      // Gold top accent line
+                      Container(
+                        height: 1,
+                        decoration: const BoxDecoration(
+                          gradient: LinearGradient(colors: [
+                            Colors.transparent,
+                            AppColors.gold,
+                            Colors.transparent,
+                          ]),
+                        ),
+                      ),
+                      const SizedBox(height: 14),
+                      Container(
+                        width: 36,
+                        height: 4,
+                        decoration: BoxDecoration(
+                          color: AppColors.border,
+                          borderRadius: BorderRadius.circular(99),
+                        ),
+                      ),
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(24, 20, 24, 36),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            // Header label + title
+                            Text('EDIT PROFILE',
+                                style: TextStyle(
+                                  fontFamily: _bf,
+                                  fontSize: 9,
+                                  letterSpacing: 4,
+                                  color: AppColors.gold,
+                                  fontWeight: FontWeight.w300,
+                                )),
+                            const SizedBox(height: 6),
+                            RichText(
+                              text: const TextSpan(
+                                style: TextStyle(
+                                  fontFamily: _hf,
+                                  fontSize: 34,
+                                  height: 1.05,
+                                  color: AppColors.green,
+                                  fontWeight: FontWeight.w300,
+                                ),
+                                children: [
+                                  TextSpan(text: 'Personal\n'),
+                                  TextSpan(
+                                    text: 'Information',
+                                    style: TextStyle(
+                                      fontStyle: FontStyle.italic,
+                                      color: AppColors.goldDark,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            const SizedBox(height: 24),
+
+                            // Avatar
+                            Center(
+                              child: Stack(
+                                alignment: Alignment.bottomRight,
+                                children: [
+                                  Container(
+                                    width: 76,
+                                    height: 76,
+                                    decoration: BoxDecoration(
+                                      shape: BoxShape.circle,
+                                      color: AppColors.green,
+                                      border: Border.all(
+                                          color: AppColors.gold, width: 1.5),
+                                      boxShadow: [
+                                        BoxShadow(
+                                          color: AppColors.green.withOpacity(0.2),
+                                          blurRadius: 20,
+                                          spreadRadius: 2,
+                                        ),
+                                      ],
+                                    ),
+                                    child: Center(
+                                      child: Text(
+                                        _fullName.isNotEmpty
+                                            ? _fullName[0].toUpperCase()
+                                            : 'S',
+                                        style: const TextStyle(
+                                          fontFamily: _hf,
+                                          fontSize: 32,
+                                          color: AppColors.gold,
+                                          fontWeight: FontWeight.w300,
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                  Container(
+                                    width: 22,
+                                    height: 22,
+                                    decoration: BoxDecoration(
+                                      shape: BoxShape.circle,
+                                      color: AppColors.gold,
+                                      border: Border.all(
+                                          color: AppColors.offWhite, width: 2),
+                                    ),
+                                    child: const Icon(Icons.edit,
+                                        size: 11, color: AppColors.green),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            const SizedBox(height: 8),
+                            Center(
+                              child: Text('STUDENT',
+                                  style: TextStyle(
+                                    fontFamily: _bf,
+                                    fontSize: 9,
+                                    letterSpacing: 4,
+                                    color: AppColors.textSub,
+                                    fontWeight: FontWeight.w300,
+                                  )),
+                            ),
+
+                            const SizedBox(height: 28),
+
+                            // Gold divider
+                            Container(
+                              height: 1,
+                              decoration: const BoxDecoration(
+                                gradient: LinearGradient(colors: [
+                                  AppColors.gold,
+                                  Colors.transparent,
+                                ]),
+                              ),
+                            ),
+                            const SizedBox(height: 24),
+
+                            // Email display (read-only)
+                            Container(
+                              width: double.infinity,
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 14, vertical: 12),
+                              decoration: BoxDecoration(
+                                color: AppColors.cream,
+                                borderRadius: BorderRadius.circular(2),
+                                border: Border.all(
+                                    color: AppColors.border.withOpacity(0.5)),
+                              ),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text('EMAIL ADDRESS',
+                                      style: TextStyle(
+                                        fontFamily: _bf,
+                                        fontSize: 9,
+                                        letterSpacing: 4,
+                                        color: AppColors.gold.withOpacity(0.8),
+                                        fontWeight: FontWeight.w300,
+                                      )),
+                                  const SizedBox(height: 5),
+                                  Text(
+                                    _email.isEmpty
+                                        ? 'Not set'
+                                        : _email,
+                                    style: TextStyle(
+                                      fontFamily: _bf,
+                                      fontSize: 14,
+                                      letterSpacing: 0.5,
+                                      color: AppColors.textSub,
+                                      fontWeight: FontWeight.w300,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 2),
+                                  Text('Read-only · Contact admin to change',
+                                      style: TextStyle(
+                                        fontFamily: _bf,
+                                        fontSize: 9,
+                                        letterSpacing: 1,
+                                        color: AppColors.textSub.withOpacity(0.6),
+                                      )),
+                                ],
+                              ),
+                            ),
+                            const SizedBox(height: 20),
+
+                            // Full name field
+                            _DashLuxuryField(
+                              label: 'FULL NAME',
+                              hint: 'Enter your full name',
+                              controller: nameCtrl,
+                            ),
+                            const SizedBox(height: 20),
+
+                            // Phone field
+                            _DashLuxuryField(
+                              label: 'PHONE NUMBER',
+                              hint: 'e.g. 09XXXXXXXXX',
+                              controller: phoneCtrl,
+                              keyboardType: TextInputType.phone,
+                            ),
+                            const SizedBox(height: 32),
+
+                            // Save button
+                            SizedBox(
+                              width: double.infinity,
+                              child: Material(
+                                color: AppColors.green,
+                                child: InkWell(
+                                  onTap: isSaving
+                                      ? null
+                                      : () async {
+                                          setSheet(() => isSaving = true);
+                                          await _saveProfile(
+                                              nameCtrl.text, phoneCtrl.text);
+                                          if (sheetCtx.mounted) {
+                                            Navigator.pop(sheetCtx);
+                                          }
+                                        },
+                                  child: Container(
+                                    padding: const EdgeInsets.symmetric(
+                                        vertical: 16),
+                                    alignment: Alignment.center,
+                                    decoration: BoxDecoration(
+                                      border: Border.all(
+                                          color: AppColors.gold.withOpacity(0.65)),
+                                    ),
+                                    child: isSaving
+                                        ? const SizedBox(
+                                            width: 18,
+                                            height: 18,
+                                            child: CircularProgressIndicator(
+                                              strokeWidth: 2,
+                                              color: AppColors.gold,
+                                            ),
+                                          )
+                                        : Text('SAVE CHANGES',
+                                            style: TextStyle(
+                                              fontFamily: _bf,
+                                              color: AppColors.white,
+                                              letterSpacing: 4,
+                                              fontSize: 11,
+                                              fontWeight: FontWeight.w400,
+                                            )),
+                                  ),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(height: 14),
+                            Center(
+                              child: GestureDetector(
+                                onTap: () => Navigator.pop(sheetCtx),
+                                child: Text('CANCEL',
+                                    style: TextStyle(
+                                      fontFamily: _bf,
+                                      fontSize: 9,
+                                      letterSpacing: 3,
+                                      color: AppColors.textSub,
+                                      fontWeight: FontWeight.w300,
+                                    )),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
               ),
-              const SizedBox(height: 10),
-              TextField(
-                controller: phoneCtrl,
-                keyboardType: TextInputType.phone,
-                decoration: const InputDecoration(labelText: 'Phone number'),
-              ),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(dialogContext),
-              child: const Text('Cancel'),
-            ),
-            TextButton(
-              onPressed: _isSavingProfile
-                  ? null
-                  : () async {
-                      await _saveProfile(nameCtrl.text, phoneCtrl.text);
-                      if (!dialogContext.mounted) return;
-                      Navigator.pop(dialogContext);
-                    },
-              child: const Text('Save'),
-            ),
-          ],
+            );
+          },
         );
       },
     );
+
+    nameCtrl.dispose();
+    phoneCtrl.dispose();
   }
 
-  Future<void> _saveSettings({
-    required bool alertsEnabled,
-    required bool safeModeEnabled,
-    required bool locationSharingEnabled,
-  }) async {
-    final uid = FirebaseAuth.instance.currentUser?.uid;
-    if (uid == null) {
-      _showActionSnack('Please login again.', isError: true);
-      return;
-    }
-
-    setState(() => _isSavingSettings = true);
-    try {
-      await _firestore.collection('user_settings').doc(uid).set({
-        'alertsEnabled': alertsEnabled,
-        'safeModeEnabled': safeModeEnabled,
-        'locationSharingEnabled': locationSharingEnabled,
-        'updatedAt': FieldValue.serverTimestamp(),
-      }, SetOptions(merge: true));
-
-      if (!mounted) return;
-      setState(() {
-        _alertsEnabled = alertsEnabled;
-        _safeModeEnabled = safeModeEnabled;
-        _locationSharingEnabled = locationSharingEnabled;
-      });
-      _showActionSnack('Settings saved.');
-    } catch (e) {
-      _showActionSnack('Failed to save settings: $e', isError: true);
-    } finally {
-      if (mounted) {
-        setState(() => _isSavingSettings = false);
-      }
-    }
-  }
+  // ─── LUXURY SETTINGS SHEET ─────────────────────────────────────
 
   Future<void> _showSettingsDialog() async {
-    var localAlerts = _alertsEnabled;
-    var localSafeMode = _safeModeEnabled;
-    var localLocationSharing = _locationSharingEnabled;
-
-    await showDialog<void>(
+    await showModalBottomSheet<void>(
       context: context,
-      builder: (dialogContext) {
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (sheetCtx) {
+        bool localAlerts = _alertsEnabled;
+        bool localSafeMode = _safeModeEnabled;
+        bool localLocationSharing = _locationSharingEnabled;
+        bool isSaving = false;
+
         return StatefulBuilder(
-          builder: (context, setDialogState) {
-            return AlertDialog(
-              title: const Text('Settings'),
-              content: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  SwitchListTile(
-                    dense: true,
-                    contentPadding: EdgeInsets.zero,
-                    title: const Text('Enable alerts'),
-                    value: localAlerts,
-                    onChanged: (value) => setDialogState(() => localAlerts = value),
+          builder: (context, setSheet) {
+            return Padding(
+              padding: EdgeInsets.only(
+                  bottom: MediaQuery.of(context).viewInsets.bottom),
+              child: Container(
+                decoration: const BoxDecoration(
+                  color: AppColors.offWhite,
+                  borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+                ),
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Container(
+                        height: 1,
+                        decoration: const BoxDecoration(
+                          gradient: LinearGradient(colors: [
+                            Colors.transparent,
+                            AppColors.gold,
+                            Colors.transparent,
+                          ]),
+                        ),
+                      ),
+                      const SizedBox(height: 14),
+                      Container(
+                        width: 36,
+                        height: 4,
+                        decoration: BoxDecoration(
+                          color: AppColors.border,
+                          borderRadius: BorderRadius.circular(99),
+                        ),
+                      ),
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(24, 20, 24, 36),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text('PREFERENCES',
+                                style: TextStyle(
+                                  fontFamily: _bf,
+                                  fontSize: 9,
+                                  letterSpacing: 4,
+                                  color: AppColors.gold,
+                                  fontWeight: FontWeight.w300,
+                                )),
+                            const SizedBox(height: 6),
+                            RichText(
+                              text: const TextSpan(
+                                style: TextStyle(
+                                  fontFamily: _hf,
+                                  fontSize: 34,
+                                  height: 1.05,
+                                  color: AppColors.green,
+                                  fontWeight: FontWeight.w300,
+                                ),
+                                children: [
+                                  TextSpan(text: 'Account\n'),
+                                  TextSpan(
+                                    text: 'Settings',
+                                    style: TextStyle(
+                                      fontStyle: FontStyle.italic,
+                                      color: AppColors.goldDark,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            const SizedBox(height: 24),
+
+                            Container(
+                              height: 1,
+                              decoration: const BoxDecoration(
+                                gradient: LinearGradient(colors: [
+                                  AppColors.gold,
+                                  Colors.transparent,
+                                ]),
+                              ),
+                            ),
+                            const SizedBox(height: 22),
+
+                            // Section: Safety & Alerts
+                            Text('SAFETY & ALERTS',
+                                style: TextStyle(
+                                  fontFamily: _bf,
+                                  fontSize: 9,
+                                  letterSpacing: 4,
+                                  color: AppColors.gold,
+                                  fontWeight: FontWeight.w300,
+                                )),
+                            const SizedBox(height: 14),
+
+                            _DashSettingsTile(
+                              title: 'Enable Alerts',
+                              subtitle: 'Receive emergency notifications',
+                              icon: Icons.notifications_outlined,
+                              value: localAlerts,
+                              onChanged: (v) => setSheet(() => localAlerts = v),
+                            ),
+                            const SizedBox(height: 10),
+
+                            _DashSettingsTile(
+                              title: 'Safe Mode',
+                              subtitle: 'Enhanced safety monitoring',
+                              icon: Icons.shield_outlined,
+                              value: localSafeMode,
+                              onChanged: (v) =>
+                                  setSheet(() => localSafeMode = v),
+                            ),
+                            const SizedBox(height: 10),
+
+                            _DashSettingsTile(
+                              title: 'Location Sharing',
+                              subtitle: 'Share GPS with guardians & admin',
+                              icon: Icons.location_on_outlined,
+                              value: localLocationSharing,
+                              onChanged: (v) =>
+                                  setSheet(() => localLocationSharing = v),
+                            ),
+
+                            const SizedBox(height: 28),
+
+                            // Save button
+                            SizedBox(
+                              width: double.infinity,
+                              child: Material(
+                                color: AppColors.green,
+                                child: InkWell(
+                                  onTap: isSaving
+                                      ? null
+                                      : () async {
+                                          setSheet(() => isSaving = true);
+                                          await _saveSettings(
+                                            alertsEnabled: localAlerts,
+                                            safeModeEnabled: localSafeMode,
+                                            locationSharingEnabled:
+                                                localLocationSharing,
+                                          );
+                                          if (sheetCtx.mounted) {
+                                            Navigator.pop(sheetCtx);
+                                          }
+                                        },
+                                  child: Container(
+                                    padding: const EdgeInsets.symmetric(
+                                        vertical: 16),
+                                    alignment: Alignment.center,
+                                    decoration: BoxDecoration(
+                                      border: Border.all(
+                                          color: AppColors.gold.withOpacity(0.65)),
+                                    ),
+                                    child: isSaving
+                                        ? const SizedBox(
+                                            width: 18,
+                                            height: 18,
+                                            child: CircularProgressIndicator(
+                                              strokeWidth: 2,
+                                              color: AppColors.gold,
+                                            ),
+                                          )
+                                        : Text('SAVE SETTINGS',
+                                            style: TextStyle(
+                                              fontFamily: _bf,
+                                              color: AppColors.white,
+                                              letterSpacing: 4,
+                                              fontSize: 11,
+                                              fontWeight: FontWeight.w400,
+                                            )),
+                                  ),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(height: 14),
+                            Center(
+                              child: GestureDetector(
+                                onTap: () => Navigator.pop(sheetCtx),
+                                child: Text('CANCEL',
+                                    style: TextStyle(
+                                      fontFamily: _bf,
+                                      fontSize: 9,
+                                      letterSpacing: 3,
+                                      color: AppColors.textSub,
+                                      fontWeight: FontWeight.w300,
+                                    )),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
                   ),
-                  SwitchListTile(
-                    dense: true,
-                    contentPadding: EdgeInsets.zero,
-                    title: const Text('Safe mode'),
-                    value: localSafeMode,
-                    onChanged: (value) => setDialogState(() => localSafeMode = value),
-                  ),
-                  SwitchListTile(
-                    dense: true,
-                    contentPadding: EdgeInsets.zero,
-                    title: const Text('Location sharing'),
-                    value: localLocationSharing,
-                    onChanged: (value) => setDialogState(() => localLocationSharing = value),
-                  ),
-                ],
+                ),
               ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.pop(dialogContext),
-                  child: const Text('Cancel'),
-                ),
-                TextButton(
-                  onPressed: _isSavingSettings
-                      ? null
-                      : () async {
-                          await _saveSettings(
-                            alertsEnabled: localAlerts,
-                            safeModeEnabled: localSafeMode,
-                            locationSharingEnabled: localLocationSharing,
-                          );
-                          if (!dialogContext.mounted) return;
-                          Navigator.pop(dialogContext);
-                        },
-                  child: const Text('Save'),
-                ),
-              ],
             );
           },
         );
@@ -786,24 +1399,7 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
     );
   }
 
-  Future<void> _handleQuickAction(String label) async {
-    switch (label) {
-      case 'SOS':
-        await _createSosAlert();
-        return;
-      case 'Location':
-        await _showLocationDialog();
-        return;
-      case 'Walk':
-        await _toggleWalkSession();
-        return;
-      case 'Device':
-        await _showDeviceDialog();
-        return;
-      default:
-        _showActionSnack('$label tapped');
-    }
-  }
+  // ─── Tool Handlers ─────────────────────────────────────────────
 
   Future<void> _handleToolTap(String title) async {
     switch (title) {
@@ -848,9 +1444,7 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
   Future<void> _logout() async {
     try {
       await _authService.signOut();
-    } catch (_) {
-      // Continue logout navigation even if sign out throws.
-    }
+    } catch (_) {}
     if (!mounted) return;
     Navigator.pushAndRemoveUntil(
       context,
@@ -859,21 +1453,23 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
     );
   }
 
+  // ─── BUILD ─────────────────────────────────────────────────────
+
   @override
   Widget build(BuildContext context) {
     if (_isLoading) {
       return const Scaffold(
         backgroundColor: AppColors.offWhite,
         body: Center(
-          child: CircularProgressIndicator(color: AppColors.green),
+          child: CircularProgressIndicator(color: AppColors.gold),
         ),
       );
     }
-
     return Scaffold(
       backgroundColor: AppColors.offWhite,
       body: Stack(
         children: [
+          // Background blobs
           Positioned(
             top: -70,
             left: -30,
@@ -882,7 +1478,7 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
               height: 220,
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
-                color: const Color(0xFFD9B255).withValues(alpha: 0.08),
+                color: AppColors.gold.withOpacity(0.07),
               ),
             ),
           ),
@@ -894,7 +1490,20 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
               height: 250,
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
-                color: AppColors.green.withValues(alpha: 0.05),
+                color: AppColors.green.withOpacity(0.05),
+              ),
+            ),
+          ),
+          // Top accent bar
+          Positioned(
+            top: 0,
+            left: 0,
+            right: 0,
+            child: Container(
+              height: 3,
+              decoration: const BoxDecoration(
+                gradient: LinearGradient(
+                    colors: [AppColors.green, AppColors.bright, AppColors.gold]),
               ),
             ),
           ),
@@ -907,15 +1516,11 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                   _buildHeroCard(),
                   const SizedBox(height: 16),
                   _buildRouteCard(),
-                  const SizedBox(height: 16),
-                  _buildSectionLabel('QUICK ACTIONS'),
-                  const SizedBox(height: 10),
-                  _buildQuickActions(),
                   const SizedBox(height: 18),
                   _buildSectionLabel('CURRENT SESSION'),
                   const SizedBox(height: 10),
                   _buildSessionCard(),
-                  const SizedBox(height: 18),
+                  const SizedBox(height: 20),
                   _buildSectionLabel('TOOLS'),
                   const SizedBox(height: 10),
                   _buildToolList(),
@@ -932,7 +1537,7 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
   Widget _buildHeroCard() {
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.all(18),
+      padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
         gradient: const LinearGradient(
           begin: Alignment.topLeft,
@@ -940,10 +1545,11 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
           colors: [Color(0xFF05412B), Color(0xFF042D1F)],
         ),
         borderRadius: BorderRadius.circular(26),
+        border: Border.all(color: AppColors.gold.withOpacity(0.25), width: 1),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withValues(alpha: 0.15),
-            blurRadius: 20,
+            color: AppColors.green.withOpacity(0.25),
+            blurRadius: 24,
             offset: const Offset(0, 10),
           ),
         ],
@@ -953,129 +1559,113 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
         children: [
           Row(
             children: [
-              Row(
+              Container(
+                width: 40,
+                height: 40,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: AppColors.green,
+                  border: Border.all(color: AppColors.gold, width: 1.4),
+                ),
+                child: Center(
+                  child: Text('SW',
+                      style: TextStyle(
+                        fontFamily: _hf,
+                        color: AppColors.gold,
+                        fontSize: 14,
+                        fontWeight: FontWeight.w300,
+                      )),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Container(
-                    width: 40,
-                    height: 40,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      border: Border.all(color: const Color(0xFFD9B255)),
-                    ),
-                    child: const Center(
-                      child: Text(
-                        'SW',
-                        style: TextStyle(
-                          color: Color(0xFFD9B255),
-                          fontFamily: _headingFont,
-                          fontSize: 14,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-                  const Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        'SafeWalk',
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontFamily: _headingFont,
-                          fontSize: 26,
-                          height: 1,
-                          fontWeight: FontWeight.w500,
-                        ),
-                      ),
-                      SizedBox(height: 2),
-                      Text(
-                        'STUDENT',
-                        style: TextStyle(
-                          color: Color(0xFF9DB2A9),
-                          fontFamily: _bodyFont,
-                          fontSize: 10,
-                          letterSpacing: 2,
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
-                    ],
-                  ),
+                  Text('SafeWalk',
+                      style: TextStyle(
+                        fontFamily: _hf,
+                        color: AppColors.white,
+                        fontSize: 22,
+                        height: 1,
+                        fontWeight: FontWeight.w300,
+                      )),
+                  Text('STUDENT',
+                      style: TextStyle(
+                        fontFamily: _bf,
+                        color: AppColors.gold.withOpacity(0.7),
+                        fontSize: 9,
+                        letterSpacing: 3,
+                        fontWeight: FontWeight.w300,
+                      )),
                 ],
               ),
               const Spacer(),
               Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 14,
-                  vertical: 6,
-                ),
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                 decoration: BoxDecoration(
                   color: const Color(0xFF0E5B3C),
                   borderRadius: BorderRadius.circular(999),
                   border: Border.all(color: const Color(0xFF2D8760)),
                 ),
-                child: const Row(
+                child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Icon(Icons.circle, color: Color(0xFF5DF0A0), size: 8),
-                    SizedBox(width: 6),
-                    Text(
-                      'ONLINE',
-                      style: TextStyle(
-                        color: Color(0xFF5DF0A0),
-                        fontFamily: _bodyFont,
-                        fontSize: 13,
-                        letterSpacing: 2,
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
+                    const Icon(Icons.circle,
+                        color: Color(0xFF5DF0A0), size: 7),
+                    const SizedBox(width: 6),
+                    Text('ONLINE',
+                        style: TextStyle(
+                          fontFamily: _bf,
+                          color: const Color(0xFF5DF0A0),
+                          fontSize: 10,
+                          letterSpacing: 2,
+                          fontWeight: FontWeight.w600,
+                        )),
                   ],
                 ),
               ),
-              const SizedBox(width: 10),
+              const SizedBox(width: 8),
               InkWell(
                 onTap: _logout,
                 borderRadius: BorderRadius.circular(12),
                 child: Container(
-                  width: 38,
-                  height: 38,
+                  width: 36,
+                  height: 36,
                   decoration: BoxDecoration(
                     color: const Color(0xFF124733),
-                    borderRadius: BorderRadius.circular(12),
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(
+                        color: AppColors.gold.withOpacity(0.3), width: 0.8),
                   ),
-                  child: const Icon(
-                    Icons.logout_rounded,
-                    color: Color(0xFFF0F5F2),
-                    size: 21,
-                  ),
+                  child: const Icon(Icons.logout_rounded,
+                      color: Color(0xFFF0F5F2), size: 18),
                 ),
               ),
             ],
           ),
-          const SizedBox(height: 18),
-          const Text(
-            'Good morning,',
-            style: TextStyle(
-              color: Colors.white,
-              fontFamily: _bodyFont,
-              fontSize: 38,
-              height: 1,
-              fontWeight: FontWeight.w700,
-            ),
-          ),
-          const SizedBox(height: 6),
-          Text(
-            _fullName,
-            style: const TextStyle(
-              color: Color(0xFFD9B255),
-              fontFamily: _headingFont,
-              fontSize: 46,
-              height: 1,
-              fontWeight: FontWeight.w500,
-              fontStyle: FontStyle.italic,
-            ),
-          ),
-          const SizedBox(height: 14),
+          const SizedBox(height: 20),
+
+          // Good morning + name
+          Text('Good morning,',
+              style: TextStyle(
+                fontFamily: _bf,
+                color: AppColors.white.withOpacity(0.7),
+                fontSize: 13,
+                letterSpacing: 1,
+                fontWeight: FontWeight.w300,
+              )),
+          const SizedBox(height: 4),
+          Text(_fullName,
+              style: TextStyle(
+                fontFamily: _hf,
+                color: AppColors.gold,
+                fontSize: 44,
+                height: 1,
+                fontWeight: FontWeight.w300,
+                fontStyle: FontStyle.italic,
+              )),
+
+          const SizedBox(height: 16),
           Wrap(
             spacing: 8,
             runSpacing: 8,
@@ -1087,10 +1677,12 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                     : const Color(0xFFFF7F7F),
               ),
               _StatusPill(
-                label: _deviceId == 'Not linked' ? 'Device Unlinked' : 'Device Linked',
+                label: _deviceId == 'Not linked'
+                    ? 'Device Unlinked'
+                    : 'Device Linked',
                 dotColor: _deviceId == 'Not linked'
                     ? const Color(0xFFFF7F7F)
-                    : const Color(0xFFFFD166),
+                    : AppColors.goldLt,
               ),
               _StatusPill(
                 label: _safeModeEnabled ? 'Safe Mode On' : 'Safe Mode Off',
@@ -1107,17 +1699,18 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
 
   Widget _buildRouteCard() {
     return Container(
-      height: 168,
+      height: 160,
       decoration: BoxDecoration(
         gradient: const LinearGradient(
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
           colors: [Color(0xFF0F5E3E), Color(0xFF0A3D2A)],
         ),
-        borderRadius: BorderRadius.circular(24),
+        borderRadius: BorderRadius.circular(22),
+        border: Border.all(color: AppColors.gold.withOpacity(0.2), width: 0.8),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withValues(alpha: 0.08),
+            color: Colors.black.withOpacity(0.1),
             blurRadius: 16,
             offset: const Offset(0, 8),
           ),
@@ -1127,50 +1720,53 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
         children: [
           Positioned.fill(
             child: ClipRRect(
-              borderRadius: BorderRadius.circular(24),
+              borderRadius: BorderRadius.circular(22),
               child: CustomPaint(painter: _GridPatternPainter()),
             ),
           ),
           Positioned(
-            top: 12,
-            right: 12,
+            top: 14,
+            right: 14,
             child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
               decoration: BoxDecoration(
                 color: const Color(0xFF27AE60),
                 borderRadius: BorderRadius.circular(999),
+                border: Border.all(
+                    color: AppColors.gold.withOpacity(0.3), width: 0.5),
               ),
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  const Icon(Icons.shield_outlined, color: Colors.white, size: 15),
-                  const SizedBox(width: 6),
-                  Text(
-                    _safeModeEnabled ? 'SAFE' : 'MONITOR',
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontFamily: _bodyFont,
-                      fontSize: 16,
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
+                  const Icon(Icons.shield_outlined,
+                      color: Colors.white, size: 13),
+                  const SizedBox(width: 5),
+                  Text(_safeModeEnabled ? 'SAFE' : 'MONITOR',
+                      style: TextStyle(
+                        fontFamily: _bf,
+                        color: Colors.white,
+                        fontSize: 10,
+                        letterSpacing: 2,
+                        fontWeight: FontWeight.w600,
+                      )),
                 ],
               ),
             ),
           ),
           const Center(
             child: CircleAvatar(
-              radius: 13,
+              radius: 12,
               backgroundColor: Color(0xFF346349),
               child: CircleAvatar(
-                radius: 7,
-                backgroundColor: Color(0xFFD9B255),
+                radius: 6,
+                backgroundColor: AppColors.gold,
               ),
             ),
           ),
           Positioned(
             left: 16,
-            bottom: 12,
+            bottom: 14,
             right: 16,
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.end,
@@ -1179,46 +1775,41 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      const Text(
-                        'ACTIVE ROUTE',
-                        style: TextStyle(
-                          color: Color(0xFFE2C77D),
-                          fontFamily: _bodyFont,
-                          fontSize: 18,
-                          letterSpacing: 2,
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
-                      SizedBox(height: 4),
-                      Text(
-                        _activeRoute,
-                        style: const TextStyle(
-                          color: Color(0xFFF8FBF9),
-                          fontFamily: _bodyFont,
-                          fontSize: 30,
-                          height: 1,
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
+                      Text('ACTIVE ROUTE',
+                          style: TextStyle(
+                            fontFamily: _bf,
+                            color: AppColors.gold,
+                            fontSize: 9,
+                            letterSpacing: 3,
+                            fontWeight: FontWeight.w300,
+                          )),
+                      const SizedBox(height: 4),
+                      Text(_activeRoute,
+                          style: TextStyle(
+                            fontFamily: _bf,
+                            color: const Color(0xFFF8FBF9),
+                            fontSize: 15,
+                            height: 1.2,
+                            fontWeight: FontWeight.w600,
+                          )),
                     ],
                   ),
                 ),
-                const SizedBox(width: 12),
+                const SizedBox(width: 10),
                 Container(
                   padding: const EdgeInsets.symmetric(
-                    horizontal: 14,
-                    vertical: 7,
-                  ),
+                      horizontal: 12, vertical: 6),
                   decoration: BoxDecoration(
-                    color: const Color(0xFFD8B453),
+                    color: AppColors.gold,
                     borderRadius: BorderRadius.circular(999),
                   ),
                   child: Text(
                     _sessionActive ? 'LIVE' : 'PAUSED',
-                    style: const TextStyle(
-                      color: Color(0xFF0B2C1E),
-                      fontFamily: _bodyFont,
-                      fontSize: 16,
+                    style: TextStyle(
+                      fontFamily: _bf,
+                      color: AppColors.green,
+                      fontSize: 10,
+                      letterSpacing: 2,
                       fontWeight: FontWeight.w700,
                     ),
                   ),
@@ -1232,199 +1823,163 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
   }
 
   Widget _buildSectionLabel(String title) {
-    return Text(
-      title,
-      style: const TextStyle(
-        color: Color(0xFFB6AEA2),
-        fontFamily: _bodyFont,
-        fontSize: 17,
-        letterSpacing: 5,
-        fontWeight: FontWeight.w600,
-      ),
-    );
-  }
-
-  Widget _buildQuickActions() {
     return Row(
-      children: _quickActions.map((item) {
-        return Expanded(
-          child: Padding(
-            padding: const EdgeInsets.only(right: 8),
-            child: InkWell(
-              onTap: () => _handleQuickAction(item.label),
-              borderRadius: BorderRadius.circular(18),
-              child: Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 10,
-                  vertical: 12,
-                ),
-                decoration: BoxDecoration(
-                  color: item.background,
-                  borderRadius: BorderRadius.circular(18),
-                  border: Border.all(color: AppColors.border),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withValues(alpha: 0.04),
-                      blurRadius: 8,
-                      offset: const Offset(0, 3),
-                    ),
-                  ],
-                ),
-                child: Column(
-                  children: [
-                    Container(
-                      width: 40,
-                      height: 40,
-                      decoration: BoxDecoration(
-                        color: item.iconWrap,
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: Icon(item.icon, color: item.iconColor, size: 20),
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      item.label,
-                      style: const TextStyle(
-                        color: AppColors.green,
-                        fontFamily: _bodyFont,
-                        fontSize: 15,
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
+      children: [
+        Text(title,
+            style: TextStyle(
+              fontFamily: _bf,
+              color: AppColors.textSub,
+              fontSize: 9,
+              letterSpacing: 4,
+              fontWeight: FontWeight.w400,
+            )),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Container(
+            height: 1,
+            decoration: BoxDecoration(
+              gradient: LinearGradient(colors: [
+                AppColors.gold.withOpacity(0.3),
+                Colors.transparent,
+              ]),
             ),
           ),
-        );
-      }).toList(),
+        ),
+      ],
     );
   }
 
   Widget _buildSessionCard() {
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
+      padding: const EdgeInsets.fromLTRB(18, 16, 18, 18),
       decoration: BoxDecoration(
         color: AppColors.white,
-        borderRadius: BorderRadius.circular(24),
+        borderRadius: BorderRadius.circular(22),
         border: Border.all(color: AppColors.border),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withValues(alpha: 0.06),
-            blurRadius: 12,
-            offset: const Offset(0, 4),
+            color: Colors.black.withOpacity(0.05),
+            blurRadius: 14,
+            offset: const Offset(0, 5),
           ),
         ],
       ),
       child: Column(
         children: [
           Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text(
-                      'Safe Walk Session',
-                      style: TextStyle(
-                        color: AppColors.green,
-                        fontFamily: _headingFont,
-                        fontSize: 40,
-                        height: 1,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                    SizedBox(height: 4),
+                    Text('Safe Walk',
+                        style: TextStyle(
+                          fontFamily: _hf,
+                          color: AppColors.green,
+                          fontSize: 36,
+                          height: 1,
+                          fontWeight: FontWeight.w300,
+                          fontStyle: FontStyle.italic,
+                        )),
+                    Text('Session',
+                        style: TextStyle(
+                          fontFamily: _hf,
+                          color: AppColors.goldDark,
+                          fontSize: 28,
+                          height: 1.1,
+                          fontWeight: FontWeight.w300,
+                        )),
+                    const SizedBox(height: 6),
                     Text(
                       _locationSharingEnabled
                           ? 'Location sharing is active'
                           : 'Location sharing is paused',
-                      style: const TextStyle(
-                        color: Color(0xFF6E7A73),
-                        fontFamily: _bodyFont,
-                        fontSize: 18,
-                        fontWeight: FontWeight.w500,
+                      style: TextStyle(
+                        fontFamily: _bf,
+                        color: AppColors.textSub,
+                        fontSize: 11,
+                        letterSpacing: 0.5,
+                        fontWeight: FontWeight.w300,
                       ),
                     ),
                   ],
                 ),
               ),
               Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 13,
-                  vertical: 6,
-                ),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                 decoration: BoxDecoration(
                   color: const Color(0xFFF4F8F6),
                   borderRadius: BorderRadius.circular(999),
-                  border: Border.all(color: const Color(0xFFCEE4D9)),
+                  border: Border.all(color: AppColors.border),
                 ),
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Icon(
-                      Icons.circle,
-                      size: 8,
-                      color: _sessionActive
-                          ? const Color(0xFF60CC8A)
-                          : const Color(0xFFFF7F7F),
-                    ),
-                    const SizedBox(width: 6),
-                    Text(
-                      _sessionActive ? 'Active' : 'Inactive',
-                      style: const TextStyle(
-                        color: AppColors.green,
-                        fontFamily: _bodyFont,
-                        fontSize: 16,
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
+                    Icon(Icons.circle,
+                        size: 7,
+                        color: _sessionActive
+                            ? const Color(0xFF60CC8A)
+                            : const Color(0xFFFF7F7F)),
+                    const SizedBox(width: 5),
+                    Text(_sessionActive ? 'Active' : 'Inactive',
+                        style: TextStyle(
+                          fontFamily: _bf,
+                          color: AppColors.green,
+                          fontSize: 11,
+                          letterSpacing: 1,
+                          fontWeight: FontWeight.w600,
+                        )),
                   ],
                 ),
               ),
             ],
           ),
-          const SizedBox(height: 14),
-          Divider(color: AppColors.border.withValues(alpha: 0.55), height: 1),
-          const SizedBox(height: 13),
-          Row(
-            children: [
-              Expanded(
-                child: _MetricCell(value: _routeMetric, label: 'ROUTE'),
-              ),
-              Expanded(
-                child: _MetricCell(value: _elapsedLabel, label: 'ELAPSED'),
-              ),
-              Expanded(
-                child: _MetricCell(
-                  value: '${_distanceKm.toStringAsFixed(1)} km',
-                  label: 'DISTANCE',
-                ),
-              ),
-            ],
+          const SizedBox(height: 16),
+          Container(
+            height: 1,
+            decoration: const BoxDecoration(
+              gradient: LinearGradient(
+                  colors: [Colors.transparent, AppColors.border, Colors.transparent]),
+            ),
           ),
           const SizedBox(height: 14),
+          Row(
+            children: [
+              Expanded(child: _MetricCell(value: _routeMetric, label: 'ROUTE')),
+              Expanded(child: _MetricCell(value: _elapsedLabel, label: 'ELAPSED')),
+              Expanded(
+                  child: _MetricCell(
+                      value: '${_distanceKm.toStringAsFixed(1)} km',
+                      label: 'DISTANCE')),
+            ],
+          ),
+          const SizedBox(height: 16),
           SizedBox(
             width: double.infinity,
-            child: ElevatedButton(
-              onPressed: _showSessionDetailsDialog,
-              style: ElevatedButton.styleFrom(
-                backgroundColor: AppColors.green,
-                foregroundColor: Colors.white,
-                elevation: 0,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(14),
-                ),
-                padding: const EdgeInsets.symmetric(vertical: 14),
-              ),
-              child: const Text(
-                'VIEW DETAILS',
-                style: TextStyle(
-                  fontFamily: _bodyFont,
-                  fontSize: 21,
-                  letterSpacing: 2,
-                  fontWeight: FontWeight.w700,
+            child: Material(
+              color: AppColors.green,
+              borderRadius: BorderRadius.circular(12),
+              child: InkWell(
+                onTap: _showSessionDetailsDialog,
+                borderRadius: BorderRadius.circular(12),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: AppColors.gold.withOpacity(0.5)),
+                  ),
+                  child: Text('VIEW DETAILS',
+                      style: TextStyle(
+                        fontFamily: _bf,
+                        color: AppColors.white,
+                        fontSize: 11,
+                        letterSpacing: 4,
+                        fontWeight: FontWeight.w400,
+                      )),
                 ),
               ),
             ),
@@ -1436,76 +1991,79 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
 
   Widget _buildToolList() {
     return Column(
-      children: _tools
-          .map(
-            (item) => Padding(
-              padding: const EdgeInsets.only(bottom: 10),
-              child: InkWell(
-                onTap: () => _handleToolTap(item.title),
+      children: _tools.map((item) {
+        return Padding(
+          padding: const EdgeInsets.only(bottom: 10),
+          child: InkWell(
+            onTap: () => _handleToolTap(item.title),
+            borderRadius: BorderRadius.circular(18),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+              decoration: BoxDecoration(
+                color: AppColors.white,
                 borderRadius: BorderRadius.circular(18),
-                child: Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 14,
-                    vertical: 14,
+                border: Border.all(color: AppColors.border),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.04),
+                    blurRadius: 8,
+                    offset: const Offset(0, 3),
                   ),
-                  decoration: BoxDecoration(
-                    color: AppColors.white,
-                    borderRadius: BorderRadius.circular(18),
-                    border: Border.all(color: AppColors.border),
-                    boxShadow: [
-                      BoxShadow(
-                        color: Colors.black.withValues(alpha: 0.04),
-                        blurRadius: 8,
-                        offset: const Offset(0, 3),
-                      ),
-                    ],
+                ],
+              ),
+              child: Row(
+                children: [
+                  Container(
+                    width: 40,
+                    height: 40,
+                    decoration: BoxDecoration(
+                      color: item.iconBg,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Icon(item.icon, color: item.iconColor, size: 20),
                   ),
-                  child: Row(
-                    children: [
-                      Container(
-                        width: 38,
-                        height: 38,
-                        decoration: BoxDecoration(
-                          color: item.iconBg,
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        child: Icon(item.icon, color: item.iconColor, size: 20),
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              item.title,
-                              style: const TextStyle(
-                                color: AppColors.green,
-                                fontFamily: _bodyFont,
-                                fontSize: 18,
-                                fontWeight: FontWeight.w700,
-                              ),
-                            ),
-                            const SizedBox(height: 2),
-                            Text(
-                              item.subtitle,
-                              style: const TextStyle(
-                                color: Color(0xFF6E7A73),
-                                fontFamily: _bodyFont,
-                                fontSize: 15,
-                                fontWeight: FontWeight.w500,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                      const Icon(Icons.chevron_right, color: Color(0xFFB5B2AA)),
-                    ],
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(item.title,
+                            style: TextStyle(
+                              fontFamily: _bf,
+                              color: AppColors.green,
+                              fontSize: 14,
+                              letterSpacing: 0.5,
+                              fontWeight: FontWeight.w600,
+                            )),
+                        const SizedBox(height: 2),
+                        Text(item.subtitle,
+                            style: TextStyle(
+                              fontFamily: _bf,
+                              color: AppColors.textSub,
+                              fontSize: 11,
+                              letterSpacing: 0.3,
+                              fontWeight: FontWeight.w300,
+                            )),
+                      ],
+                    ),
                   ),
-                ),
+                  Container(
+                    width: 28,
+                    height: 28,
+                    decoration: BoxDecoration(
+                      color: AppColors.offWhite,
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: AppColors.border),
+                    ),
+                    child: const Icon(Icons.chevron_right,
+                        color: AppColors.textSub, size: 18),
+                  ),
+                ],
               ),
             ),
-          )
-          .toList(),
+          ),
+        );
+      }).toList(),
     );
   }
 
@@ -1514,8 +2072,15 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
       decoration: BoxDecoration(
         color: AppColors.white,
         border: Border(top: BorderSide(color: AppColors.border)),
+        boxShadow: [
+          BoxShadow(
+            color: AppColors.gold.withOpacity(0.06),
+            blurRadius: 20,
+            offset: const Offset(0, -4),
+          ),
+        ],
       ),
-      padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
+      padding: const EdgeInsets.fromLTRB(10, 8, 10, 4),
       child: SafeArea(
         top: false,
         child: Row(
@@ -1523,47 +2088,49 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
           children: List.generate(_navItems.length, (index) {
             final item = _navItems[index];
             final selected = index == _selectedNavIndex;
-
             return Expanded(
               child: InkWell(
                 onTap: () => _onBottomNavTap(index),
                 borderRadius: BorderRadius.circular(14),
                 child: Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 5),
+                  padding: const EdgeInsets.symmetric(vertical: 6),
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      Container(
+                      AnimatedContainer(
+                        duration: const Duration(milliseconds: 200),
                         width: 36,
                         height: 36,
                         decoration: BoxDecoration(
                           color: selected
-                              ? const Color(0xFFE5ECE8)
+                              ? AppColors.green.withOpacity(0.1)
                               : Colors.transparent,
                           shape: BoxShape.circle,
+                          border: selected
+                              ? Border.all(
+                                  color: AppColors.gold.withOpacity(0.3),
+                                  width: 0.5)
+                              : null,
                         ),
-                        child: Icon(
-                          item.icon,
-                          size: 21,
-                          color: selected
-                              ? AppColors.green
-                              : const Color(0xFFA6A49D),
-                        ),
+                        child: Icon(item.icon,
+                            size: 20,
+                            color: selected
+                                ? AppColors.green
+                                : const Color(0xFFA6A49D)),
                       ),
                       const SizedBox(height: 4),
-                      Text(
-                        item.label,
-                        style: TextStyle(
-                          color: selected
-                              ? AppColors.green
-                              : const Color(0xFFA6A49D),
-                          fontFamily: _bodyFont,
-                          fontSize: 12,
-                          fontWeight: selected
-                              ? FontWeight.w700
-                              : FontWeight.w500,
-                        ),
-                      ),
+                      Text(item.label,
+                          style: TextStyle(
+                            fontFamily: _bf,
+                            color: selected
+                                ? AppColors.green
+                                : const Color(0xFFA6A49D),
+                            fontSize: 9,
+                            letterSpacing: 1,
+                            fontWeight: selected
+                                ? FontWeight.w600
+                                : FontWeight.w300,
+                          )),
                     ],
                   ),
                 ),
@@ -1576,116 +2143,14 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
   }
 }
 
-class _MetricCell extends StatelessWidget {
+// ─────────────────────────────────────────────────────────────────
+//  Data models
+// ─────────────────────────────────────────────────────────────────
+
+class _InfoRow {
+  final String label;
   final String value;
-  final String label;
-
-  static const String _headingFont = 'CormorantGaramond';
-  static const String _bodyFont = 'JosefinSans';
-
-  const _MetricCell({required this.value, required this.label});
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      children: [
-        Text(
-          value,
-          style: const TextStyle(
-            color: AppColors.green,
-            fontFamily: _headingFont,
-            fontSize: 37,
-            height: 1,
-            fontWeight: FontWeight.w600,
-          ),
-        ),
-        const SizedBox(height: 4),
-        Text(
-          label,
-          style: const TextStyle(
-            color: Color(0xFFB5AEA1),
-            fontFamily: _bodyFont,
-            fontSize: 14,
-            letterSpacing: 3,
-            fontWeight: FontWeight.w600,
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-class _StatusPill extends StatelessWidget {
-  final String label;
-  final Color dotColor;
-
-  static const String _bodyFont = 'JosefinSans';
-
-  const _StatusPill({required this.label, required this.dotColor});
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-      decoration: BoxDecoration(
-        color: const Color(0xFF164837),
-        borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: const Color(0xFF2B6851)),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(Icons.circle, color: dotColor, size: 7),
-          const SizedBox(width: 6),
-          Text(
-            label,
-            style: const TextStyle(
-              color: Color(0xFFEAF2ED),
-              fontFamily: _bodyFont,
-              fontSize: 14,
-              fontWeight: FontWeight.w700,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _GridPatternPainter extends CustomPainter {
-  @override
-  void paint(Canvas canvas, Size size) {
-    final stroke = Paint()
-      ..color = Colors.white.withValues(alpha: 0.06)
-      ..strokeWidth = 1;
-
-    const spacing = 24.0;
-    for (double x = 0; x <= size.width; x += spacing) {
-      canvas.drawLine(Offset(x, 0), Offset(x, size.height), stroke);
-    }
-    for (double y = 0; y <= size.height; y += spacing) {
-      canvas.drawLine(Offset(0, y), Offset(size.width, y), stroke);
-    }
-  }
-
-  @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
-}
-
-class _ActionItem {
-  final String label;
-  final IconData icon;
-  final Color background;
-  final Color iconWrap;
-  final Color iconColor;
-
-  const _ActionItem({
-    required this.label,
-    required this.icon,
-    required this.background,
-    required this.iconWrap,
-    required this.iconColor,
-  });
+  const _InfoRow(this.label, this.value);
 }
 
 class _ToolItem {
@@ -1694,7 +2159,6 @@ class _ToolItem {
   final IconData icon;
   final Color iconColor;
   final Color iconBg;
-
   const _ToolItem({
     required this.title,
     required this.subtitle,
@@ -1707,6 +2171,345 @@ class _ToolItem {
 class _NavItem {
   final String label;
   final IconData icon;
-
   const _NavItem(this.label, this.icon);
+}
+
+// ─────────────────────────────────────────────────────────────────
+//  Reusable Widgets
+// ─────────────────────────────────────────────────────────────────
+
+class _MetricCell extends StatelessWidget {
+  final String value;
+  final String label;
+  const _MetricCell({required this.value, required this.label});
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        Text(value,
+            style: const TextStyle(
+              fontFamily: 'CormorantGaramond',
+              color: AppColors.green,
+              fontSize: 32,
+              height: 1,
+              fontWeight: FontWeight.w300,
+              fontStyle: FontStyle.italic,
+            )),
+        const SizedBox(height: 4),
+        Text(label,
+            style: const TextStyle(
+              fontFamily: 'JosefinSans',
+              color: AppColors.textSub,
+              fontSize: 9,
+              letterSpacing: 3,
+              fontWeight: FontWeight.w300,
+            )),
+      ],
+    );
+  }
+}
+
+class _StatusPill extends StatelessWidget {
+  final String label;
+  final Color dotColor;
+  const _StatusPill({required this.label, required this.dotColor});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: const Color(0xFF164837),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: AppColors.gold.withOpacity(0.25), width: 0.8),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.circle, color: dotColor, size: 6),
+          const SizedBox(width: 6),
+          Text(label,
+              style: const TextStyle(
+                fontFamily: 'JosefinSans',
+                color: Color(0xFFEAF2ED),
+                fontSize: 10,
+                letterSpacing: 1,
+                fontWeight: FontWeight.w400,
+              )),
+        ],
+      ),
+    );
+  }
+}
+
+class _AlertBadge extends StatelessWidget {
+  final String label;
+  final bool isActive;
+  const _AlertBadge({required this.label, required this.isActive});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: isActive
+            ? const Color(0xFFCB392B).withOpacity(0.1)
+            : AppColors.cream,
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(
+          color: isActive
+              ? const Color(0xFFCB392B).withOpacity(0.3)
+              : AppColors.border,
+        ),
+      ),
+      child: Text(label,
+          style: TextStyle(
+            fontFamily: 'JosefinSans',
+            fontSize: 9,
+            letterSpacing: 2,
+            color: isActive ? const Color(0xFFCB392B) : AppColors.textSub,
+            fontWeight: FontWeight.w600,
+          )),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────
+//  Luxury Input Field (matches login page style)
+// ─────────────────────────────────────────────────────────────────
+
+class _DashLuxuryField extends StatefulWidget {
+  final String label;
+  final String hint;
+  final TextEditingController controller;
+  final TextInputType keyboardType;
+  final bool obscure;
+  final Widget? suffixIcon;
+
+  const _DashLuxuryField({
+    required this.label,
+    required this.hint,
+    required this.controller,
+    this.keyboardType = TextInputType.text,
+    this.obscure = false,
+    this.suffixIcon,
+  });
+
+  @override
+  State<_DashLuxuryField> createState() => _DashLuxuryFieldState();
+}
+
+class _DashLuxuryFieldState extends State<_DashLuxuryField>
+    with SingleTickerProviderStateMixin {
+  late AnimationController _lineAnim;
+  late Animation<double> _lineWidth;
+
+  @override
+  void initState() {
+    super.initState();
+    _lineAnim = AnimationController(
+        vsync: this, duration: const Duration(milliseconds: 380));
+    _lineWidth = Tween<double>(begin: 0, end: 1)
+        .animate(CurvedAnimation(parent: _lineAnim, curve: Curves.easeOutCubic));
+  }
+
+  @override
+  void dispose() {
+    _lineAnim.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Focus(
+      onFocusChange: (hasFocus) =>
+          hasFocus ? _lineAnim.forward() : _lineAnim.reverse(),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(widget.label,
+              style: const TextStyle(
+                fontFamily: 'JosefinSans',
+                fontSize: 9,
+                letterSpacing: 4,
+                color: AppColors.gold,
+                fontWeight: FontWeight.w300,
+              )),
+          const SizedBox(height: 8),
+          Stack(
+            children: [
+              Container(
+                decoration: BoxDecoration(
+                  color: AppColors.white,
+                  borderRadius: BorderRadius.circular(2),
+                  border: Border.all(
+                      color: AppColors.border.withOpacity(0.6), width: 1),
+                ),
+                child: TextField(
+                  controller: widget.controller,
+                  keyboardType: widget.keyboardType,
+                  obscureText: widget.obscure,
+                  style: const TextStyle(
+                    fontFamily: 'JosefinSans',
+                    fontSize: 14,
+                    letterSpacing: 1,
+                    color: AppColors.textMain,
+                    fontWeight: FontWeight.w300,
+                  ),
+                  cursorColor: AppColors.gold,
+                  decoration: InputDecoration(
+                    hintText: widget.hint,
+                    hintStyle: TextStyle(
+                      fontFamily: 'JosefinSans',
+                      color: AppColors.textSub.withOpacity(0.45),
+                      fontSize: 13,
+                      letterSpacing: 1,
+                    ),
+                    suffixIcon: widget.suffixIcon,
+                    border: InputBorder.none,
+                    contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 14, vertical: 14),
+                    isDense: true,
+                  ),
+                ),
+              ),
+              Positioned(
+                bottom: 0,
+                left: 0,
+                right: 0,
+                child: AnimatedBuilder(
+                  animation: _lineWidth,
+                  builder: (_, __) => Align(
+                    alignment: Alignment.centerLeft,
+                    child: FractionallySizedBox(
+                      widthFactor: _lineWidth.value,
+                      child: Container(height: 1.2, color: AppColors.gold),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────
+//  Luxury Settings Toggle Tile
+// ─────────────────────────────────────────────────────────────────
+
+class _DashSettingsTile extends StatelessWidget {
+  final String title;
+  final String subtitle;
+  final IconData icon;
+  final bool value;
+  final ValueChanged<bool> onChanged;
+
+  const _DashSettingsTile({
+    required this.title,
+    required this.subtitle,
+    required this.icon,
+    required this.value,
+    required this.onChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 200),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        color: value
+            ? AppColors.green.withOpacity(0.04)
+            : AppColors.white,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(
+          color: value ? AppColors.gold.withOpacity(0.5) : AppColors.border,
+        ),
+      ),
+      child: Row(
+        children: [
+          AnimatedContainer(
+            duration: const Duration(milliseconds: 200),
+            width: 38,
+            height: 38,
+            decoration: BoxDecoration(
+              color: value
+                  ? AppColors.green
+                  : AppColors.cream,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(
+                color: value
+                    ? AppColors.gold.withOpacity(0.4)
+                    : AppColors.border,
+                width: 0.8,
+              ),
+            ),
+            child: Icon(icon,
+                size: 18,
+                color: value ? AppColors.gold : AppColors.textSub),
+          ),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(title,
+                    style: TextStyle(
+                      fontFamily: 'JosefinSans',
+                      fontSize: 13,
+                      letterSpacing: 0.5,
+                      color: value ? AppColors.green : AppColors.textMain,
+                      fontWeight: FontWeight.w600,
+                    )),
+                const SizedBox(height: 2),
+                Text(subtitle,
+                    style: const TextStyle(
+                      fontFamily: 'JosefinSans',
+                      fontSize: 10,
+                      letterSpacing: 0.3,
+                      color: AppColors.textSub,
+                      fontWeight: FontWeight.w300,
+                    )),
+              ],
+            ),
+          ),
+          Switch(
+            value: value,
+            onChanged: onChanged,
+            activeColor: AppColors.gold,
+            activeTrackColor: AppColors.green.withOpacity(0.4),
+            inactiveThumbColor: AppColors.textSub,
+            inactiveTrackColor: AppColors.cream,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────
+//  Grid background painter
+// ─────────────────────────────────────────────────────────────────
+
+class _GridPatternPainter extends CustomPainter {
+  @override
+  void paint(Canvas canvas, Size size) {
+    final stroke = Paint()
+      ..color = Colors.white.withOpacity(0.05)
+      ..strokeWidth = 1;
+    const spacing = 24.0;
+    for (double x = 0; x <= size.width; x += spacing) {
+      canvas.drawLine(Offset(x, 0), Offset(x, size.height), stroke);
+    }
+    for (double y = 0; y <= size.height; y += spacing) {
+      canvas.drawLine(Offset(0, y), Offset(size.width, y), stroke);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }
