@@ -85,6 +85,7 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
     _NavItem('Device', Icons.smartphone_outlined),
     _NavItem('Alerts', Icons.notifications_none_rounded),
     _NavItem('Profile', Icons.person_outline),
+    _NavItem('Settings', Icons.settings_outlined),
   ];
 
   // ─── Helpers ──────────────────────────────────────────────────
@@ -1753,10 +1754,10 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
         await _showAlertHistorySheet();
         return;
       case 'Profile':
-        await _showProfileDialog();
+        setState(() => _selectedNavIndex = 4);
         return;
       case 'Settings':
-        await _showSettingsDialog();
+        setState(() => _selectedNavIndex = 5);
         return;
       default:
         _showActionSnack('$title tapped');
@@ -1765,23 +1766,6 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
 
   Future<void> _onBottomNavTap(int index) async {
     setState(() => _selectedNavIndex = index);
-    final label = _navItems[index].label;
-    switch (label) {
-      case 'Map':
-        await _showLocationDialog();
-        return;
-      case 'Device':
-        await _showDeviceDialog();
-        return;
-      case 'Alerts':
-        await _showAlertHistorySheet();
-        return;
-      case 'Profile':
-        await _showProfileDialog();
-        return;
-      default:
-        return;
-    }
   }
 
   Future<void> _logout() async {
@@ -1852,27 +1836,369 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
           SafeArea(
             child: SingleChildScrollView(
               padding: const EdgeInsets.fromLTRB(16, 14, 16, 20),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  _buildHeroCard(),
-                  const SizedBox(height: 16),
-                  _buildRouteCard(),
-                  const SizedBox(height: 18),
-                  _buildSectionLabel('DEVICE STATUS'),
-                  const SizedBox(height: 10),
-                  _buildDeviceCard(),
-                  const SizedBox(height: 20),
-                  _buildSectionLabel('TOOLS'),
-                  const SizedBox(height: 10),
-                  _buildToolList(),
-                ],
-              ),
+              child: _buildCurrentTabContent(),
             ),
           ),
         ],
       ),
       bottomNavigationBar: _buildBottomNav(),
+    );
+  }
+
+  Widget _buildCurrentTabContent() {
+    switch (_selectedNavIndex) {
+      case 1:
+        return _buildMapTab();
+      case 2:
+        return _buildDeviceTab();
+      case 3:
+        return _buildAlertsTab();
+      case 4:
+        return _buildProfileTab();
+      case 5:
+        return _buildSettingsTab();
+      case 0:
+      default:
+        return _buildHomeTab();
+    }
+  }
+
+  Widget _buildHomeTab() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _buildHeroCard(),
+        const SizedBox(height: 16),
+        _buildRouteCard(),
+        const SizedBox(height: 18),
+        _buildSectionLabel('DEVICE STATUS'),
+        const SizedBox(height: 10),
+        _buildDeviceCard(),
+        const SizedBox(height: 20),
+        _buildSectionLabel('TOOLS'),
+        const SizedBox(height: 10),
+        _buildToolList(),
+      ],
+    );
+  }
+
+  Widget _buildMapTab() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _buildHeroCard(),
+        const SizedBox(height: 16),
+        _buildSectionLabel('LIVE MAP'),
+        const SizedBox(height: 10),
+        _buildRouteCard(),
+        const SizedBox(height: 14),
+        _buildDashboardPanel(
+          title: 'Map Overview',
+          subtitle: 'LOCATION TRACKING',
+          children: [
+            _buildDeviceRow('Coordinates', _mapCoordinateLabel),
+            const SizedBox(height: 8),
+            _buildDeviceRow(
+              'Tracking',
+              _hasDeviceCoordinates ? 'Active' : 'No coordinates',
+            ),
+            const SizedBox(height: 8),
+            _buildDeviceRow('Device', _deviceName),
+            const SizedBox(height: 14),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                _buildPanelAction(
+                  label: 'OPEN MAP SHEET',
+                  onTap: _showLocationDialog,
+                ),
+                _buildPanelAction(
+                  label: 'REFRESH DEVICE',
+                  onTap: _loadLinkedDevice,
+                  isPrimary: false,
+                ),
+              ],
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Widget _buildDeviceTab() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _buildHeroCard(),
+        const SizedBox(height: 16),
+        _buildSectionLabel('DEVICE'),
+        const SizedBox(height: 10),
+        _buildDeviceCard(),
+        const SizedBox(height: 14),
+        _buildDashboardPanel(
+          title: 'Connection Status',
+          subtitle: 'EMERGENCY DEVICE',
+          children: [
+            _buildDeviceRow('Device Name', _deviceName),
+            const SizedBox(height: 8),
+            _buildDeviceRow('Device ID', _deviceId),
+            const SizedBox(height: 8),
+            _buildDeviceRow('Status', _deviceStatus.toUpperCase()),
+            const SizedBox(height: 8),
+            _buildDeviceRow(
+              'GPS Sharing',
+              _locationSharingEnabled ? 'Enabled' : 'Disabled',
+            ),
+            const SizedBox(height: 14),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                _buildPanelAction(
+                  label: 'VIEW DETAILS',
+                  onTap: _showDeviceDialog,
+                ),
+                _buildPanelAction(
+                  label: 'REFRESH',
+                  onTap: _loadLinkedDevice,
+                  isPrimary: false,
+                ),
+              ],
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Widget _buildAlertsTab() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _buildHeroCard(),
+        const SizedBox(height: 16),
+        _buildSectionLabel('ALERT CENTER'),
+        const SizedBox(height: 10),
+        _buildDashboardPanel(
+          title: 'Emergency Actions',
+          subtitle: 'ALERTS & SAFETY',
+          children: [
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                _AlertBadge(
+                  label: _alertsEnabled ? 'ALERTS ON' : 'ALERTS OFF',
+                  isActive: _alertsEnabled,
+                ),
+                _AlertBadge(
+                  label: _safeModeEnabled ? 'SAFE MODE ON' : 'SAFE MODE OFF',
+                  isActive: _safeModeEnabled,
+                ),
+                _AlertBadge(
+                  label: _locationSharingEnabled ? 'GPS ON' : 'GPS OFF',
+                  isActive: _locationSharingEnabled,
+                ),
+              ],
+            ),
+            const SizedBox(height: 14),
+            _buildDeviceRow('Current Location', _deviceLocation),
+            const SizedBox(height: 8),
+            _buildDeviceRow('Route', _activeRoute),
+            const SizedBox(height: 14),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                _buildPanelAction(label: 'SEND SOS', onTap: _createSosAlert),
+                _buildPanelAction(
+                  label: 'ALERT HISTORY',
+                  onTap: _showAlertHistorySheet,
+                  isPrimary: false,
+                ),
+                _buildPanelAction(
+                  label: 'ALERT SETTINGS',
+                  onTap: _showSettingsDialog,
+                  isPrimary: false,
+                ),
+              ],
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Widget _buildProfileTab() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _buildHeroCard(),
+        const SizedBox(height: 16),
+        _buildSectionLabel('PROFILE'),
+        const SizedBox(height: 10),
+        _buildDashboardPanel(
+          title: _fullName,
+          subtitle: 'STUDENT ACCOUNT',
+          children: [
+            _buildDeviceRow('Email', _email.isEmpty ? '-' : _email),
+            const SizedBox(height: 8),
+            _buildDeviceRow('Phone', _phoneNumber.isEmpty ? '-' : _phoneNumber),
+            const SizedBox(height: 8),
+            _buildDeviceRow(
+              'Linked Device',
+              _deviceId == 'Not linked' ? 'Not linked' : _deviceName,
+            ),
+            const SizedBox(height: 8),
+            _buildDeviceRow('Current Route', _activeRoute),
+            const SizedBox(height: 14),
+            _buildPanelAction(label: 'EDIT PROFILE', onTap: _showProfileDialog),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Widget _buildSettingsTab() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _buildHeroCard(),
+        const SizedBox(height: 16),
+        _buildSectionLabel('SETTINGS'),
+        const SizedBox(height: 10),
+        _buildDashboardPanel(
+          title: 'Preferences',
+          subtitle: 'STUDENT CONTROLS',
+          children: [
+            _buildDeviceRow('Alerts', _alertsEnabled ? 'Enabled' : 'Disabled'),
+            const SizedBox(height: 8),
+            _buildDeviceRow(
+              'Safe Mode',
+              _safeModeEnabled ? 'Enabled' : 'Disabled',
+            ),
+            const SizedBox(height: 8),
+            _buildDeviceRow(
+              'Location Sharing',
+              _locationSharingEnabled ? 'Enabled' : 'Disabled',
+            ),
+            const SizedBox(height: 14),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                _buildPanelAction(
+                  label: 'OPEN SETTINGS',
+                  onTap: _showSettingsDialog,
+                ),
+                _buildPanelAction(
+                  label: 'REFRESH',
+                  onTap: _loadDashboard,
+                  isPrimary: false,
+                ),
+              ],
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Widget _buildDashboardPanel({
+    required String title,
+    required String subtitle,
+    required List<Widget> children,
+  }) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.fromLTRB(18, 16, 18, 18),
+      decoration: BoxDecoration(
+        color: AppColors.white,
+        borderRadius: BorderRadius.circular(22),
+        border: Border.all(color: AppColors.border),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.05),
+            blurRadius: 14,
+            offset: const Offset(0, 5),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            subtitle,
+            style: TextStyle(
+              fontFamily: _bf,
+              color: AppColors.goldDark,
+              fontSize: 9,
+              letterSpacing: 3,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            title,
+            style: TextStyle(
+              fontFamily: _hf,
+              color: AppColors.green,
+              fontSize: 30,
+              height: 1,
+              fontWeight: FontWeight.w300,
+              fontStyle: FontStyle.italic,
+            ),
+          ),
+          const SizedBox(height: 12),
+          Container(
+            height: 1,
+            decoration: const BoxDecoration(
+              gradient: LinearGradient(
+                colors: [AppColors.border, Colors.transparent],
+              ),
+            ),
+          ),
+          const SizedBox(height: 14),
+          ...children,
+        ],
+      ),
+    );
+  }
+
+  Widget _buildPanelAction({
+    required String label,
+    required Future<void> Function() onTap,
+    bool isPrimary = true,
+  }) {
+    return Material(
+      color: isPrimary ? AppColors.green : AppColors.white,
+      borderRadius: BorderRadius.circular(10),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(10),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(
+              color: isPrimary
+                  ? AppColors.gold.withOpacity(0.45)
+                  : AppColors.border,
+            ),
+          ),
+          child: Text(
+            label,
+            style: TextStyle(
+              fontFamily: _bf,
+              color: isPrimary ? AppColors.white : AppColors.green,
+              fontSize: 10,
+              letterSpacing: 2.2,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ),
+      ),
     );
   }
 

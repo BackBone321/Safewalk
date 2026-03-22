@@ -56,8 +56,7 @@ class LoginPage extends StatefulWidget {
   State<LoginPage> createState() => _LoginPageState();
 }
 
-class _LoginPageState extends State<LoginPage>
-    with TickerProviderStateMixin {
+class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
   final _emailCtrl = TextEditingController();
   final _passCtrl = TextEditingController();
   final AuthService _authService = AuthService();
@@ -103,9 +102,9 @@ class _LoginPageState extends State<LoginPage>
       if (!mounted) return;
 
       if (!result.success) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(result.message)),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(result.message)));
         return;
       }
 
@@ -116,7 +115,7 @@ class _LoginPageState extends State<LoginPage>
           context,
           MaterialPageRoute(builder: (_) => const AdminDashboardPage()),
         );
-      } else if (role == 'student') {
+      } else if (role == 'student' || role == 'user') {
         Navigator.pushReplacement(
           context,
           MaterialPageRoute(builder: (_) => const UserDashboardPage()),
@@ -127,9 +126,9 @@ class _LoginPageState extends State<LoginPage>
           MaterialPageRoute(builder: (_) => const ParentDashboardPage()),
         );
       } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Unknown role: $role')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Unknown role: $role')));
       }
     } catch (e) {
       if (!mounted) return;
@@ -157,31 +156,30 @@ class _LoginPageState extends State<LoginPage>
     _brandSlide = Tween<Offset>(
       begin: const Offset(-0.08, 0),
       end: Offset.zero,
-    ).animate(
-      CurvedAnimation(parent: _brandAnim, curve: Curves.easeOutCubic),
-    );
+    ).animate(CurvedAnimation(parent: _brandAnim, curve: Curves.easeOutCubic));
 
-    _brandFade = Tween<double>(begin: 0, end: 1).animate(
-      CurvedAnimation(parent: _brandAnim, curve: Curves.easeOut),
-    );
+    _brandFade = Tween<double>(
+      begin: 0,
+      end: 1,
+    ).animate(CurvedAnimation(parent: _brandAnim, curve: Curves.easeOut));
 
     _cardSlide = Tween<Offset>(
       begin: const Offset(0.08, 0),
       end: Offset.zero,
-    ).animate(
-      CurvedAnimation(parent: _cardAnim, curve: Curves.easeOutCubic),
-    );
+    ).animate(CurvedAnimation(parent: _cardAnim, curve: Curves.easeOutCubic));
 
-    _cardFade = Tween<double>(begin: 0, end: 1).animate(
-      CurvedAnimation(parent: _cardAnim, curve: Curves.easeOut),
-    );
+    _cardFade = Tween<double>(
+      begin: 0,
+      end: 1,
+    ).animate(CurvedAnimation(parent: _cardAnim, curve: Curves.easeOut));
 
-    _particleAnim = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 16),
-    )
-      ..addListener(_tickParticles)
-      ..repeat();
+    _particleAnim =
+        AnimationController(
+            vsync: this,
+            duration: const Duration(milliseconds: 16),
+          )
+          ..addListener(_tickParticles)
+          ..repeat();
 
     for (int i = 0; i < 15; i++) {
       _particles.add(
@@ -237,10 +235,7 @@ class _LoginPageState extends State<LoginPage>
               gradient: RadialGradient(
                 center: Alignment(-0.45, -0.75),
                 radius: 1.7,
-                colors: [
-                  Color(0xFFEDF7F1),
-                  AppColors.offWhite,
-                ],
+                colors: [Color(0xFFEDF7F1), AppColors.offWhite],
               ),
             ),
           ),
@@ -510,11 +505,7 @@ class _VerticalSeparator extends StatelessWidget {
         gradient: LinearGradient(
           begin: Alignment.topCenter,
           end: Alignment.bottomCenter,
-          colors: [
-            Colors.transparent,
-            AppColors.border,
-            Colors.transparent,
-          ],
+          colors: [Colors.transparent, AppColors.border, Colors.transparent],
         ),
       ),
     );
@@ -745,10 +736,7 @@ class _LoginCard extends StatelessWidget {
                         ],
                       ),
                     SizedBox(height: isCompact ? 22 : 32),
-                    _SignInButton(
-                      onTap: onLogin,
-                      isLoading: isLoading,
-                    ),
+                    _SignInButton(onTap: onLogin, isLoading: isLoading),
                     SizedBox(height: isCompact ? 16 : 24),
                     Center(
                       child: Wrap(
@@ -827,9 +815,10 @@ class _LuxuryFieldState extends State<_LuxuryField>
       vsync: this,
       duration: const Duration(milliseconds: 400),
     );
-    _lineWidth = Tween<double>(begin: 0, end: 1).animate(
-      CurvedAnimation(parent: _lineAnim, curve: Curves.easeOutCubic),
-    );
+    _lineWidth = Tween<double>(
+      begin: 0,
+      end: 1,
+    ).animate(CurvedAnimation(parent: _lineAnim, curve: Curves.easeOutCubic));
   }
 
   @override
@@ -910,10 +899,7 @@ class _LuxuryFieldState extends State<_LuxuryField>
                     alignment: Alignment.centerLeft,
                     child: FractionallySizedBox(
                       widthFactor: _lineWidth.value,
-                      child: Container(
-                        height: 1.2,
-                        color: AppColors.gold,
-                      ),
+                      child: Container(height: 1.2, color: AppColors.gold),
                     ),
                   ),
                 ),
@@ -933,10 +919,7 @@ class _SignInButton extends StatelessWidget {
   final VoidCallback onTap;
   final bool isLoading;
 
-  const _SignInButton({
-    required this.onTap,
-    required this.isLoading,
-  });
+  const _SignInButton({required this.onTap, required this.isLoading});
 
   @override
   Widget build(BuildContext context) {
@@ -1033,10 +1016,7 @@ class _CornerPiece extends StatelessWidget {
   final bool isRight;
   final bool isBottom;
 
-  const _CornerPiece({
-    this.isRight = false,
-    this.isBottom = false,
-  });
+  const _CornerPiece({this.isRight = false, this.isBottom = false});
 
   @override
   Widget build(BuildContext context) {
@@ -1046,17 +1026,15 @@ class _CornerPiece extends StatelessWidget {
         isRight && isBottom
             ? pi
             : isRight
-                ? pi / 2
-                : isBottom
-                    ? -pi / 2
-                    : 0,
+            ? pi / 2
+            : isBottom
+            ? -pi / 2
+            : 0,
       ),
       child: SizedBox(
         width: 42,
         height: 42,
-        child: CustomPaint(
-          painter: _CornerPainter(),
-        ),
+        child: CustomPaint(painter: _CornerPainter()),
       ),
     );
   }
@@ -1077,16 +1055,8 @@ class _CornerPainter extends CustomPainter {
 
     canvas.drawPath(path, paint);
 
-    canvas.drawLine(
-      const Offset(10, 0),
-      const Offset(10, 10),
-      paint,
-    );
-    canvas.drawLine(
-      const Offset(0, 10),
-      const Offset(10, 10),
-      paint,
-    );
+    canvas.drawLine(const Offset(10, 0), const Offset(10, 10), paint);
+    canvas.drawLine(const Offset(0, 10), const Offset(10, 10), paint);
   }
 
   @override

@@ -84,6 +84,7 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
     _NavItem('Child', Icons.shield_outlined),
     _NavItem('Alerts', Icons.notifications_none_rounded),
     _NavItem('Profile', Icons.person_outline),
+    _NavItem('Settings', Icons.settings_outlined),
   ];
 
   // ─── Helpers ──────────────────────────────────────────────────
@@ -1586,10 +1587,10 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
         await _showAlertHistorySheet();
         return;
       case 'Profile':
-        await _showProfileDialog();
+        setState(() => _selectedNavIndex = 3);
         return;
       case 'Settings':
-        await _showSettingsDialog();
+        setState(() => _selectedNavIndex = 4);
         return;
       default:
         _showActionSnack('$title tapped');
@@ -1598,20 +1599,6 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
 
   Future<void> _onBottomNavTap(int index) async {
     setState(() => _selectedNavIndex = index);
-    final label = _navItems[index].label;
-    switch (label) {
-      case 'Child':
-        await _showChildStatusDialog();
-        return;
-      case 'Alerts':
-        await _showAlertHistorySheet();
-        return;
-      case 'Profile':
-        await _showProfileDialog();
-        return;
-      default:
-        return;
-    }
   }
 
   Future<void> _logout() async {
@@ -1682,25 +1669,387 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
           SafeArea(
             child: SingleChildScrollView(
               padding: const EdgeInsets.fromLTRB(16, 14, 16, 20),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  _buildHeroCard(),
-                  const SizedBox(height: 20),
-                  _buildSectionLabel('CURRENT SESSION'),
-                  const SizedBox(height: 10),
-                  _buildSessionCard(),
-                  const SizedBox(height: 20),
-                  _buildSectionLabel('TOOLS'),
-                  const SizedBox(height: 10),
-                  _buildToolList(),
-                ],
-              ),
+              child: _buildCurrentTabContent(),
             ),
           ),
         ],
       ),
       bottomNavigationBar: _buildBottomNav(),
+    );
+  }
+
+  Widget _buildCurrentTabContent() {
+    switch (_selectedNavIndex) {
+      case 1:
+        return _buildChildTab();
+      case 2:
+        return _buildAlertsTab();
+      case 3:
+        return _buildProfileTab();
+      case 4:
+        return _buildSettingsTab();
+      case 0:
+      default:
+        return _buildHomeTab();
+    }
+  }
+
+  Widget _buildHomeTab() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _buildHeroCard(),
+        const SizedBox(height: 20),
+        _buildSectionLabel('CURRENT SESSION'),
+        const SizedBox(height: 10),
+        _buildSessionCard(),
+        const SizedBox(height: 20),
+        _buildSectionLabel('TOOLS'),
+        const SizedBox(height: 10),
+        _buildToolList(),
+      ],
+    );
+  }
+
+  Widget _buildChildTab() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _buildHeroCard(),
+        const SizedBox(height: 18),
+        _buildSectionLabel('CHILD MONITOR'),
+        const SizedBox(height: 10),
+        _buildSessionCard(),
+        const SizedBox(height: 16),
+        _buildSectionLabel('LINKED DEVICE'),
+        const SizedBox(height: 10),
+        _buildDashboardPanel(
+          title: 'Child & Device',
+          subtitle: 'TRACKING OVERVIEW',
+          children: [
+            _buildDashboardRow('Child', _childName),
+            const SizedBox(height: 8),
+            _buildDashboardRow(
+              'Walk Session',
+              _childSessionActive ? 'Active' : 'Inactive',
+            ),
+            const SizedBox(height: 8),
+            _buildDashboardRow('Device', _deviceName),
+            const SizedBox(height: 8),
+            _buildDashboardRow('Device Status', _deviceStatus.toUpperCase()),
+            const SizedBox(height: 8),
+            _buildDashboardRow('Location', _deviceLocation),
+            const SizedBox(height: 14),
+            SizedBox(
+              width: double.infinity,
+              child: Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  _buildPanelAction(
+                    label: 'CHILD STATUS',
+                    onTap: _showChildStatusDialog,
+                  ),
+                  _buildPanelAction(
+                    label: 'DEVICE INFO',
+                    onTap: _showDeviceDialog,
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Widget _buildAlertsTab() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _buildHeroCard(),
+        const SizedBox(height: 18),
+        _buildSectionLabel('ALERTS'),
+        const SizedBox(height: 10),
+        _buildDashboardPanel(
+          title: 'Alert Controls',
+          subtitle: 'PARENT NOTIFICATIONS',
+          children: [
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                _AlertBadge(
+                  label: _alertsEnabled ? 'ALERTS ON' : 'ALERTS OFF',
+                  isActive: _alertsEnabled,
+                ),
+                _AlertBadge(
+                  label: _smsAlertsEnabled ? 'SMS ON' : 'SMS OFF',
+                  isActive: _smsAlertsEnabled,
+                ),
+                _AlertBadge(
+                  label: _emailAlertsEnabled ? 'EMAIL ON' : 'EMAIL OFF',
+                  isActive: _emailAlertsEnabled,
+                ),
+              ],
+            ),
+            const SizedBox(height: 14),
+            _buildDashboardRow(
+              'Child Session',
+              _childSessionActive ? 'Active now' : 'No active walk',
+            ),
+            const SizedBox(height: 8),
+            _buildDashboardRow('Current Route', _childRoute),
+            const SizedBox(height: 14),
+            SizedBox(
+              width: double.infinity,
+              child: Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  _buildPanelAction(
+                    label: 'ALERT HISTORY',
+                    onTap: _showAlertHistorySheet,
+                  ),
+                  _buildPanelAction(
+                    label: 'ALERT SETTINGS',
+                    onTap: _showSettingsDialog,
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Widget _buildProfileTab() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _buildHeroCard(),
+        const SizedBox(height: 18),
+        _buildSectionLabel('PARENT PROFILE'),
+        const SizedBox(height: 10),
+        _buildDashboardPanel(
+          title: _parentName,
+          subtitle: 'ACCOUNT DETAILS',
+          children: [
+            _buildDashboardRow(
+              'Email',
+              _parentEmail.isEmpty ? '-' : _parentEmail,
+            ),
+            const SizedBox(height: 8),
+            _buildDashboardRow(
+              'Phone',
+              _parentPhone.isEmpty ? '-' : _parentPhone,
+            ),
+            const SizedBox(height: 8),
+            _buildDashboardRow('Linked Child', _childName),
+            const SizedBox(height: 8),
+            _buildDashboardRow(
+              'Child UID',
+              _childUid.isEmpty ? 'Not set' : _childUid,
+            ),
+            const SizedBox(height: 14),
+            _buildPanelAction(label: 'EDIT PROFILE', onTap: _showProfileDialog),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Widget _buildSettingsTab() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _buildHeroCard(),
+        const SizedBox(height: 18),
+        _buildSectionLabel('SETTINGS'),
+        const SizedBox(height: 10),
+        _buildDashboardPanel(
+          title: 'Preferences',
+          subtitle: 'PARENT CONTROL PANEL',
+          children: [
+            _buildDashboardRow(
+              'Global Alerts',
+              _alertsEnabled ? 'Enabled' : 'Disabled',
+            ),
+            const SizedBox(height: 8),
+            _buildDashboardRow(
+              'SMS Alerts',
+              _smsAlertsEnabled ? 'Enabled' : 'Disabled',
+            ),
+            const SizedBox(height: 8),
+            _buildDashboardRow(
+              'Email Alerts',
+              _emailAlertsEnabled ? 'Enabled' : 'Disabled',
+            ),
+            const SizedBox(height: 8),
+            _buildDashboardRow(
+              'Linked Child UID',
+              _childUid.isEmpty ? 'Not set' : _childUid,
+            ),
+            const SizedBox(height: 14),
+            SizedBox(
+              width: double.infinity,
+              child: Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  _buildPanelAction(
+                    label: 'OPEN SETTINGS',
+                    onTap: _showSettingsDialog,
+                  ),
+                  _buildPanelAction(
+                    label: 'REFRESH DATA',
+                    onTap: _loadDashboard,
+                    isPrimary: false,
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Widget _buildDashboardPanel({
+    required String title,
+    required String subtitle,
+    required List<Widget> children,
+  }) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.fromLTRB(18, 16, 18, 18),
+      decoration: BoxDecoration(
+        color: AppColors.white,
+        borderRadius: BorderRadius.circular(22),
+        border: Border.all(color: AppColors.border),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.05),
+            blurRadius: 14,
+            offset: const Offset(0, 5),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            subtitle,
+            style: TextStyle(
+              fontFamily: _bf,
+              color: AppColors.goldDark,
+              fontSize: 9,
+              letterSpacing: 3,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            title,
+            style: TextStyle(
+              fontFamily: _hf,
+              color: AppColors.green,
+              fontSize: 30,
+              height: 1,
+              fontWeight: FontWeight.w300,
+              fontStyle: FontStyle.italic,
+            ),
+          ),
+          const SizedBox(height: 12),
+          Container(
+            height: 1,
+            decoration: const BoxDecoration(
+              gradient: LinearGradient(
+                colors: [AppColors.border, Colors.transparent],
+              ),
+            ),
+          ),
+          const SizedBox(height: 14),
+          ...children,
+        ],
+      ),
+    );
+  }
+
+  Widget _buildDashboardRow(String label, String value) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: AppColors.offWhite,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: Row(
+        children: [
+          Text(
+            label,
+            style: TextStyle(
+              fontFamily: _bf,
+              color: AppColors.textSub,
+              fontSize: 10,
+              letterSpacing: 1.2,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              value,
+              textAlign: TextAlign.right,
+              style: TextStyle(
+                fontFamily: _bf,
+                color: AppColors.green,
+                fontSize: 11,
+                letterSpacing: 0.3,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildPanelAction({
+    required String label,
+    required Future<void> Function() onTap,
+    bool isPrimary = true,
+  }) {
+    return Material(
+      color: isPrimary ? AppColors.green : AppColors.white,
+      borderRadius: BorderRadius.circular(10),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(10),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(
+              color: isPrimary
+                  ? AppColors.gold.withOpacity(0.45)
+                  : AppColors.border,
+            ),
+          ),
+          child: Text(
+            label,
+            style: TextStyle(
+              fontFamily: _bf,
+              color: isPrimary ? AppColors.white : AppColors.green,
+              fontSize: 10,
+              letterSpacing: 2.2,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ),
+      ),
     );
   }
 
