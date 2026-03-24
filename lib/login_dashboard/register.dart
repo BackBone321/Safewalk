@@ -56,7 +56,7 @@ class _RegisterPageState extends State<RegisterPage>
 
     _introController = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 700),
+      duration: const Duration(milliseconds: 420),
     );
 
     _fadeAnim = CurvedAnimation(

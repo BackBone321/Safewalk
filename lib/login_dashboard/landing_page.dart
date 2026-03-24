@@ -452,14 +452,40 @@ class _HeroLeft extends StatelessWidget {
                 label: 'Create Account',
                 onTap: () => Navigator.push(
                   context,
-                  MaterialPageRoute(builder: (_) => const RegisterPage()),
+                  PageRouteBuilder(
+                    transitionDuration: const Duration(milliseconds: 180),
+                    reverseTransitionDuration: const Duration(milliseconds: 150),
+                    pageBuilder: (_, __, ___) => const RegisterPage(),
+                    transitionsBuilder: (_, animation, __, child) {
+                      return FadeTransition(
+                        opacity: CurvedAnimation(
+                          parent: animation,
+                          curve: Curves.easeOutCubic,
+                        ),
+                        child: child,
+                      );
+                    },
+                  ),
                 ),
               ),
               _SecondaryButton(
                 label: 'Sign In',
                 onTap: () => Navigator.push(
                   context,
-                  MaterialPageRoute(builder: (_) => const LoginPage()),
+                  PageRouteBuilder(
+                    transitionDuration: const Duration(milliseconds: 180),
+                    reverseTransitionDuration: const Duration(milliseconds: 150),
+                    pageBuilder: (_, __, ___) => const LoginPage(),
+                    transitionsBuilder: (_, animation, __, child) {
+                      return FadeTransition(
+                        opacity: CurvedAnimation(
+                          parent: animation,
+                          curve: Curves.easeOutCubic,
+                        ),
+                        child: child,
+                      );
+                    },
+                  ),
                 ),
               ),
             ],

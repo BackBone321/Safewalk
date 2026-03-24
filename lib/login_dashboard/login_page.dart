@@ -146,11 +146,11 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
 
     _brandAnim = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 900),
+      duration: const Duration(milliseconds: 560),
     );
     _cardAnim = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 1100),
+      duration: const Duration(milliseconds: 680),
     );
 
     _brandSlide = Tween<Offset>(
@@ -176,12 +176,12 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
     _particleAnim =
         AnimationController(
             vsync: this,
-            duration: const Duration(milliseconds: 16),
+            duration: const Duration(seconds: 1),
           )
           ..addListener(_tickParticles)
           ..repeat();
 
-    for (int i = 0; i < 15; i++) {
+    for (int i = 0; i < 10; i++) {
       _particles.add(
         _Particle(
           x: _rng.nextDouble(),
@@ -193,22 +193,18 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
       );
     }
 
-    Future.delayed(const Duration(milliseconds: 100), () {
-      _brandAnim.forward();
-      _cardAnim.forward();
-    });
+    _brandAnim.forward();
+    _cardAnim.forward();
   }
 
   void _tickParticles() {
-    setState(() {
-      for (final p in _particles) {
-        p.y -= p.speed;
-        if (p.y < -0.02) {
-          p.y = 1.02;
-          p.x = _rng.nextDouble();
-        }
+    for (final p in _particles) {
+      p.y -= p.speed;
+      if (p.y < -0.02) {
+        p.y = 1.02;
+        p.x = _rng.nextDouble();
       }
-    });
+    }
   }
 
   @override
@@ -254,9 +250,16 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
             ),
           ),
 
-          CustomPaint(
-            size: size,
-            painter: _ParticlePainter(particles: _particles),
+          RepaintBoundary(
+            child: CustomPaint(
+              size: size,
+              isComplex: false,
+              willChange: true,
+              painter: _ParticlePainter(
+                particles: _particles,
+                repaint: _particleAnim,
+              ),
+            ),
           ),
 
           const _CornerDecorations(),
@@ -966,7 +969,8 @@ class _SignInButton extends StatelessWidget {
 class _ParticlePainter extends CustomPainter {
   final List<_Particle> particles;
 
-  const _ParticlePainter({required this.particles});
+  _ParticlePainter({required this.particles, required Listenable repaint})
+    : super(repaint: repaint);
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -984,7 +988,7 @@ class _ParticlePainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(covariant _ParticlePainter oldDelegate) => true;
+  bool shouldRepaint(covariant _ParticlePainter oldDelegate) => false;
 }
 
 // ─────────────────────────────────────────────
