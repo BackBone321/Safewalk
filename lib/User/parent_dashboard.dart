@@ -1,9 +1,12 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:google_maps_flutter/google_maps_flutter.dart';
 
 import '../auth/auth_service.dart';
 import '../login_dashboard/login_page.dart';
+import '../utils/google_maps_web_guard.dart';
 
 class ParentDashboardPage extends StatefulWidget {
   const ParentDashboardPage({super.key});
@@ -16,6 +19,7 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
   int _selectedNavIndex = 0;
   static const String _hf = 'CormorantGaramond';
   static const String _bf = 'JosefinSans';
+  static const LatLng _defaultMapCenter = LatLng(14.5995, 120.9842);
 
   final AuthService _authService = AuthService();
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
@@ -31,9 +35,11 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
   String _parentName = 'Parent';
   String _parentEmail = '';
   String _parentPhone = '';
+  String _parentUid = '';
 
   String _childUid = '';
   String _childName = 'Student';
+  String _childPhone = '';
   String _childRoute = 'Main Campus -> Dorm Block C';
   bool _childSessionActive = false;
   DateTime? _childSessionStartedAt;
@@ -43,6 +49,7 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
   String _deviceName = 'No linked device';
   String _deviceLocation = 'Unknown';
   String _deviceStatus = 'offline';
+  LatLng? _childDeviceCoordinates;
 
   bool _alertsEnabled = true;
   bool _smsAlertsEnabled = true;
@@ -101,6 +108,92 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
     return cleaned;
   }
 
+  double? _toDouble(dynamic value) {
+    if (value is num) return value.toDouble();
+    if (value is String) return double.tryParse(value.trim());
+    return null;
+  }
+
+  bool _isValidLatLng(double lat, double lng) {
+    return lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180;
+  }
+
+  LatLng? _coordinatesFromValues(dynamic latValue, dynamic lngValue) {
+    final lat = _toDouble(latValue);
+    final lng = _toDouble(lngValue);
+    if (lat == null || lng == null) return null;
+    if (!_isValidLatLng(lat, lng)) return null;
+    return LatLng(lat, lng);
+  }
+
+  LatLng? _coordinatesFromText(String text) {
+    final match = RegExp(
+      r'(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)',
+    ).firstMatch(text);
+    if (match == null) return null;
+    final lat = double.tryParse(match.group(1) ?? '');
+    final lng = double.tryParse(match.group(2) ?? '');
+    if (lat == null || lng == null) return null;
+    if (!_isValidLatLng(lat, lng)) return null;
+    return LatLng(lat, lng);
+  }
+
+  LatLng? _extractDeviceCoordinates(Map<String, dynamic> data) {
+    final direct = _coordinatesFromValues(
+      data['latitude'] ?? data['lat'],
+      data['longitude'] ?? data['lng'] ?? data['lon'],
+    );
+    if (direct != null) return direct;
+
+    final coordinates = data['coordinates'];
+    if (coordinates is Map) {
+      final nested = _coordinatesFromValues(
+        coordinates['latitude'] ?? coordinates['lat'],
+        coordinates['longitude'] ?? coordinates['lng'] ?? coordinates['lon'],
+      );
+      if (nested != null) return nested;
+    }
+
+    final location = data['location'];
+    if (location is GeoPoint) {
+      return LatLng(location.latitude, location.longitude);
+    }
+    if (location is String) {
+      final parsed = _coordinatesFromText(location);
+      if (parsed != null) return parsed;
+    }
+
+    return null;
+  }
+
+  LatLng? _extractAlertCoordinates(Map<String, dynamic> data) {
+    final coordinates = data['coordinates'];
+    if (coordinates is GeoPoint) {
+      return LatLng(coordinates.latitude, coordinates.longitude);
+    }
+    if (coordinates is Map) {
+      final nested = _coordinatesFromValues(
+        coordinates['latitude'] ?? coordinates['lat'],
+        coordinates['longitude'] ?? coordinates['lng'] ?? coordinates['lon'],
+      );
+      if (nested != null) return nested;
+    }
+
+    final direct = _coordinatesFromValues(
+      data['latitude'] ?? data['lat'],
+      data['longitude'] ?? data['lng'] ?? data['lon'],
+    );
+    if (direct != null) return direct;
+
+    final location = data['location'];
+    if (location is String) {
+      return _coordinatesFromText(location);
+    }
+    return null;
+  }
+
+  LatLng get _childMapCenter => _childDeviceCoordinates ?? _defaultMapCenter;
+
   String get _elapsedLabel {
     if (!_childSessionActive || _childSessionStartedAt == null) return '--';
     final d = DateTime.now().difference(_childSessionStartedAt!);
@@ -137,6 +230,25 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
     );
   }
 
+  Widget _buildWebMapFallback({required String contextLabel}) {
+    return Container(
+      color: const Color(0xFF830C0C),
+      padding: const EdgeInsets.all(14),
+      alignment: Alignment.centerLeft,
+      child: Text(
+        'Google Maps is not ready on Web.\n'
+        'Set your API key in web/index.html and reload.\n'
+        'Context: $contextLabel',
+        style: const TextStyle(
+          fontFamily: _bf,
+          color: Color(0xFFFFF1B8),
+          fontSize: 12,
+          fontWeight: FontWeight.w600,
+        ),
+      ),
+    );
+  }
+
   // ─── Data Loading ──────────────────────────────────────────────
 
   @override
@@ -168,11 +280,15 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
           .collection('user_settings')
           .doc(currentUser.uid)
           .get();
+      final parentData = parentDoc.data() ?? <String, dynamic>{};
+      final parentPhone = (parentData['phoneNumber'] ?? '').toString();
+      final normalizedParentPhone = _normalizePhoneForLookup(parentPhone);
       if (!mounted) return;
       setState(() {
-        _parentName = (parentDoc.data()?['fullName'] ?? 'Parent').toString();
-        _parentEmail = (parentDoc.data()?['email'] ?? '').toString();
-        _parentPhone = (parentDoc.data()?['phoneNumber'] ?? '').toString();
+        _parentUid = currentUser.uid;
+        _parentName = (parentData['fullName'] ?? 'Parent').toString();
+        _parentEmail = (parentData['email'] ?? '').toString();
+        _parentPhone = parentPhone;
         _alertsEnabled =
             (settingsDoc.data()?['alertsEnabled'] as bool?) ?? true;
         _smsAlertsEnabled =
@@ -184,17 +300,48 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
       String configuredChildUid = (settingsDoc.data()?['childUid'] ?? '')
           .toString();
       if (configuredChildUid.isEmpty) {
-        final childQuery = await _firestore
-            .collection('users')
-            .where('role', isEqualTo: 'student')
+        final linkByUid = await _firestore
+            .collection('parent_student_links')
+            .where('parentUid', isEqualTo: currentUser.uid)
             .limit(1)
             .get();
-        if (childQuery.docs.isNotEmpty) {
-          configuredChildUid = childQuery.docs.first.id;
+        if (linkByUid.docs.isNotEmpty) {
+          configuredChildUid = (linkByUid.docs.first.data()['studentUid'] ?? '')
+              .toString();
+        }
+      }
+      if (configuredChildUid.isEmpty && normalizedParentPhone.isNotEmpty) {
+        final linkByPhone = await _firestore
+            .collection('parent_student_links')
+            .where('parentPhoneNormalized', isEqualTo: normalizedParentPhone)
+            .limit(1)
+            .get();
+        if (linkByPhone.docs.isNotEmpty) {
+          configuredChildUid =
+              (linkByPhone.docs.first.data()['studentUid'] ?? '').toString();
         }
       }
       if (configuredChildUid.isNotEmpty) {
+        await _upsertParentStudentLink(
+          parentUid: currentUser.uid,
+          childUid: configuredChildUid,
+        );
         await _loadChildData(configuredChildUid);
+      } else if (mounted) {
+        setState(() {
+          _childUid = '';
+          _childName = 'Student';
+          _childPhone = '';
+          _childRoute = 'Main Campus -> Dorm Block C';
+          _childSessionActive = false;
+          _childSessionStartedAt = null;
+          _childDistanceKm = 0;
+          _deviceId = 'Not linked';
+          _deviceName = 'No linked device';
+          _deviceLocation = 'Unknown';
+          _deviceStatus = 'offline';
+          _childDeviceCoordinates = null;
+        });
       }
     } catch (e) {
       _showActionSnack('Failed to load parent dashboard: $e', isError: true);
@@ -237,6 +384,7 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
     setState(() {
       _childUid = childUid;
       _childName = childName;
+      _childPhone = childPhone;
 
       if (walkQuery.docs.isNotEmpty) {
         final walkData = walkQuery.docs.first.data();
@@ -247,6 +395,7 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
             (walkData['distanceKm'] as num?)?.toDouble() ?? _childDistanceKm;
       } else {
         _childSessionActive = false;
+        _childSessionStartedAt = null;
       }
 
       if (deviceQuery.docs.isNotEmpty) {
@@ -254,15 +403,80 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
         _deviceId = (device['deviceId'] ?? deviceQuery.docs.first.id)
             .toString();
         _deviceName = (device['deviceName'] ?? 'Emergency Device').toString();
-        _deviceLocation = (device['location'] ?? 'Unknown').toString();
+        final locationField = device['location'];
+        _deviceLocation = locationField is GeoPoint
+            ? '${locationField.latitude.toStringAsFixed(6)}, ${locationField.longitude.toStringAsFixed(6)}'
+            : (locationField ?? 'Unknown').toString();
         _deviceStatus = (device['status'] ?? 'active').toString().toLowerCase();
+        _childDeviceCoordinates = _extractDeviceCoordinates(device);
       } else {
         _deviceId = 'Not linked';
         _deviceName = 'No linked device';
         _deviceLocation = 'Unknown';
         _deviceStatus = 'offline';
+        _childDeviceCoordinates = null;
       }
     });
+  }
+
+  Future<String> _resolveStudentUidFromPhone(String inputPhone) async {
+    final rawPhone = inputPhone.trim();
+    if (rawPhone.isEmpty) return '';
+    final normalizedPhone = _normalizePhoneForLookup(rawPhone);
+
+    var query = await _firestore
+        .collection('users')
+        .where('role', isEqualTo: 'student')
+        .where('phoneNumber', isEqualTo: rawPhone)
+        .limit(1)
+        .get();
+
+    if (query.docs.isEmpty && normalizedPhone != rawPhone) {
+      query = await _firestore
+          .collection('users')
+          .where('role', isEqualTo: 'student')
+          .where('phoneNumber', isEqualTo: normalizedPhone)
+          .limit(1)
+          .get();
+    }
+
+    if (query.docs.isEmpty) return '';
+    return query.docs.first.id;
+  }
+
+  Future<bool> _isValidStudentUid(String uid) async {
+    final trimmedUid = uid.trim();
+    if (trimmedUid.isEmpty) return false;
+    final doc = await _firestore.collection('users').doc(trimmedUid).get();
+    if (!doc.exists) return false;
+    final role = (doc.data()?['role'] ?? '').toString().toLowerCase();
+    return role == 'student';
+  }
+
+  Future<void> _upsertParentStudentLink({
+    required String parentUid,
+    required String childUid,
+  }) async {
+    if (parentUid.trim().isEmpty || childUid.trim().isEmpty) return;
+
+    final childDoc = await _firestore.collection('users').doc(childUid).get();
+    final childData = childDoc.data() ?? <String, dynamic>{};
+    final childName = (childData['fullName'] ?? '').toString().trim();
+    final childPhone = (childData['phoneNumber'] ?? '').toString().trim();
+    final parentPhone = _parentPhone.trim();
+
+    final linkId = childUid;
+    await _firestore.collection('parent_student_links').doc(linkId).set({
+      'parentUid': parentUid,
+      'parentName': _parentName.trim(),
+      'parentPhone': parentPhone,
+      'parentPhoneNormalized': _normalizePhoneForLookup(parentPhone),
+      'studentUid': childUid,
+      'studentName': childName,
+      'studentPhone': childPhone,
+      'studentPhoneNormalized': _normalizePhoneForLookup(childPhone),
+      'updatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
   }
 
   // ─── Save Methods ──────────────────────────────────────────────
@@ -284,6 +498,9 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
         _parentName = fullName.trim();
         _parentPhone = phoneNumber.trim();
       });
+      if (_childUid.trim().isNotEmpty) {
+        await _upsertParentStudentLink(parentUid: uid, childUid: _childUid);
+      }
       _showActionSnack('Profile updated.');
     } catch (e) {
       _showActionSnack('Failed to update profile: $e', isError: true);
@@ -297,6 +514,7 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
     required bool smsAlertsEnabled,
     required bool emailAlertsEnabled,
     required String childUid,
+    String childPhoneNumber = '',
   }) async {
     final uid = FirebaseAuth.instance.currentUser?.uid;
     if (uid == null) {
@@ -310,6 +528,7 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
         'smsAlertsEnabled': smsAlertsEnabled,
         'emailAlertsEnabled': emailAlertsEnabled,
         'childUid': childUid.trim(),
+        'childPhoneNumber': childPhoneNumber.trim(),
         'updatedAt': FieldValue.serverTimestamp(),
       }, SetOptions(merge: true));
       if (!mounted) return;
@@ -318,8 +537,15 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
         _smsAlertsEnabled = smsAlertsEnabled;
         _emailAlertsEnabled = emailAlertsEnabled;
       });
-      if (childUid.trim().isNotEmpty && childUid.trim() != _childUid) {
-        await _loadChildData(childUid.trim());
+      final resolvedChildUid = childUid.trim();
+      if (resolvedChildUid.isNotEmpty) {
+        await _upsertParentStudentLink(
+          parentUid: uid,
+          childUid: resolvedChildUid,
+        );
+      }
+      if (resolvedChildUid.isNotEmpty && resolvedChildUid != _childUid) {
+        await _loadChildData(resolvedChildUid);
       }
       _showActionSnack('Settings saved.');
     } catch (e) {
@@ -698,6 +924,12 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                       stream: _firestore
                           .collection('emergency_alerts')
                           .where('uid', isEqualTo: _childUid)
+                          .where(
+                            'parentUid',
+                            isEqualTo: _parentUid.isEmpty
+                                ? FirebaseAuth.instance.currentUser?.uid ?? ''
+                                : _parentUid,
+                          )
                           .limit(100)
                           .snapshots(),
                       builder: (context, snapshot) {
@@ -1264,6 +1496,7 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
         bool localEmail = _emailAlertsEnabled;
         bool isSaving = false;
         final childUidCtrl = TextEditingController(text: _childUid);
+        final childPhoneCtrl = TextEditingController(text: _childPhone);
 
         return StatefulBuilder(
           builder: (context, setSheet) {
@@ -1468,6 +1701,25 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                                             letterSpacing: 0.3,
                                           ),
                                         ),
+                                        const SizedBox(height: 2),
+                                        Text(
+                                          'UID: ${_childUid.isEmpty ? 'Not set' : _childUid}',
+                                          style: TextStyle(
+                                            fontFamily: _bf,
+                                            fontSize: 10,
+                                            color: AppColors.textSub,
+                                            letterSpacing: 0.2,
+                                          ),
+                                        ),
+                                        Text(
+                                          'Phone: ${_childPhone.isEmpty ? 'Not set' : _childPhone}',
+                                          style: TextStyle(
+                                            fontFamily: _bf,
+                                            fontSize: 10,
+                                            color: AppColors.textSub,
+                                            letterSpacing: 0.2,
+                                          ),
+                                        ),
                                       ],
                                     ),
                                     const Spacer(),
@@ -1486,6 +1738,23 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                               hint: 'Leave blank to keep current',
                               controller: childUidCtrl,
                             ),
+                            const SizedBox(height: 12),
+                            _DashLuxuryField(
+                              label: 'OR STUDENT PHONE NUMBER',
+                              hint: 'Example: +63 9XXXXXXXXX',
+                              controller: childPhoneCtrl,
+                              keyboardType: TextInputType.phone,
+                            ),
+                            const SizedBox(height: 8),
+                            Text(
+                              'You can enter either Student UID or Student phone number.',
+                              style: TextStyle(
+                                fontFamily: _bf,
+                                fontSize: 10,
+                                color: AppColors.textSub,
+                                letterSpacing: 0.2,
+                              ),
+                            ),
 
                             const SizedBox(height: 28),
 
@@ -1499,16 +1768,56 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                                       ? null
                                       : () async {
                                           setSheet(() => isSaving = true);
+                                          final enteredUid = childUidCtrl.text
+                                              .trim();
+                                          final enteredPhone = childPhoneCtrl
+                                              .text
+                                              .trim();
+                                          if (enteredUid.isNotEmpty) {
+                                            final uidIsValid =
+                                                await _isValidStudentUid(
+                                                  enteredUid,
+                                                );
+                                            if (!uidIsValid) {
+                                              setSheet(() => isSaving = false);
+                                              _showActionSnack(
+                                                'Invalid Student UID. Please enter a valid student account UID.',
+                                                isError: true,
+                                              );
+                                              return;
+                                            }
+                                          }
+                                          String resolvedChildUid =
+                                              enteredUid.isEmpty
+                                              ? _childUid
+                                              : enteredUid;
+                                          if (resolvedChildUid.isEmpty &&
+                                              enteredPhone.isNotEmpty) {
+                                            resolvedChildUid =
+                                                await _resolveStudentUidFromPhone(
+                                                  enteredPhone,
+                                                );
+                                          }
+                                          if (resolvedChildUid.isEmpty) {
+                                            setSheet(() => isSaving = false);
+                                            _showActionSnack(
+                                              'Unable to find student. Enter a valid Student UID or linked phone number.',
+                                              isError: true,
+                                            );
+                                            return;
+                                          }
                                           await _saveSettings(
                                             alertsEnabled: localAlerts,
                                             smsAlertsEnabled: localSms,
                                             emailAlertsEnabled: localEmail,
-                                            childUid:
-                                                childUidCtrl.text.trim().isEmpty
-                                                ? _childUid
-                                                : childUidCtrl.text.trim(),
+                                            childUid: resolvedChildUid,
+                                            childPhoneNumber:
+                                                enteredPhone.isEmpty
+                                                ? _childPhone
+                                                : enteredPhone,
                                           );
                                           childUidCtrl.dispose();
+                                          childPhoneCtrl.dispose();
                                           if (sheetCtx.mounted) {
                                             Navigator.pop(sheetCtx);
                                           }
@@ -1549,7 +1858,11 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                             const SizedBox(height: 14),
                             Center(
                               child: GestureDetector(
-                                onTap: () => Navigator.pop(sheetCtx),
+                                onTap: () {
+                                  childUidCtrl.dispose();
+                                  childPhoneCtrl.dispose();
+                                  Navigator.pop(sheetCtx);
+                                },
                                 child: Text(
                                   'CANCEL',
                                   style: TextStyle(
@@ -1721,6 +2034,10 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
         const SizedBox(height: 10),
         _buildSessionCard(),
         const SizedBox(height: 16),
+        _buildSectionLabel('CHILD LOCATION'),
+        const SizedBox(height: 10),
+        _buildChildMapCard(),
+        const SizedBox(height: 16),
         _buildSectionLabel('LINKED DEVICE'),
         const SizedBox(height: 10),
         _buildDashboardPanel(
@@ -1824,6 +2141,221 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
     );
   }
 
+  Widget _buildChildMapCard() {
+    final parentUidForAlerts = _parentUid.isEmpty
+        ? FirebaseAuth.instance.currentUser?.uid ?? ''
+        : _parentUid;
+    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+      stream: _childUid.isEmpty
+          ? null
+          : _firestore
+                .collection('emergency_alerts')
+                .where('uid', isEqualTo: _childUid)
+                .limit(60)
+                .snapshots(),
+      builder: (context, snapshot) {
+        LatLng? latestSosCoordinate;
+        String latestSosLabel = '';
+        bool sosIsActive = false;
+
+        if (snapshot.hasData && snapshot.data!.docs.isNotEmpty) {
+          final docs =
+              snapshot.data!.docs.where((doc) {
+                final data = doc.data();
+                final alertType = (data['type'] ?? '').toString().toLowerCase();
+                final alertParentUid = (data['parentUid'] ?? '').toString();
+                return alertType == 'sos' &&
+                    (alertParentUid.isEmpty ||
+                        alertParentUid == parentUidForAlerts);
+              }).toList()..sort((a, b) {
+                final aTs = a.data()['timestamp'] as Timestamp?;
+                final bTs = b.data()['timestamp'] as Timestamp?;
+                return (bTs?.millisecondsSinceEpoch ?? 0).compareTo(
+                  aTs?.millisecondsSinceEpoch ?? 0,
+                );
+              });
+
+          if (docs.isNotEmpty) {
+            final latest = docs.first.data();
+            latestSosCoordinate = _extractAlertCoordinates(latest);
+            sosIsActive =
+                (latest['status'] ?? '').toString().toLowerCase() == 'active';
+            latestSosLabel = _formatTimestamp(
+              latest['timestamp'] as Timestamp?,
+            );
+          }
+        }
+
+        final mapPoint = latestSosCoordinate ?? _childDeviceCoordinates;
+        final center = mapPoint ?? _childMapCenter;
+        final hasPoint = mapPoint != null;
+
+        final markers = hasPoint
+            ? {
+                Marker(
+                  markerId: const MarkerId('child-location'),
+                  position: mapPoint,
+                  icon: BitmapDescriptor.defaultMarkerWithHue(
+                    sosIsActive
+                        ? BitmapDescriptor.hueRed
+                        : BitmapDescriptor.hueAzure,
+                  ),
+                  infoWindow: InfoWindow(
+                    title: sosIsActive ? 'SOS Location' : 'Child Location',
+                    snippet: _deviceLocation,
+                  ),
+                ),
+              }
+            : <Marker>{};
+
+        final circles = hasPoint
+            ? {
+                Circle(
+                  circleId: const CircleId('child-radius'),
+                  center: mapPoint,
+                  radius: sosIsActive ? 90 : 45,
+                  fillColor: sosIsActive
+                      ? const Color(0x55CB392B)
+                      : const Color(0x331AA972),
+                  strokeColor: sosIsActive
+                      ? const Color(0xFFCB392B)
+                      : const Color(0xFF1AA972),
+                  strokeWidth: 2,
+                ),
+              }
+            : <Circle>{};
+
+        return Container(
+          height: 240,
+          decoration: BoxDecoration(
+            color: AppColors.white,
+            borderRadius: BorderRadius.circular(22),
+            border: Border.all(color: AppColors.border),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(0.08),
+                blurRadius: 16,
+                offset: const Offset(0, 8),
+              ),
+            ],
+          ),
+          child: Stack(
+            children: [
+              Positioned.fill(
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(22),
+                  child: kIsWeb && !isGoogleMapsJsLoaded()
+                      ? _buildWebMapFallback(
+                          contextLabel: 'Parent Child Tracking Card',
+                        )
+                      : GoogleMap(
+                          key: ValueKey(
+                            'parent-map-${center.latitude}-${center.longitude}-${sosIsActive ? 'sos' : 'track'}',
+                          ),
+                          initialCameraPosition: CameraPosition(
+                            target: center,
+                            zoom: hasPoint ? 16 : 12,
+                          ),
+                          mapType: MapType.normal,
+                          markers: markers,
+                          circles: circles,
+                          myLocationEnabled: false,
+                          myLocationButtonEnabled: false,
+                          zoomControlsEnabled: false,
+                          mapToolbarEnabled: false,
+                          compassEnabled: false,
+                          rotateGesturesEnabled: false,
+                          tiltGesturesEnabled: false,
+                          onMapCreated: (_) {},
+                        ),
+                ),
+              ),
+              Positioned(
+                top: 14,
+                left: 14,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 6,
+                  ),
+                  decoration: BoxDecoration(
+                    color: sosIsActive
+                        ? const Color(0xFF7E1F14)
+                        : const Color(0xFF0E5B3C),
+                    borderRadius: BorderRadius.circular(999),
+                    border: Border.all(
+                      color: AppColors.gold.withOpacity(0.3),
+                      width: 0.5,
+                    ),
+                  ),
+                  child: Text(
+                    sosIsActive
+                        ? 'SOS LOCATION'
+                        : hasPoint
+                        ? 'LIVE TRACKING'
+                        : 'NO LOCATION YET',
+                    style: const TextStyle(
+                      fontFamily: _bf,
+                      color: AppColors.gold,
+                      fontSize: 9,
+                      letterSpacing: 1.8,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ),
+              Positioned(
+                left: 0,
+                right: 0,
+                bottom: 0,
+                child: Container(
+                  padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      begin: Alignment.topCenter,
+                      end: Alignment.bottomCenter,
+                      colors: [
+                        Colors.black.withOpacity(0.02),
+                        Colors.black.withOpacity(0.72),
+                      ],
+                    ),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        sosIsActive
+                            ? 'SOS RECEIVED ${latestSosLabel.isEmpty ? '' : '• $latestSosLabel'}'
+                            : 'CHILD LAST LOCATION',
+                        style: const TextStyle(
+                          fontFamily: _bf,
+                          color: AppColors.gold,
+                          fontSize: 9,
+                          letterSpacing: 2.2,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                      const SizedBox(height: 3),
+                      Text(
+                        _deviceLocation,
+                        style: const TextStyle(
+                          fontFamily: _bf,
+                          color: Colors.white,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
   Widget _buildProfileTab() {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1851,6 +2383,11 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
             _buildDashboardRow(
               'Child UID',
               _childUid.isEmpty ? 'Not set' : _childUid,
+            ),
+            const SizedBox(height: 8),
+            _buildDashboardRow(
+              'Child Phone',
+              _childPhone.isEmpty ? 'Not set' : _childPhone,
             ),
             const SizedBox(height: 14),
             _buildPanelAction(label: 'EDIT PROFILE', onTap: _showProfileDialog),
@@ -1890,6 +2427,16 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
             _buildDashboardRow(
               'Linked Child UID',
               _childUid.isEmpty ? 'Not set' : _childUid,
+            ),
+            const SizedBox(height: 8),
+            _buildDashboardRow(
+              'Linked Child Name',
+              _childName.isEmpty ? 'Not set' : _childName,
+            ),
+            const SizedBox(height: 8),
+            _buildDashboardRow(
+              'Linked Child Phone',
+              _childPhone.isEmpty ? 'Not set' : _childPhone,
             ),
             const SizedBox(height: 14),
             SizedBox(

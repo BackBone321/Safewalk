@@ -3,6 +3,9 @@
         android:label="safewalk"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
+        <meta-data
+            android:name="com.google.android.geo.API_KEY"
+            android:value="AIzaSyAz2D3AzakuzV-yakdM9gFE_ik8x4MuEhI" />
         <activity
             android:name=".MainActivity"
             android:exported="true"

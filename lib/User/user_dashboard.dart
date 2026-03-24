@@ -1,12 +1,12 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:flutter_map/flutter_map.dart';
-import 'package:latlong2/latlong.dart';
+import 'package:google_maps_flutter/google_maps_flutter.dart';
 
 import '../auth/auth_service.dart';
 import '../login_dashboard/login_page.dart';
-import '../services/notification_service.dart';
+import '../utils/google_maps_web_guard.dart';
 
 class UserDashboardPage extends StatefulWidget {
   const UserDashboardPage({super.key});
@@ -23,7 +23,6 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
 
   final AuthService _authService = AuthService();
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
-  final NotificationService _notificationService = NotificationService();
 
   bool _isLoading = true;
   bool _isSavingProfile = false;
@@ -36,6 +35,7 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
   String _fullName = 'Student';
   String _email = '';
   String _phoneNumber = '';
+  String _studentUid = '';
   String _activeRoute = 'Main Campus -> Dorm Block C';
 
   String _deviceId = 'Not linked';
@@ -47,6 +47,9 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
   bool _alertsEnabled = true;
   bool _safeModeEnabled = true;
   bool _locationSharingEnabled = true;
+  String _linkedParentUid = '';
+  String _linkedParentPhone = '';
+  String _linkedParentName = '';
 
   final List<_ToolItem> _tools = const [
     _ToolItem(
@@ -193,6 +196,25 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
     );
   }
 
+  Widget _buildWebMapFallback({required String contextLabel}) {
+    return Container(
+      color: const Color(0xFF830C0C),
+      padding: const EdgeInsets.all(14),
+      alignment: Alignment.centerLeft,
+      child: Text(
+        'Google Maps is not ready on Web.\n'
+        'Set your API key in web/index.html and reload.\n'
+        'Context: $contextLabel',
+        style: const TextStyle(
+          fontFamily: _bf,
+          color: Color(0xFFFFF1B8),
+          fontSize: 12,
+          fontWeight: FontWeight.w600,
+        ),
+      ),
+    );
+  }
+
   // ─── Data Loading ──────────────────────────────────────────────
 
   @override
@@ -226,6 +248,7 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
           .get();
       if (!mounted) return;
       setState(() {
+        _studentUid = currentUser.uid;
         _fullName = (userDoc.data()?['fullName'] ?? 'Student').toString();
         _email = (userDoc.data()?['email'] ?? '').toString();
         _phoneNumber = (userDoc.data()?['phoneNumber'] ?? '').toString();
@@ -237,6 +260,7 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
             (settingsDoc.data()?['locationSharingEnabled'] as bool?) ?? true;
       });
       await _loadLinkedDevice();
+      await _loadLinkedParent();
     } catch (e) {
       _showActionSnack('Failed to load dashboard data: $e', isError: true);
     } finally {
@@ -287,6 +311,55 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
     });
   }
 
+  Future<void> _loadLinkedParent() async {
+    final currentUid = FirebaseAuth.instance.currentUser?.uid;
+    if (currentUid == null) return;
+
+    final normalizedStudentPhone = _normalizePhoneForLookup(_phoneNumber);
+    var linkQuery = await _firestore
+        .collection('parent_student_links')
+        .where('studentUid', isEqualTo: currentUid)
+        .limit(1)
+        .get();
+
+    if (linkQuery.docs.isEmpty && normalizedStudentPhone.isNotEmpty) {
+      linkQuery = await _firestore
+          .collection('parent_student_links')
+          .where('studentPhoneNormalized', isEqualTo: normalizedStudentPhone)
+          .limit(1)
+          .get();
+    }
+
+    if (!mounted) return;
+    if (linkQuery.docs.isEmpty) {
+      setState(() {
+        _linkedParentUid = '';
+        _linkedParentPhone = '';
+        _linkedParentName = '';
+      });
+      return;
+    }
+
+    final link = linkQuery.docs.first.data();
+    final parentUid = (link['parentUid'] ?? '').toString();
+    final parentPhone = (link['parentPhone'] ?? '').toString();
+    String parentName = (link['parentName'] ?? '').toString();
+    if (parentName.trim().isEmpty && parentUid.trim().isNotEmpty) {
+      final parentDoc = await _firestore
+          .collection('users')
+          .doc(parentUid)
+          .get();
+      parentName = (parentDoc.data()?['fullName'] ?? '').toString();
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _linkedParentUid = parentUid;
+      _linkedParentPhone = parentPhone;
+      _linkedParentName = parentName;
+    });
+  }
+
   // ─── Actions ───────────────────────────────────────────────────
 
   Future<void> _createSosAlert() async {
@@ -296,34 +369,40 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
       return;
     }
     try {
+      await _loadLinkedParent();
+      if (_linkedParentUid.trim().isEmpty) {
+        _showActionSnack(
+          'No linked parent account found. Ask your parent to connect your Student UID in Parent Settings.',
+          isError: true,
+        );
+        return;
+      }
+
+      final locationGeoPoint = _deviceCoordinates == null
+          ? null
+          : GeoPoint(
+              _deviceCoordinates!.latitude,
+              _deviceCoordinates!.longitude,
+            );
+
       await _firestore.collection('emergency_alerts').add({
         'uid': user.uid,
+        'studentUid': user.uid,
         'fullName': _fullName,
         'email': _email,
         'phoneNumber': _phoneNumber,
+        'parentUid': _linkedParentUid,
+        'parentPhoneNumber': _linkedParentPhone,
         'type': 'sos',
         'severity': 'high',
         'status': 'active',
         'message': 'SOS button pressed by $_fullName.',
         'location': _deviceLocation,
+        if (locationGeoPoint != null) 'coordinates': locationGeoPoint,
         'triggeredBy': 'student_dashboard',
         'timestamp': FieldValue.serverTimestamp(),
       });
-      if (_alertsEnabled && _email.isNotEmpty) {
-        try {
-          await _notificationService.sendEmailNotification(
-            toEmail: _email,
-            toName: _fullName,
-            subject: 'SafeWalk SOS Alert Submitted',
-            message:
-                'Your SOS alert has been recorded at $_deviceLocation. Help workflow is now active.',
-            triggeredBy: 'student_dashboard',
-          );
-        } catch (_) {}
-      }
-      _showActionSnack(
-        'SOS alert sent. Admin and guardians can now see the alert.',
-      );
+      _showActionSnack('SOS sent to your linked parent.');
     } catch (e) {
       _showActionSnack('Failed to send SOS alert: $e', isError: true);
     }
@@ -347,6 +426,7 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
         _phoneNumber = phoneNumber.trim();
       });
       await _loadLinkedDevice();
+      await _loadLinkedParent();
       _showActionSnack('Profile updated.');
     } catch (e) {
       _showActionSnack('Failed to update profile: $e', isError: true);
@@ -548,51 +628,63 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                         borderRadius: BorderRadius.circular(18),
                         child: SizedBox(
                           height: 220,
-                          child: FlutterMap(
-                            options: MapOptions(
-                              initialCenter: center,
-                              initialZoom: _hasDeviceCoordinates ? 16 : 12,
-                              minZoom: 3,
-                              maxZoom: 19,
-                            ),
-                            children: [
-                              TileLayer(
-                                urlTemplate:
-                                    'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-                                userAgentPackageName: 'com.example.safewalk',
-                              ),
-                              if (_hasDeviceCoordinates)
-                                MarkerLayer(
-                                  markers: [
-                                    Marker(
-                                      point: center,
-                                      width: 40,
-                                      height: 40,
-                                      child: Container(
-                                        decoration: BoxDecoration(
-                                          color: AppColors.green,
-                                          shape: BoxShape.circle,
-                                          border: Border.all(
-                                            color: AppColors.gold,
-                                            width: 1.8,
+                          child: kIsWeb && !isGoogleMapsJsLoaded()
+                              ? _buildWebMapFallback(
+                                  contextLabel: 'Student Location Sheet',
+                                )
+                              : GoogleMap(
+                                  key: ValueKey(
+                                    'sheet-map-${center.latitude}-${center.longitude}',
+                                  ),
+                                  initialCameraPosition: CameraPosition(
+                                    target: center,
+                                    zoom: _hasDeviceCoordinates ? 16 : 12,
+                                  ),
+                                  mapType: MapType.normal,
+                                  markers: _hasDeviceCoordinates
+                                      ? {
+                                          Marker(
+                                            markerId: const MarkerId(
+                                              'sheet-device',
+                                            ),
+                                            position: center,
+                                            icon:
+                                                BitmapDescriptor.defaultMarkerWithHue(
+                                                  BitmapDescriptor.hueAzure,
+                                                ),
                                           ),
-                                        ),
-                                        child: const Icon(
-                                          Icons.place_rounded,
-                                          color: AppColors.white,
-                                          size: 22,
-                                        ),
-                                      ),
-                                    ),
-                                  ],
+                                        }
+                                      : <Marker>{},
+                                  circles: _hasDeviceCoordinates
+                                      ? {
+                                          Circle(
+                                            circleId: const CircleId(
+                                              'sheet-radius',
+                                            ),
+                                            center: center,
+                                            radius: 45,
+                                            fillColor: const Color(0x331AA972),
+                                            strokeColor: const Color(
+                                              0xFF1AA972,
+                                            ),
+                                            strokeWidth: 2,
+                                          ),
+                                        }
+                                      : <Circle>{},
+                                  myLocationEnabled: false,
+                                  myLocationButtonEnabled: false,
+                                  zoomControlsEnabled: false,
+                                  mapToolbarEnabled: false,
+                                  compassEnabled: false,
+                                  rotateGesturesEnabled: false,
+                                  tiltGesturesEnabled: false,
+                                  onMapCreated: (_) {},
                                 ),
-                            ],
-                          ),
                         ),
                       ),
                       const SizedBox(height: 12),
                       Text(
-                        'Map data (c) OpenStreetMap contributors',
+                        'Google Maps live preview',
                         textAlign: TextAlign.center,
                         style: TextStyle(
                           fontFamily: _bf,
@@ -2006,6 +2098,16 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
             _buildDeviceRow('Current Location', _deviceLocation),
             const SizedBox(height: 8),
             _buildDeviceRow('Route', _activeRoute),
+            const SizedBox(height: 8),
+            _buildDeviceRow(
+              'Linked Parent Name',
+              _linkedParentName.isEmpty ? 'Not linked' : _linkedParentName,
+            ),
+            const SizedBox(height: 8),
+            _buildDeviceRow(
+              'Linked Parent',
+              _linkedParentPhone.isEmpty ? 'Not linked' : _linkedParentPhone,
+            ),
             const SizedBox(height: 14),
             Wrap(
               spacing: 8,
@@ -2042,6 +2144,11 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
           title: _fullName,
           subtitle: 'STUDENT ACCOUNT',
           children: [
+            _buildDeviceRow(
+              'Student UID',
+              _studentUid.isEmpty ? 'Unavailable' : _studentUid,
+            ),
+            const SizedBox(height: 8),
             _buildDeviceRow('Email', _email.isEmpty ? '-' : _email),
             const SizedBox(height: 8),
             _buildDeviceRow('Phone', _phoneNumber.isEmpty ? '-' : _phoneNumber),
@@ -2052,6 +2159,16 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
             ),
             const SizedBox(height: 8),
             _buildDeviceRow('Current Route', _activeRoute),
+            const SizedBox(height: 8),
+            _buildDeviceRow(
+              'Parent UID',
+              _linkedParentUid.isEmpty ? 'Not linked' : _linkedParentUid,
+            ),
+            const SizedBox(height: 8),
+            _buildDeviceRow(
+              'Parent Phone',
+              _linkedParentPhone.isEmpty ? 'Not linked' : _linkedParentPhone,
+            ),
             const SizedBox(height: 14),
             _buildPanelAction(label: 'EDIT PROFILE', onTap: _showProfileDialog),
           ],
@@ -2072,6 +2189,11 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
           title: 'Preferences',
           subtitle: 'STUDENT CONTROLS',
           children: [
+            _buildDeviceRow(
+              'Student UID',
+              _studentUid.isEmpty ? 'Unavailable' : _studentUid,
+            ),
+            const SizedBox(height: 8),
             _buildDeviceRow('Alerts', _alertsEnabled ? 'Enabled' : 'Disabled'),
             const SizedBox(height: 8),
             _buildDeviceRow(
@@ -2082,6 +2204,16 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
             _buildDeviceRow(
               'Location Sharing',
               _locationSharingEnabled ? 'Enabled' : 'Disabled',
+            ),
+            const SizedBox(height: 8),
+            _buildDeviceRow(
+              'Parent Link',
+              _linkedParentUid.isEmpty ? 'Not linked' : 'Connected',
+            ),
+            const SizedBox(height: 8),
+            _buildDeviceRow(
+              'Parent Contact',
+              _linkedParentPhone.isEmpty ? 'Not linked' : _linkedParentPhone,
             ),
             const SizedBox(height: 14),
             Wrap(
@@ -2405,53 +2537,53 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
           Positioned.fill(
             child: ClipRRect(
               borderRadius: BorderRadius.circular(22),
-              child: FlutterMap(
-                options: MapOptions(
-                  initialCenter: center,
-                  initialZoom: _hasDeviceCoordinates ? 16 : 12,
-                  minZoom: 3,
-                  maxZoom: 19,
-                ),
-                children: [
-                  TileLayer(
-                    urlTemplate:
-                        'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-                    userAgentPackageName: 'com.example.safewalk',
-                  ),
-                  if (_hasDeviceCoordinates)
-                    MarkerLayer(
-                      markers: [
-                        Marker(
-                          point: center,
-                          width: 42,
-                          height: 42,
-                          child: Container(
-                            decoration: BoxDecoration(
-                              color: AppColors.green,
-                              shape: BoxShape.circle,
-                              border: Border.all(
-                                color: AppColors.gold,
-                                width: 1.8,
-                              ),
-                              boxShadow: [
-                                BoxShadow(
-                                  color: Colors.black.withOpacity(0.25),
-                                  blurRadius: 10,
-                                  offset: const Offset(0, 3),
+              child: kIsWeb && !isGoogleMapsJsLoaded()
+                  ? _buildWebMapFallback(contextLabel: 'Student Route Card')
+                  : GoogleMap(
+                      key: ValueKey(
+                        'route-map-${center.latitude}-${center.longitude}-${_hasDeviceCoordinates ? 'track' : 'none'}',
+                      ),
+                      initialCameraPosition: CameraPosition(
+                        target: center,
+                        zoom: _hasDeviceCoordinates ? 16 : 12,
+                      ),
+                      mapType: MapType.normal,
+                      markers: _hasDeviceCoordinates
+                          ? {
+                              Marker(
+                                markerId: const MarkerId('route-device'),
+                                position: center,
+                                icon: BitmapDescriptor.defaultMarkerWithHue(
+                                  BitmapDescriptor.hueAzure,
                                 ),
-                              ],
-                            ),
-                            child: const Icon(
-                              Icons.location_on_rounded,
-                              color: AppColors.white,
-                              size: 22,
-                            ),
-                          ),
-                        ),
-                      ],
+                                infoWindow: InfoWindow(
+                                  title: _deviceName,
+                                  snippet: _deviceLocation,
+                                ),
+                              ),
+                            }
+                          : <Marker>{},
+                      circles: _hasDeviceCoordinates
+                          ? {
+                              Circle(
+                                circleId: const CircleId('route-radius'),
+                                center: center,
+                                radius: 45,
+                                fillColor: const Color(0x331AA972),
+                                strokeColor: const Color(0xFF1AA972),
+                                strokeWidth: 2,
+                              ),
+                            }
+                          : <Circle>{},
+                      myLocationEnabled: false,
+                      myLocationButtonEnabled: false,
+                      zoomControlsEnabled: false,
+                      mapToolbarEnabled: false,
+                      compassEnabled: false,
+                      rotateGesturesEnabled: false,
+                      tiltGesturesEnabled: false,
+                      onMapCreated: (_) {},
                     ),
-                ],
-              ),
             ),
           ),
           Positioned(
@@ -2569,7 +2701,7 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                   ),
                   const SizedBox(height: 4),
                   Text(
-                    'Map data (c) OpenStreetMap contributors',
+                    'Google Maps tracking view',
                     style: TextStyle(
                       fontFamily: _bf,
                       color: Colors.white.withOpacity(0.85),
