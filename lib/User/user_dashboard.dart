@@ -1,3 +1,6 @@
+import 'dart:typed_data';
+import 'dart:ui' as ui;
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -25,8 +28,6 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
 
   bool _isLoading = true;
-  bool _isSavingProfile = false;
-  bool _isSavingSettings = false;
   bool _isProfileSheetOpen = false;
 
   final TextEditingController _profileNameCtrl = TextEditingController();
@@ -36,13 +37,14 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
   String _email = '';
   String _phoneNumber = '';
   String _studentUid = '';
-  String _activeRoute = 'Main Campus -> Dorm Block C';
+  final String _activeRoute = 'Main Campus -> Dorm Block C';
 
   String _deviceId = 'Not linked';
   String _deviceName = 'No linked device';
   String _deviceLocation = 'Unknown';
   String _deviceStatus = 'offline';
   LatLng? _deviceCoordinates;
+  BitmapDescriptor? _sosMarkerIcon;
 
   bool _alertsEnabled = true;
   bool _safeModeEnabled = true;
@@ -50,6 +52,8 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
   String _linkedParentUid = '';
   String _linkedParentPhone = '';
   String _linkedParentName = '';
+  List<_ParentInvitation> _pendingInvitations = const [];
+  bool _isLoadingInvitations = false;
 
   final List<_ToolItem> _tools = const [
     _ToolItem(
@@ -152,8 +156,9 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
     }
 
     final location = data['location'];
-    if (location is GeoPoint)
+    if (location is GeoPoint) {
       return LatLng(location.latitude, location.longitude);
+    }
     if (location is String) {
       final parsed = _coordinatesFromText(location);
       if (parsed != null) return parsed;
@@ -162,14 +167,152 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
     return null;
   }
 
+  LatLng? _extractAlertCoordinates(Map<String, dynamic> data) {
+    final coordinates = data['coordinates'];
+    if (coordinates is GeoPoint) {
+      return LatLng(coordinates.latitude, coordinates.longitude);
+    }
+    if (coordinates is Map) {
+      final nested = _coordinatesFromValues(
+        coordinates['latitude'] ?? coordinates['lat'],
+        coordinates['longitude'] ?? coordinates['lng'] ?? coordinates['lon'],
+      );
+      if (nested != null) return nested;
+    }
+
+    final direct = _coordinatesFromValues(
+      data['latitude'] ?? data['lat'],
+      data['longitude'] ?? data['lng'] ?? data['lon'],
+    );
+    if (direct != null) return direct;
+
+    final location = data['location'];
+    if (location is GeoPoint) {
+      return LatLng(location.latitude, location.longitude);
+    }
+    if (location is String) {
+      return _coordinatesFromText(location);
+    }
+
+    return null;
+  }
+
+  String _formatCoordinateLabel(LatLng? point) {
+    if (point == null) return 'Not available';
+    return '${point.latitude.toStringAsFixed(6)}, ${point.longitude.toStringAsFixed(6)}';
+  }
+
+  String get _activeStudentUid {
+    if (_studentUid.isNotEmpty) return _studentUid;
+    return FirebaseAuth.instance.currentUser?.uid ?? '';
+  }
+
+  _SosMapState _resolveSosMapState(
+    Iterable<QueryDocumentSnapshot<Map<String, dynamic>>> docs,
+  ) {
+    final sosDocs =
+        docs.where((doc) {
+          final data = doc.data();
+          final type = (data['type'] ?? '').toString().toLowerCase();
+          return type == 'sos';
+        }).toList()..sort((a, b) {
+          final aTs = a.data()['timestamp'] as Timestamp?;
+          final bTs = b.data()['timestamp'] as Timestamp?;
+          final aClientTs = a.data()['clientTimestamp'] as Timestamp?;
+          final bClientTs = b.data()['clientTimestamp'] as Timestamp?;
+          final aMs =
+              aTs?.millisecondsSinceEpoch ?? aClientTs?.millisecondsSinceEpoch ?? 0;
+          final bMs =
+              bTs?.millisecondsSinceEpoch ?? bClientTs?.millisecondsSinceEpoch ?? 0;
+          return bMs.compareTo(aMs);
+        });
+
+    if (sosDocs.isEmpty) return const _SosMapState();
+
+    final latest = sosDocs.first.data();
+    final coordinate = _extractAlertCoordinates(latest);
+    final status = (latest['status'] ?? '').toString().toLowerCase();
+    final locationText = (latest['location'] ?? '').toString().trim();
+    return _SosMapState(
+      coordinate: coordinate,
+      isActive: status == 'active',
+      timestampLabel: _formatTimestamp(latest['timestamp'] as Timestamp?),
+      areaLabel: locationText.isEmpty
+          ? _formatCoordinateLabel(coordinate)
+          : locationText,
+    );
+  }
+
   LatLng get _mapCenter => _deviceCoordinates ?? _defaultMapCenter;
 
   bool get _hasDeviceCoordinates => _deviceCoordinates != null;
 
   String get _mapCoordinateLabel {
-    if (!_hasDeviceCoordinates) return 'Not available';
-    final coords = _deviceCoordinates!;
-    return '${coords.latitude.toStringAsFixed(6)}, ${coords.longitude.toStringAsFixed(6)}';
+    return _formatCoordinateLabel(_deviceCoordinates);
+  }
+
+  Future<Uint8List> _buildSosMarkerBytes({int size = 144}) async {
+    final markerSize = size.toDouble();
+    final recorder = ui.PictureRecorder();
+    final canvas = Canvas(
+      recorder,
+      Rect.fromLTWH(0, 0, markerSize, markerSize),
+    );
+
+    final center = Offset(markerSize / 2, markerSize * 0.38);
+    final topRadius = markerSize * 0.22;
+    final bodyColor = const Color(0xFFF21D2F);
+    final shadowPaint = Paint()
+      ..color = Colors.black.withOpacity(0.18)
+      ..style = PaintingStyle.fill;
+    final pinPaint = Paint()
+      ..color = bodyColor
+      ..style = PaintingStyle.fill;
+
+    final shadowPath = Path()
+      ..moveTo(center.dx, markerSize * 0.92)
+      ..lineTo(center.dx - topRadius * 0.62, center.dy + topRadius * 0.68)
+      ..lineTo(center.dx + topRadius * 0.62, center.dy + topRadius * 0.68)
+      ..close();
+    canvas.drawCircle(
+      Offset(center.dx, center.dy + markerSize * 0.012),
+      topRadius,
+      shadowPaint,
+    );
+    canvas.drawPath(shadowPath, shadowPaint);
+
+    final pinPath = Path()
+      ..moveTo(center.dx, markerSize * 0.88)
+      ..lineTo(center.dx - topRadius * 0.58, center.dy + topRadius * 0.62)
+      ..lineTo(center.dx + topRadius * 0.58, center.dy + topRadius * 0.62)
+      ..close();
+    canvas.drawCircle(center, topRadius, pinPaint);
+    canvas.drawPath(pinPath, pinPaint);
+    canvas.drawCircle(
+      center,
+      topRadius * 0.47,
+      Paint()..color = Colors.white,
+    );
+
+    final picture = recorder.endRecording();
+    final image = await picture.toImage(size, size);
+    final bytes = await image.toByteData(format: ui.ImageByteFormat.png);
+    if (bytes == null) {
+      return Uint8List(0);
+    }
+    return bytes.buffer.asUint8List();
+  }
+
+  Future<void> _prepareMapMarkers() async {
+    try {
+      final bytes = await _buildSosMarkerBytes();
+      if (bytes.isEmpty) return;
+      final icon = BitmapDescriptor.fromBytes(bytes);
+      if (!mounted) return;
+      setState(() => _sosMarkerIcon = icon);
+    } catch (_) {
+      // Keep default marker fallback when custom marker generation fails.
+    }
   }
 
   String _formatTimestamp(Timestamp? ts) {
@@ -220,6 +363,7 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
   @override
   void initState() {
     super.initState();
+    _prepareMapMarkers();
     _loadDashboard();
   }
 
@@ -261,6 +405,7 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
       });
       await _loadLinkedDevice();
       await _loadLinkedParent();
+      await _loadPendingInvitations();
     } catch (e) {
       _showActionSnack('Failed to load dashboard data: $e', isError: true);
     } finally {
@@ -316,22 +461,35 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
     if (currentUid == null) return;
 
     final normalizedStudentPhone = _normalizePhoneForLookup(_phoneNumber);
-    var linkQuery = await _firestore
+    final linkQuery = await _firestore
         .collection('parent_student_links')
         .where('studentUid', isEqualTo: currentUid)
-        .limit(1)
+        .limit(50)
         .get();
 
-    if (linkQuery.docs.isEmpty && normalizedStudentPhone.isNotEmpty) {
-      linkQuery = await _firestore
+    var acceptedDocs = linkQuery.docs.where((doc) {
+      final status = (doc.data()['status'] ?? 'accepted')
+          .toString()
+          .toLowerCase();
+      return status == 'accepted';
+    }).toList();
+
+    if (acceptedDocs.isEmpty && normalizedStudentPhone.isNotEmpty) {
+      final byPhoneQuery = await _firestore
           .collection('parent_student_links')
           .where('studentPhoneNormalized', isEqualTo: normalizedStudentPhone)
-          .limit(1)
+          .limit(50)
           .get();
+      acceptedDocs = byPhoneQuery.docs.where((doc) {
+        final status = (doc.data()['status'] ?? 'accepted')
+            .toString()
+            .toLowerCase();
+        return status == 'accepted';
+      }).toList();
     }
 
     if (!mounted) return;
-    if (linkQuery.docs.isEmpty) {
+    if (acceptedDocs.isEmpty) {
       setState(() {
         _linkedParentUid = '';
         _linkedParentPhone = '';
@@ -340,7 +498,15 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
       return;
     }
 
-    final link = linkQuery.docs.first.data();
+    acceptedDocs.sort((a, b) {
+      final aTs = (a.data()['updatedAt'] ?? a.data()['linkedAt']) as Timestamp?;
+      final bTs = (b.data()['updatedAt'] ?? b.data()['linkedAt']) as Timestamp?;
+      return (bTs?.millisecondsSinceEpoch ?? 0).compareTo(
+        aTs?.millisecondsSinceEpoch ?? 0,
+      );
+    });
+
+    final link = acceptedDocs.first.data();
     final parentUid = (link['parentUid'] ?? '').toString();
     final parentPhone = (link['parentPhone'] ?? '').toString();
     String parentName = (link['parentName'] ?? '').toString();
@@ -360,6 +526,177 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
     });
   }
 
+  Future<void> _loadPendingInvitations() async {
+    final currentUid = FirebaseAuth.instance.currentUser?.uid;
+    if (currentUid == null) return;
+
+    if (mounted) setState(() => _isLoadingInvitations = true);
+    try {
+      final normalizedStudentPhone = _normalizePhoneForLookup(_phoneNumber);
+      final byUid = await _firestore
+          .collection('parent_student_invitations')
+          .where('studentUid', isEqualTo: currentUid)
+          .limit(50)
+          .get();
+
+      final byPhone = byUid.docs.isEmpty && normalizedStudentPhone.isNotEmpty
+          ? await _firestore
+                .collection('parent_student_invitations')
+                .where(
+                  'studentPhoneNormalized',
+                  isEqualTo: normalizedStudentPhone,
+                )
+                .limit(50)
+                .get()
+          : null;
+
+      final docs = byUid.docs.isNotEmpty
+          ? byUid.docs
+          : (byPhone?.docs ?? const []);
+
+      final invitations = <_ParentInvitation>[];
+      for (final doc in docs) {
+        final data = doc.data();
+        final status = (data['status'] ?? 'pending').toString().toLowerCase();
+        if (status != 'pending') continue;
+
+        final parentUid = (data['parentUid'] ?? '').toString().trim();
+        if (parentUid.isEmpty) continue;
+
+        final studentUid =
+            (data['studentUid'] ?? currentUid).toString().trim().isEmpty
+            ? currentUid
+            : (data['studentUid'] ?? currentUid).toString().trim();
+
+        invitations.add(
+          _ParentInvitation(
+            id: doc.id,
+            parentUid: parentUid,
+            parentName: (data['parentName'] ?? 'Parent').toString().trim(),
+            parentPhone: (data['parentPhone'] ?? '').toString().trim(),
+            studentUid: studentUid,
+            createdAt: data['createdAt'] as Timestamp?,
+          ),
+        );
+      }
+
+      invitations.sort((a, b) {
+        return (b.createdAt?.millisecondsSinceEpoch ?? 0).compareTo(
+          a.createdAt?.millisecondsSinceEpoch ?? 0,
+        );
+      });
+
+      if (!mounted) return;
+      setState(() => _pendingInvitations = invitations);
+    } catch (e) {
+      _showActionSnack('Failed to load parent invitations: $e', isError: true);
+    } finally {
+      if (mounted) setState(() => _isLoadingInvitations = false);
+    }
+  }
+
+  Future<void> _acceptInvitation(_ParentInvitation invitation) async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) {
+      _showActionSnack('Please login again.', isError: true);
+      return;
+    }
+    final invitationStudentUid = invitation.studentUid.trim();
+    final studentUid = invitationStudentUid.isEmpty
+        ? (_studentUid.isEmpty ? user.uid : _studentUid)
+        : invitationStudentUid;
+    final parentUid = invitation.parentUid.trim();
+    if (parentUid.isEmpty) {
+      _showActionSnack('Invalid invitation.', isError: true);
+      return;
+    }
+
+    final invitationDocId = invitation.id.trim().isEmpty
+        ? '${parentUid}_$studentUid'
+        : invitation.id.trim();
+    final linkDocId = '${parentUid}_$studentUid';
+    final parentPhone = invitation.parentPhone.trim();
+
+    try {
+      final batch = _firestore.batch();
+      final invitationRef = _firestore
+          .collection('parent_student_invitations')
+          .doc(invitationDocId);
+      batch.set(invitationRef, {
+        'status': 'accepted',
+        'studentUid': studentUid,
+        'studentName': _fullName.trim(),
+        'studentPhone': _phoneNumber.trim(),
+        'studentPhoneNormalized': _normalizePhoneForLookup(_phoneNumber),
+        'updatedAt': FieldValue.serverTimestamp(),
+        'respondedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+
+      final linkRef = _firestore
+          .collection('parent_student_links')
+          .doc(linkDocId);
+      batch.set(linkRef, {
+        'parentUid': parentUid,
+        'parentName': invitation.parentName.trim(),
+        'parentPhone': parentPhone,
+        'parentPhoneNormalized': _normalizePhoneForLookup(parentPhone),
+        'studentUid': studentUid,
+        'studentName': _fullName.trim(),
+        'studentPhone': _phoneNumber.trim(),
+        'studentPhoneNormalized': _normalizePhoneForLookup(_phoneNumber),
+        'status': 'accepted',
+        'linkedAt': FieldValue.serverTimestamp(),
+        'updatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+
+      await batch.commit();
+      await _loadLinkedParent();
+      await _loadPendingInvitations();
+      _showActionSnack('Invitation accepted.');
+    } catch (e) {
+      _showActionSnack('Failed to accept invitation: $e', isError: true);
+    }
+  }
+
+  Future<void> _rejectInvitation(_ParentInvitation invitation) async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) {
+      _showActionSnack('Please login again.', isError: true);
+      return;
+    }
+    final invitationStudentUid = invitation.studentUid.trim();
+    final studentUid = invitationStudentUid.isEmpty
+        ? (_studentUid.isEmpty ? user.uid : _studentUid)
+        : invitationStudentUid;
+    final parentUid = invitation.parentUid.trim();
+    if (parentUid.isEmpty) {
+      _showActionSnack('Invalid invitation.', isError: true);
+      return;
+    }
+    final invitationDocId = invitation.id.trim().isEmpty
+        ? '${parentUid}_$studentUid'
+        : invitation.id.trim();
+
+    try {
+      await _firestore
+          .collection('parent_student_invitations')
+          .doc(invitationDocId)
+          .set({
+            'status': 'rejected',
+            'studentUid': studentUid,
+            'studentName': _fullName.trim(),
+            'studentPhone': _phoneNumber.trim(),
+            'studentPhoneNormalized': _normalizePhoneForLookup(_phoneNumber),
+            'updatedAt': FieldValue.serverTimestamp(),
+            'respondedAt': FieldValue.serverTimestamp(),
+          }, SetOptions(merge: true));
+      await _loadPendingInvitations();
+      _showActionSnack('Invitation rejected.');
+    } catch (e) {
+      _showActionSnack('Failed to reject invitation: $e', isError: true);
+    }
+  }
+
   // ─── Actions ───────────────────────────────────────────────────
 
   Future<void> _createSosAlert() async {
@@ -370,20 +707,25 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
     }
     try {
       await _loadLinkedParent();
+      await _loadLinkedDevice();
       if (_linkedParentUid.trim().isEmpty) {
         _showActionSnack(
-          'No linked parent account found. Ask your parent to connect your Student UID in Parent Settings.',
+          'No linked parent yet. Accept a parent invitation in Settings first.',
           isError: true,
         );
         return;
       }
 
-      final locationGeoPoint = _deviceCoordinates == null
+      final mapPoint = _deviceCoordinates ?? _coordinatesFromText(_deviceLocation);
+      final locationGeoPoint = mapPoint == null
           ? null
           : GeoPoint(
-              _deviceCoordinates!.latitude,
-              _deviceCoordinates!.longitude,
+              mapPoint.latitude,
+              mapPoint.longitude,
             );
+      final locationLabel = mapPoint == null
+          ? _deviceLocation
+          : _formatCoordinateLabel(mapPoint);
 
       await _firestore.collection('emergency_alerts').add({
         'uid': user.uid,
@@ -397,11 +739,15 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
         'severity': 'high',
         'status': 'active',
         'message': 'SOS button pressed by $_fullName.',
-        'location': _deviceLocation,
+        'location': locationLabel,
         if (locationGeoPoint != null) 'coordinates': locationGeoPoint,
         'triggeredBy': 'student_dashboard',
+        'clientTimestamp': Timestamp.now(),
         'timestamp': FieldValue.serverTimestamp(),
       });
+      if (mounted) {
+        setState(() => _selectedNavIndex = 1);
+      }
       _showActionSnack('SOS sent to your linked parent.');
     } catch (e) {
       _showActionSnack('Failed to send SOS alert: $e', isError: true);
@@ -414,7 +760,6 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
       _showActionSnack('Please login again.', isError: true);
       return;
     }
-    setState(() => _isSavingProfile = true);
     try {
       await _firestore.collection('users').doc(uid).set({
         'fullName': fullName.trim(),
@@ -427,11 +772,10 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
       });
       await _loadLinkedDevice();
       await _loadLinkedParent();
+      await _loadPendingInvitations();
       _showActionSnack('Profile updated.');
     } catch (e) {
       _showActionSnack('Failed to update profile: $e', isError: true);
-    } finally {
-      if (mounted) setState(() => _isSavingProfile = false);
     }
   }
 
@@ -445,7 +789,6 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
       _showActionSnack('Please login again.', isError: true);
       return;
     }
-    setState(() => _isSavingSettings = true);
     try {
       await _firestore.collection('user_settings').doc(uid).set({
         'alertsEnabled': alertsEnabled,
@@ -462,14 +805,17 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
       _showActionSnack('Settings saved.');
     } catch (e) {
       _showActionSnack('Failed to save settings: $e', isError: true);
-    } finally {
-      if (mounted) setState(() => _isSavingSettings = false);
     }
   }
 
   // ─── LUXURY DIALOGS ────────────────────────────────────────────
 
-  Future<void> _showLocationDialog() async {
+  Future<void> _showLocationDialog({
+    LatLng? mapPoint,
+    bool sosIsActive = false,
+    String areaLabel = '',
+    String sosTimestampLabel = '',
+  }) async {
     await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
@@ -477,7 +823,10 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
       builder: (ctx) {
         return StatefulBuilder(
           builder: (context, setSheetState) {
-            final center = _mapCenter;
+            final effectivePoint = mapPoint ?? _deviceCoordinates;
+            final center = effectivePoint ?? _defaultMapCenter;
+            final hasPoint = effectivePoint != null;
+            final focusLabel = areaLabel.isEmpty ? _deviceLocation : areaLabel;
 
             Widget infoTile(String label, String value) {
               return Container(
@@ -605,13 +954,19 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                               vertical: 6,
                             ),
                             decoration: BoxDecoration(
-                              color: _hasDeviceCoordinates
+                              color: sosIsActive
+                                  ? const Color(0xFF7E1F14)
+                                  : hasPoint
                                   ? const Color(0xFF0F5A3E)
                                   : const Color(0xFF6C757D),
                               borderRadius: BorderRadius.circular(999),
                             ),
                             child: Text(
-                              _hasDeviceCoordinates ? 'TRACKING' : 'NO COORDS',
+                              sosIsActive
+                                  ? 'SOS ACTIVE'
+                                  : hasPoint
+                                  ? 'TRACKING'
+                                  : 'NO COORDS',
                               style: const TextStyle(
                                 fontFamily: _bf,
                                 color: AppColors.white,
@@ -634,39 +989,51 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                                 )
                               : GoogleMap(
                                   key: ValueKey(
-                                    'sheet-map-${center.latitude}-${center.longitude}',
+                                    'sheet-map-${center.latitude}-${center.longitude}-${sosIsActive ? 'sos' : 'track'}',
                                   ),
                                   initialCameraPosition: CameraPosition(
                                     target: center,
-                                    zoom: _hasDeviceCoordinates ? 16 : 12,
+                                    zoom: hasPoint ? 16 : 12,
                                   ),
                                   mapType: MapType.normal,
-                                  markers: _hasDeviceCoordinates
+                                  markers: hasPoint
                                       ? {
                                           Marker(
                                             markerId: const MarkerId(
                                               'sheet-device',
                                             ),
                                             position: center,
-                                            icon:
-                                                BitmapDescriptor.defaultMarkerWithHue(
-                                                  BitmapDescriptor.hueAzure,
-                                                ),
+                                            icon: sosIsActive
+                                                ? (_sosMarkerIcon ??
+                                                      BitmapDescriptor.defaultMarkerWithHue(
+                                                        BitmapDescriptor.hueRed,
+                                                      ))
+                                                : BitmapDescriptor.defaultMarkerWithHue(
+                                                    BitmapDescriptor.hueAzure,
+                                                  ),
+                                            infoWindow: InfoWindow(
+                                              title: sosIsActive
+                                                  ? 'SOS Location'
+                                                  : _deviceName,
+                                              snippet: focusLabel,
+                                            ),
                                           ),
                                         }
                                       : <Marker>{},
-                                  circles: _hasDeviceCoordinates
+                                  circles: hasPoint
                                       ? {
                                           Circle(
                                             circleId: const CircleId(
                                               'sheet-radius',
                                             ),
                                             center: center,
-                                            radius: 45,
-                                            fillColor: const Color(0x331AA972),
-                                            strokeColor: const Color(
-                                              0xFF1AA972,
-                                            ),
+                                            radius: sosIsActive ? 90 : 45,
+                                            fillColor: sosIsActive
+                                                ? const Color(0x55CB392B)
+                                                : const Color(0x331AA972),
+                                            strokeColor: sosIsActive
+                                                ? const Color(0xFFCB392B)
+                                                : const Color(0xFF1AA972),
                                             strokeWidth: 2,
                                           ),
                                         }
@@ -696,9 +1063,16 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                       const SizedBox(height: 14),
                       infoTile('ROUTE', _activeRoute),
                       const SizedBox(height: 10),
-                      infoTile('DEVICE LOCATION', _deviceLocation),
+                      infoTile('MAP FOCUS', focusLabel),
                       const SizedBox(height: 10),
-                      infoTile('COORDINATES', _mapCoordinateLabel),
+                      infoTile(
+                        'SOS STATUS',
+                        sosIsActive
+                            ? 'Active${sosTimestampLabel.isEmpty ? '' : ' - $sosTimestampLabel'}'
+                            : 'Not active',
+                      ),
+                      const SizedBox(height: 10),
+                      infoTile('COORDINATES', _formatCoordinateLabel(effectivePoint)),
                       const SizedBox(height: 10),
                       infoTile(
                         'LOCATION SHARING',
@@ -1614,6 +1988,8 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
   // ─── LUXURY SETTINGS SHEET ─────────────────────────────────────
 
   Future<void> _showSettingsDialog() async {
+    await _loadPendingInvitations();
+    if (!mounted) return;
     await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
@@ -1623,6 +1999,8 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
         bool localSafeMode = _safeModeEnabled;
         bool localLocationSharing = _locationSharingEnabled;
         bool isSaving = false;
+        bool isHandlingInvitation = false;
+        String invitationActionId = '';
 
         return StatefulBuilder(
           builder: (context, setSheet) {
@@ -1698,7 +2076,6 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                               ),
                             ),
                             const SizedBox(height: 24),
-
                             Container(
                               height: 1,
                               decoration: const BoxDecoration(
@@ -1708,8 +2085,6 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                               ),
                             ),
                             const SizedBox(height: 22),
-
-                            // Section: Safety & Alerts
                             Text(
                               'SAFETY & ALERTS',
                               style: TextStyle(
@@ -1721,7 +2096,6 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                               ),
                             ),
                             const SizedBox(height: 14),
-
                             _DashSettingsTile(
                               title: 'Enable Alerts',
                               subtitle: 'Receive emergency notifications',
@@ -1730,7 +2104,6 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                               onChanged: (v) => setSheet(() => localAlerts = v),
                             ),
                             const SizedBox(height: 10),
-
                             _DashSettingsTile(
                               title: 'Safe Mode',
                               subtitle: 'Enhanced safety monitoring',
@@ -1740,7 +2113,6 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                                   setSheet(() => localSafeMode = v),
                             ),
                             const SizedBox(height: 10),
-
                             _DashSettingsTile(
                               title: 'Location Sharing',
                               subtitle: 'Share GPS with guardians & admin',
@@ -1749,10 +2121,236 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                               onChanged: (v) =>
                                   setSheet(() => localLocationSharing = v),
                             ),
-
+                            const SizedBox(height: 22),
+                            Text(
+                              'PARENT INVITATIONS',
+                              style: TextStyle(
+                                fontFamily: _bf,
+                                fontSize: 9,
+                                letterSpacing: 4,
+                                color: AppColors.gold,
+                                fontWeight: FontWeight.w300,
+                              ),
+                            ),
+                            const SizedBox(height: 10),
+                            _buildDeviceRow(
+                              'Pending Requests',
+                              _pendingInvitations.length.toString(),
+                            ),
+                            const SizedBox(height: 10),
+                            Align(
+                              alignment: Alignment.centerRight,
+                              child: TextButton(
+                                onPressed: _isLoadingInvitations
+                                    ? null
+                                    : () async {
+                                        await _loadPendingInvitations();
+                                        if (sheetCtx.mounted) setSheet(() {});
+                                      },
+                                child: Text(
+                                  _isLoadingInvitations
+                                      ? 'Refreshing...'
+                                      : 'Refresh Invitations',
+                                  style: TextStyle(
+                                    fontFamily: _bf,
+                                    fontSize: 10,
+                                    letterSpacing: 1,
+                                    color: AppColors.green,
+                                  ),
+                                ),
+                              ),
+                            ),
+                            if (_isLoadingInvitations)
+                              const Center(
+                                child: Padding(
+                                  padding: EdgeInsets.symmetric(vertical: 14),
+                                  child: CircularProgressIndicator(
+                                    color: AppColors.gold,
+                                    strokeWidth: 2,
+                                  ),
+                                ),
+                              )
+                            else if (_pendingInvitations.isEmpty)
+                              Container(
+                                width: double.infinity,
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 14,
+                                  vertical: 12,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: AppColors.white,
+                                  borderRadius: BorderRadius.circular(12),
+                                  border: Border.all(color: AppColors.border),
+                                ),
+                                child: Text(
+                                  'No pending invitations right now.',
+                                  style: TextStyle(
+                                    fontFamily: _bf,
+                                    fontSize: 11,
+                                    color: AppColors.textSub,
+                                  ),
+                                ),
+                              )
+                            else
+                              Column(
+                                children: _pendingInvitations.map((invite) {
+                                  final isBusy =
+                                      isHandlingInvitation &&
+                                      invitationActionId == invite.id;
+                                  return Padding(
+                                    padding: const EdgeInsets.only(bottom: 10),
+                                    child: Container(
+                                      width: double.infinity,
+                                      padding: const EdgeInsets.fromLTRB(
+                                        12,
+                                        10,
+                                        12,
+                                        10,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        color: AppColors.white,
+                                        borderRadius: BorderRadius.circular(12),
+                                        border: Border.all(
+                                          color: AppColors.border,
+                                        ),
+                                      ),
+                                      child: Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          Text(
+                                            invite.parentName.isEmpty
+                                                ? 'Parent'
+                                                : invite.parentName,
+                                            style: TextStyle(
+                                              fontFamily: _bf,
+                                              color: AppColors.green,
+                                              fontSize: 12,
+                                              fontWeight: FontWeight.w600,
+                                            ),
+                                          ),
+                                          const SizedBox(height: 2),
+                                          Text(
+                                            invite.parentPhone.isEmpty
+                                                ? 'No phone provided'
+                                                : invite.parentPhone,
+                                            style: TextStyle(
+                                              fontFamily: _bf,
+                                              color: AppColors.textSub,
+                                              fontSize: 11,
+                                            ),
+                                          ),
+                                          const SizedBox(height: 2),
+                                          Text(
+                                            'Received ${_formatTimestamp(invite.createdAt)}',
+                                            style: TextStyle(
+                                              fontFamily: _bf,
+                                              color: AppColors.textSub,
+                                              fontSize: 10,
+                                            ),
+                                          ),
+                                          const SizedBox(height: 10),
+                                          Wrap(
+                                            spacing: 8,
+                                            runSpacing: 8,
+                                            children: [
+                                              OutlinedButton(
+                                                onPressed: isBusy
+                                                    ? null
+                                                    : () async {
+                                                        setSheet(() {
+                                                          isHandlingInvitation =
+                                                              true;
+                                                          invitationActionId =
+                                                              invite.id;
+                                                        });
+                                                        try {
+                                                          await _rejectInvitation(
+                                                            invite,
+                                                          );
+                                                          if (sheetCtx
+                                                              .mounted) {
+                                                            setSheet(() {});
+                                                          }
+                                                        } finally {
+                                                          if (sheetCtx
+                                                              .mounted) {
+                                                            setSheet(() {
+                                                              isHandlingInvitation =
+                                                                  false;
+                                                              invitationActionId =
+                                                                  '';
+                                                            });
+                                                          }
+                                                        }
+                                                      },
+                                                style: OutlinedButton.styleFrom(
+                                                  foregroundColor:
+                                                      AppColors.textSub,
+                                                  side: BorderSide(
+                                                    color: AppColors.border,
+                                                  ),
+                                                ),
+                                                child: const Text('Reject'),
+                                              ),
+                                              ElevatedButton(
+                                                onPressed: isBusy
+                                                    ? null
+                                                    : () async {
+                                                        setSheet(() {
+                                                          isHandlingInvitation =
+                                                              true;
+                                                          invitationActionId =
+                                                              invite.id;
+                                                        });
+                                                        try {
+                                                          await _acceptInvitation(
+                                                            invite,
+                                                          );
+                                                          if (sheetCtx
+                                                              .mounted) {
+                                                            setSheet(() {});
+                                                          }
+                                                        } finally {
+                                                          if (sheetCtx
+                                                              .mounted) {
+                                                            setSheet(() {
+                                                              isHandlingInvitation =
+                                                                  false;
+                                                              invitationActionId =
+                                                                  '';
+                                                            });
+                                                          }
+                                                        }
+                                                      },
+                                                style: ElevatedButton.styleFrom(
+                                                  backgroundColor:
+                                                      AppColors.green,
+                                                  foregroundColor:
+                                                      AppColors.white,
+                                                ),
+                                                child: isBusy
+                                                    ? const SizedBox(
+                                                        width: 14,
+                                                        height: 14,
+                                                        child:
+                                                            CircularProgressIndicator(
+                                                              strokeWidth: 2,
+                                                              color:
+                                                                  Colors.white,
+                                                            ),
+                                                      )
+                                                    : const Text('Accept'),
+                                              ),
+                                            ],
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  );
+                                }).toList(),
+                              ),
                             const SizedBox(height: 28),
-
-                            // Save button
                             SizedBox(
                               width: double.infinity,
                               child: Material(
@@ -1834,7 +2432,6 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
       },
     );
   }
-
   // ─── Tool Handlers ─────────────────────────────────────────────
 
   Future<void> _handleToolTap(String title) async {
@@ -1975,46 +2572,80 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
   }
 
   Widget _buildMapTab() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        _buildHeroCard(),
-        const SizedBox(height: 16),
-        _buildSectionLabel('LIVE MAP'),
-        const SizedBox(height: 10),
-        _buildRouteCard(),
-        const SizedBox(height: 14),
-        _buildDashboardPanel(
-          title: 'Map Overview',
-          subtitle: 'LOCATION TRACKING',
+    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+      stream: _activeStudentUid.isEmpty
+          ? null
+          : _firestore
+                .collection('emergency_alerts')
+                .where('uid', isEqualTo: _activeStudentUid)
+                .limit(60)
+                .snapshots(),
+      builder: (context, snapshot) {
+        final docs =
+            snapshot.data?.docs ??
+            <QueryDocumentSnapshot<Map<String, dynamic>>>[];
+        final sosState = _resolveSosMapState(docs);
+        final mapPoint = sosState.coordinate ?? _deviceCoordinates;
+        final hasPoint = mapPoint != null;
+        final trackingLabel = sosState.isActive
+            ? 'SOS active'
+            : hasPoint
+            ? 'Active'
+            : 'No coordinates';
+        final mapAreaLabel = sosState.areaLabel.isEmpty
+            ? _deviceLocation
+            : sosState.areaLabel;
+
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            _buildDeviceRow('Coordinates', _mapCoordinateLabel),
-            const SizedBox(height: 8),
-            _buildDeviceRow(
-              'Tracking',
-              _hasDeviceCoordinates ? 'Active' : 'No coordinates',
+            _buildHeroCard(),
+            const SizedBox(height: 16),
+            _buildSectionLabel('LIVE MAP'),
+            const SizedBox(height: 10),
+            _buildRouteCard(
+              mapPoint: mapPoint,
+              sosIsActive: sosState.isActive,
+              areaLabel: mapAreaLabel,
             ),
-            const SizedBox(height: 8),
-            _buildDeviceRow('Device', _deviceName),
             const SizedBox(height: 14),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
+            _buildDashboardPanel(
+              title: 'Map Overview',
+              subtitle: 'LOCATION TRACKING',
               children: [
-                _buildPanelAction(
-                  label: 'OPEN MAP SHEET',
-                  onTap: _showLocationDialog,
-                ),
-                _buildPanelAction(
-                  label: 'REFRESH DEVICE',
-                  onTap: _loadLinkedDevice,
-                  isPrimary: false,
+                _buildDeviceRow('Coordinates', _formatCoordinateLabel(mapPoint)),
+                const SizedBox(height: 8),
+                _buildDeviceRow('Tracking', trackingLabel),
+                const SizedBox(height: 8),
+                _buildDeviceRow('Map Focus', mapAreaLabel),
+                const SizedBox(height: 8),
+                _buildDeviceRow('Device', _deviceName),
+                const SizedBox(height: 14),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    _buildPanelAction(
+                      label: 'OPEN MAP SHEET',
+                      onTap: () => _showLocationDialog(
+                        mapPoint: mapPoint,
+                        sosIsActive: sosState.isActive,
+                        areaLabel: mapAreaLabel,
+                        sosTimestampLabel: sosState.timestampLabel,
+                      ),
+                    ),
+                    _buildPanelAction(
+                      label: 'REFRESH DEVICE',
+                      onTap: _loadLinkedDevice,
+                      isPrimary: false,
+                    ),
+                  ],
                 ),
               ],
             ),
           ],
-        ),
-      ],
+        );
+      },
     );
   }
 
@@ -2166,8 +2797,18 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
             ),
             const SizedBox(height: 8),
             _buildDeviceRow(
+              'Parent Name',
+              _linkedParentName.isEmpty ? 'Not linked' : _linkedParentName,
+            ),
+            const SizedBox(height: 8),
+            _buildDeviceRow(
               'Parent Phone',
               _linkedParentPhone.isEmpty ? 'Not linked' : _linkedParentPhone,
+            ),
+            const SizedBox(height: 8),
+            _buildDeviceRow(
+              'Pending Invitations',
+              _pendingInvitations.length.toString(),
             ),
             const SizedBox(height: 14),
             _buildPanelAction(label: 'EDIT PROFILE', onTap: _showProfileDialog),
@@ -2212,8 +2853,18 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
             ),
             const SizedBox(height: 8),
             _buildDeviceRow(
+              'Parent Name',
+              _linkedParentName.isEmpty ? 'Not linked' : _linkedParentName,
+            ),
+            const SizedBox(height: 8),
+            _buildDeviceRow(
               'Parent Contact',
               _linkedParentPhone.isEmpty ? 'Not linked' : _linkedParentPhone,
+            ),
+            const SizedBox(height: 8),
+            _buildDeviceRow(
+              'Pending Invitations',
+              _pendingInvitations.length.toString(),
             ),
             const SizedBox(height: 14),
             Wrap(
@@ -2516,8 +3167,15 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
     );
   }
 
-  Widget _buildRouteCard() {
-    final center = _mapCenter;
+  Widget _buildRouteCard({
+    LatLng? mapPoint,
+    bool sosIsActive = false,
+    String areaLabel = '',
+  }) {
+    final effectivePoint = mapPoint ?? _deviceCoordinates;
+    final center = effectivePoint ?? _defaultMapCenter;
+    final hasPoint = effectivePoint != null;
+    final focusLabel = areaLabel.isEmpty ? _deviceLocation : areaLabel;
     return Container(
       height: 260,
       decoration: BoxDecoration(
@@ -2541,36 +3199,47 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                   ? _buildWebMapFallback(contextLabel: 'Student Route Card')
                   : GoogleMap(
                       key: ValueKey(
-                        'route-map-${center.latitude}-${center.longitude}-${_hasDeviceCoordinates ? 'track' : 'none'}',
+                        'route-map-${center.latitude}-${center.longitude}-${sosIsActive ? 'sos' : hasPoint ? 'track' : 'none'}',
                       ),
                       initialCameraPosition: CameraPosition(
                         target: center,
-                        zoom: _hasDeviceCoordinates ? 16 : 12,
+                        zoom: hasPoint ? 16 : 12,
                       ),
                       mapType: MapType.normal,
-                      markers: _hasDeviceCoordinates
+                      markers: hasPoint
                           ? {
                               Marker(
                                 markerId: const MarkerId('route-device'),
                                 position: center,
-                                icon: BitmapDescriptor.defaultMarkerWithHue(
-                                  BitmapDescriptor.hueAzure,
-                                ),
+                                icon: sosIsActive
+                                    ? (_sosMarkerIcon ??
+                                          BitmapDescriptor.defaultMarkerWithHue(
+                                            BitmapDescriptor.hueRed,
+                                          ))
+                                    : BitmapDescriptor.defaultMarkerWithHue(
+                                        BitmapDescriptor.hueAzure,
+                                      ),
                                 infoWindow: InfoWindow(
-                                  title: _deviceName,
-                                  snippet: _deviceLocation,
+                                  title: sosIsActive
+                                      ? 'SOS Location'
+                                      : _deviceName,
+                                  snippet: focusLabel,
                                 ),
                               ),
                             }
                           : <Marker>{},
-                      circles: _hasDeviceCoordinates
+                      circles: hasPoint
                           ? {
                               Circle(
                                 circleId: const CircleId('route-radius'),
                                 center: center,
-                                radius: 45,
-                                fillColor: const Color(0x331AA972),
-                                strokeColor: const Color(0xFF1AA972),
+                                radius: sosIsActive ? 90 : 45,
+                                fillColor: sosIsActive
+                                    ? const Color(0x55CB392B)
+                                    : const Color(0x331AA972),
+                                strokeColor: sosIsActive
+                                    ? const Color(0xFFCB392B)
+                                    : const Color(0xFF1AA972),
                                 strokeWidth: 2,
                               ),
                             }
@@ -2592,7 +3261,9 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
             child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
               decoration: BoxDecoration(
-                color: const Color(0xFF0E5B3C),
+                color: sosIsActive
+                    ? const Color(0xFF7E1F14)
+                    : const Color(0xFF0E5B3C),
                 borderRadius: BorderRadius.circular(999),
                 border: Border.all(
                   color: AppColors.gold.withOpacity(0.3),
@@ -2600,7 +3271,7 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                 ),
               ),
               child: Text(
-                'LIVE MAP',
+                sosIsActive ? 'SOS MAP' : 'LIVE MAP',
                 style: TextStyle(
                   fontFamily: _bf,
                   color: AppColors.gold,
@@ -2617,7 +3288,9 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
             child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
               decoration: BoxDecoration(
-                color: _hasDeviceCoordinates
+                color: sosIsActive
+                    ? const Color(0xFF7E1F14)
+                    : hasPoint
                     ? const Color(0xFF0F5A3E)
                     : const Color(0xFF6C757D),
                 borderRadius: BorderRadius.circular(999),
@@ -2629,13 +3302,19 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                   Icon(
                     Icons.circle,
                     size: 7,
-                    color: _hasDeviceCoordinates
+                    color: sosIsActive
+                        ? const Color(0xFFFF9F9F)
+                        : hasPoint
                         ? const Color(0xFF5DF0A0)
                         : const Color(0xFFF6D38E),
                   ),
                   const SizedBox(width: 5),
                   Text(
-                    _hasDeviceCoordinates ? 'TRACKING' : 'NO COORDS',
+                    sosIsActive
+                        ? 'SOS ACTIVE'
+                        : hasPoint
+                        ? 'TRACKING'
+                        : 'NO COORDS',
                     style: TextStyle(
                       fontFamily: _bf,
                       color: AppColors.white,
@@ -2689,8 +3368,10 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                   ),
                   const SizedBox(height: 6),
                   Text(
-                    _hasDeviceCoordinates
-                        ? '$_deviceName at $_mapCoordinateLabel'
+                    hasPoint
+                        ? (sosIsActive
+                              ? 'SOS pinned at ${_formatCoordinateLabel(effectivePoint)}'
+                              : '$_deviceName at ${_formatCoordinateLabel(effectivePoint)}')
                         : 'Waiting for device coordinates. Save location as "lat, lng".',
                     style: const TextStyle(
                       fontFamily: _bf,
@@ -2701,7 +3382,9 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                   ),
                   const SizedBox(height: 4),
                   Text(
-                    'Google Maps tracking view',
+                    sosIsActive
+                        ? focusLabel
+                        : 'Google Maps tracking view',
                     style: TextStyle(
                       fontFamily: _bf,
                       color: Colors.white.withOpacity(0.85),
@@ -3115,6 +3798,38 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
 //  Data models
 // ─────────────────────────────────────────────────────────────────
 
+class _ParentInvitation {
+  final String id;
+  final String parentUid;
+  final String parentName;
+  final String parentPhone;
+  final String studentUid;
+  final Timestamp? createdAt;
+
+  const _ParentInvitation({
+    required this.id,
+    required this.parentUid,
+    required this.parentName,
+    required this.parentPhone,
+    required this.studentUid,
+    required this.createdAt,
+  });
+}
+
+class _SosMapState {
+  final LatLng? coordinate;
+  final bool isActive;
+  final String timestampLabel;
+  final String areaLabel;
+
+  const _SosMapState({
+    this.coordinate,
+    this.isActive = false,
+    this.timestampLabel = '',
+    this.areaLabel = '',
+  });
+}
+
 class _InfoRow {
   final String label;
   final String value;
@@ -3224,16 +3939,12 @@ class _DashLuxuryField extends StatefulWidget {
   final String hint;
   final TextEditingController controller;
   final TextInputType keyboardType;
-  final bool obscure;
-  final Widget? suffixIcon;
 
   const _DashLuxuryField({
     required this.label,
     required this.hint,
     required this.controller,
     this.keyboardType = TextInputType.text,
-    this.obscure = false,
-    this.suffixIcon,
   });
 
   @override
@@ -3297,7 +4008,7 @@ class _DashLuxuryFieldState extends State<_DashLuxuryField>
                 child: TextField(
                   controller: widget.controller,
                   keyboardType: widget.keyboardType,
-                  obscureText: widget.obscure,
+                  obscureText: false,
                   style: const TextStyle(
                     fontFamily: 'JosefinSans',
                     fontSize: 14,
@@ -3314,7 +4025,6 @@ class _DashLuxuryFieldState extends State<_DashLuxuryField>
                       fontSize: 13,
                       letterSpacing: 1,
                     ),
-                    suffixIcon: widget.suffixIcon,
                     border: InputBorder.none,
                     contentPadding: const EdgeInsets.symmetric(
                       horizontal: 14,
@@ -3432,7 +4142,7 @@ class _DashSettingsTile extends StatelessWidget {
           Switch(
             value: value,
             onChanged: onChanged,
-            activeColor: AppColors.gold,
+            activeThumbColor: AppColors.gold,
             activeTrackColor: AppColors.green.withOpacity(0.4),
             inactiveThumbColor: AppColors.textSub,
             inactiveTrackColor: AppColors.cream,

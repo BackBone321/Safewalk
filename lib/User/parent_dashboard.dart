@@ -25,8 +25,6 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
 
   bool _isLoading = true;
-  bool _isSavingProfile = false;
-  bool _isSavingSettings = false;
   bool _isProfileSheetOpen = false;
 
   final TextEditingController _profileNameCtrl = TextEditingController();
@@ -36,13 +34,13 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
   String _parentEmail = '';
   String _parentPhone = '';
   String _parentUid = '';
+  List<_LinkedStudent> _linkedStudents = const [];
 
   String _childUid = '';
   String _childName = 'Student';
   String _childPhone = '';
   String _childRoute = 'Main Campus -> Dorm Block C';
   bool _childSessionActive = false;
-  DateTime? _childSessionStartedAt;
   double _childDistanceKm = 1.2;
 
   String _deviceId = 'Not linked';
@@ -194,18 +192,6 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
 
   LatLng get _childMapCenter => _childDeviceCoordinates ?? _defaultMapCenter;
 
-  String get _elapsedLabel {
-    if (!_childSessionActive || _childSessionStartedAt == null) return '--';
-    final d = DateTime.now().difference(_childSessionStartedAt!);
-    return '${d.inMinutes} min';
-  }
-
-  String get _routeMetric {
-    final r = _childRoute.split('->').first.trim();
-    if (r.isEmpty) return 'Campus';
-    return r.length > 10 ? '${r.substring(0, 10)}.' : r;
-  }
-
   String _formatTimestamp(Timestamp? ts) {
     if (ts == null) return 'Unknown time';
     final dt = ts.toDate().toLocal();
@@ -297,35 +283,26 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
             (settingsDoc.data()?['emailAlertsEnabled'] as bool?) ?? true;
       });
 
+      final linkedStudents = await _fetchLinkedStudents(
+        parentUid: currentUser.uid,
+        normalizedParentPhone: normalizedParentPhone,
+      );
+      if (!mounted) return;
+      setState(() => _linkedStudents = linkedStudents);
+
       String configuredChildUid = (settingsDoc.data()?['childUid'] ?? '')
-          .toString();
-      if (configuredChildUid.isEmpty) {
-        final linkByUid = await _firestore
-            .collection('parent_student_links')
-            .where('parentUid', isEqualTo: currentUser.uid)
-            .limit(1)
-            .get();
-        if (linkByUid.docs.isNotEmpty) {
-          configuredChildUid = (linkByUid.docs.first.data()['studentUid'] ?? '')
-              .toString();
-        }
+          .toString()
+          .trim();
+      final hasConfiguredChild = linkedStudents.any(
+        (student) => student.uid == configuredChildUid,
+      );
+      if (!hasConfiguredChild) {
+        configuredChildUid = linkedStudents.isNotEmpty
+            ? linkedStudents.first.uid
+            : '';
       }
-      if (configuredChildUid.isEmpty && normalizedParentPhone.isNotEmpty) {
-        final linkByPhone = await _firestore
-            .collection('parent_student_links')
-            .where('parentPhoneNormalized', isEqualTo: normalizedParentPhone)
-            .limit(1)
-            .get();
-        if (linkByPhone.docs.isNotEmpty) {
-          configuredChildUid =
-              (linkByPhone.docs.first.data()['studentUid'] ?? '').toString();
-        }
-      }
+
       if (configuredChildUid.isNotEmpty) {
-        await _upsertParentStudentLink(
-          parentUid: currentUser.uid,
-          childUid: configuredChildUid,
-        );
         await _loadChildData(configuredChildUid);
       } else if (mounted) {
         setState(() {
@@ -334,7 +311,6 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
           _childPhone = '';
           _childRoute = 'Main Campus -> Dorm Block C';
           _childSessionActive = false;
-          _childSessionStartedAt = null;
           _childDistanceKm = 0;
           _deviceId = 'Not linked';
           _deviceName = 'No linked device';
@@ -348,6 +324,130 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }
+  }
+
+  Future<List<_LinkedStudent>> _fetchLinkedStudents({
+    required String parentUid,
+    required String normalizedParentPhone,
+  }) async {
+    if (parentUid.trim().isEmpty) return const [];
+
+    final byUid = await _firestore
+        .collection('parent_student_links')
+        .where('parentUid', isEqualTo: parentUid)
+        .limit(100)
+        .get();
+
+    final byPhone = byUid.docs.isEmpty && normalizedParentPhone.isNotEmpty
+        ? await _firestore
+              .collection('parent_student_links')
+              .where('parentPhoneNormalized', isEqualTo: normalizedParentPhone)
+              .limit(100)
+              .get()
+        : null;
+
+    final docs = byUid.docs.isNotEmpty
+        ? byUid.docs
+        : (byPhone?.docs ?? const []);
+    final uniqueByStudentUid = <String, _LinkedStudent>{};
+
+    for (final doc in docs) {
+      final data = doc.data();
+      final status = (data['status'] ?? 'accepted').toString().toLowerCase();
+      if (status != 'accepted') continue;
+
+      final studentUid = (data['studentUid'] ?? '').toString().trim();
+      if (studentUid.isEmpty) continue;
+
+      var studentName = (data['studentName'] ?? '').toString().trim();
+      var studentPhone = (data['studentPhone'] ?? '').toString().trim();
+      if (studentName.isEmpty || studentPhone.isEmpty) {
+        final studentDoc = await _firestore
+            .collection('users')
+            .doc(studentUid)
+            .get();
+        if (studentDoc.exists) {
+          studentName = studentName.isEmpty
+              ? (studentDoc.data()?['fullName'] ?? 'Student').toString()
+              : studentName;
+          studentPhone = studentPhone.isEmpty
+              ? (studentDoc.data()?['phoneNumber'] ?? '').toString()
+              : studentPhone;
+        }
+      }
+
+      uniqueByStudentUid[studentUid] = _LinkedStudent(
+        uid: studentUid,
+        name: studentName.isEmpty ? 'Student' : studentName,
+        phone: studentPhone,
+      );
+    }
+
+    final result = uniqueByStudentUid.values.toList()
+      ..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+    return result;
+  }
+
+  Future<void> _sendStudentInvitation({required String studentUid}) async {
+    final parentUid = FirebaseAuth.instance.currentUser?.uid;
+    if (parentUid == null) {
+      _showActionSnack('Please login again.', isError: true);
+      return;
+    }
+
+    final targetUid = studentUid.trim();
+    if (targetUid.isEmpty) {
+      _showActionSnack('Enter a Student UID or phone number.', isError: true);
+      return;
+    }
+
+    final studentDoc = await _firestore
+        .collection('users')
+        .doc(targetUid)
+        .get();
+    if (!studentDoc.exists) {
+      _showActionSnack('Student account not found.', isError: true);
+      return;
+    }
+    final role = (studentDoc.data()?['role'] ?? '').toString().toLowerCase();
+    if (role != 'student') {
+      _showActionSnack('That UID is not a student account.', isError: true);
+      return;
+    }
+
+    final linkId = '${parentUid}_$targetUid';
+    final linkDoc = await _firestore
+        .collection('parent_student_links')
+        .doc(linkId)
+        .get();
+    final linkStatus = (linkDoc.data()?['status'] ?? 'accepted')
+        .toString()
+        .toLowerCase();
+    if (linkDoc.exists && linkStatus == 'accepted') {
+      _showActionSnack('Student is already linked to your account.');
+      return;
+    }
+
+    final studentData = studentDoc.data() ?? <String, dynamic>{};
+    final studentName = (studentData['fullName'] ?? 'Student').toString();
+    final studentPhone = (studentData['phoneNumber'] ?? '').toString();
+    final parentPhone = _parentPhone.trim();
+
+    await _firestore.collection('parent_student_invitations').doc(linkId).set({
+      'parentUid': parentUid,
+      'parentName': _parentName.trim(),
+      'parentPhone': parentPhone,
+      'parentPhoneNormalized': _normalizePhoneForLookup(parentPhone),
+      'studentUid': targetUid,
+      'studentName': studentName,
+      'studentPhone': studentPhone,
+      'studentPhoneNormalized': _normalizePhoneForLookup(studentPhone),
+      'status': 'pending',
+      'createdAt': FieldValue.serverTimestamp(),
+      'updatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+
+    _showActionSnack('Invitation sent to $studentName.');
   }
 
   Future<void> _loadChildData(String childUid) async {
@@ -389,13 +489,11 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
       if (walkQuery.docs.isNotEmpty) {
         final walkData = walkQuery.docs.first.data();
         _childSessionActive = true;
-        _childSessionStartedAt = (walkData['startAt'] as Timestamp?)?.toDate();
         _childRoute = (walkData['route'] ?? _childRoute).toString();
         _childDistanceKm =
             (walkData['distanceKm'] as num?)?.toDouble() ?? _childDistanceKm;
       } else {
         _childSessionActive = false;
-        _childSessionStartedAt = null;
       }
 
       if (deviceQuery.docs.isNotEmpty) {
@@ -444,41 +542,6 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
     return query.docs.first.id;
   }
 
-  Future<bool> _isValidStudentUid(String uid) async {
-    final trimmedUid = uid.trim();
-    if (trimmedUid.isEmpty) return false;
-    final doc = await _firestore.collection('users').doc(trimmedUid).get();
-    if (!doc.exists) return false;
-    final role = (doc.data()?['role'] ?? '').toString().toLowerCase();
-    return role == 'student';
-  }
-
-  Future<void> _upsertParentStudentLink({
-    required String parentUid,
-    required String childUid,
-  }) async {
-    if (parentUid.trim().isEmpty || childUid.trim().isEmpty) return;
-
-    final childDoc = await _firestore.collection('users').doc(childUid).get();
-    final childData = childDoc.data() ?? <String, dynamic>{};
-    final childName = (childData['fullName'] ?? '').toString().trim();
-    final childPhone = (childData['phoneNumber'] ?? '').toString().trim();
-    final parentPhone = _parentPhone.trim();
-
-    final linkId = childUid;
-    await _firestore.collection('parent_student_links').doc(linkId).set({
-      'parentUid': parentUid,
-      'parentName': _parentName.trim(),
-      'parentPhone': parentPhone,
-      'parentPhoneNormalized': _normalizePhoneForLookup(parentPhone),
-      'studentUid': childUid,
-      'studentName': childName,
-      'studentPhone': childPhone,
-      'studentPhoneNormalized': _normalizePhoneForLookup(childPhone),
-      'updatedAt': FieldValue.serverTimestamp(),
-    }, SetOptions(merge: true));
-  }
-
   // ─── Save Methods ──────────────────────────────────────────────
 
   Future<void> _saveProfile(String fullName, String phoneNumber) async {
@@ -487,7 +550,6 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
       _showActionSnack('Please login again.', isError: true);
       return;
     }
-    setState(() => _isSavingProfile = true);
     try {
       await _firestore.collection('users').doc(uid).set({
         'fullName': fullName.trim(),
@@ -498,14 +560,9 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
         _parentName = fullName.trim();
         _parentPhone = phoneNumber.trim();
       });
-      if (_childUid.trim().isNotEmpty) {
-        await _upsertParentStudentLink(parentUid: uid, childUid: _childUid);
-      }
       _showActionSnack('Profile updated.');
     } catch (e) {
       _showActionSnack('Failed to update profile: $e', isError: true);
-    } finally {
-      if (mounted) setState(() => _isSavingProfile = false);
     }
   }
 
@@ -521,7 +578,6 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
       _showActionSnack('Please login again.', isError: true);
       return;
     }
-    setState(() => _isSavingSettings = true);
     try {
       await _firestore.collection('user_settings').doc(uid).set({
         'alertsEnabled': alertsEnabled,
@@ -538,20 +594,25 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
         _emailAlertsEnabled = emailAlertsEnabled;
       });
       final resolvedChildUid = childUid.trim();
-      if (resolvedChildUid.isNotEmpty) {
-        await _upsertParentStudentLink(
-          parentUid: uid,
-          childUid: resolvedChildUid,
-        );
-      }
       if (resolvedChildUid.isNotEmpty && resolvedChildUid != _childUid) {
         await _loadChildData(resolvedChildUid);
+      } else if (resolvedChildUid.isEmpty) {
+        setState(() {
+          _childUid = '';
+          _childName = 'Student';
+          _childPhone = '';
+          _childSessionActive = false;
+          _childDistanceKm = 0;
+          _deviceId = 'Not linked';
+          _deviceName = 'No linked device';
+          _deviceLocation = 'Unknown';
+          _deviceStatus = 'offline';
+          _childDeviceCoordinates = null;
+        });
       }
       _showActionSnack('Settings saved.');
     } catch (e) {
       _showActionSnack('Failed to save settings: $e', isError: true);
-    } finally {
-      if (mounted) setState(() => _isSavingSettings = false);
     }
   }
 
@@ -564,26 +625,8 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
       icon: Icons.shield_outlined,
       rows: [
         _InfoRow('Child', _childName),
-        _InfoRow('Session', _childSessionActive ? 'Active' : 'Inactive'),
         _InfoRow('Route', _childRoute),
-        _InfoRow('Elapsed', _elapsedLabel),
         _InfoRow('Distance', '${_childDistanceKm.toStringAsFixed(1)} km'),
-      ],
-    );
-  }
-
-  Future<void> _showSessionDetailsDialog() async {
-    await _showLuxuryInfoSheet(
-      title: 'Session Details',
-      subtitle: 'WALK SESSION',
-      icon: Icons.directions_walk_outlined,
-      rows: [
-        _InfoRow('Child', _childName),
-        _InfoRow('Status', _childSessionActive ? 'Active' : 'Inactive'),
-        _InfoRow('Route', _childRoute),
-        _InfoRow('Elapsed', _elapsedLabel),
-        _InfoRow('Distance', '${_childDistanceKm.toStringAsFixed(1)} km'),
-        _InfoRow('Last Location', _deviceLocation),
       ],
     );
   }
@@ -767,7 +810,7 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                               alignment: Alignment.center,
                               decoration: BoxDecoration(
                                 border: Border.all(
-                                  color: AppColors.gold.withOpacity(0.65),
+                                  color: AppColors.gold.withValues(alpha: 0.65),
                                 ),
                               ),
                               child: Text(
@@ -964,7 +1007,7 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                                 Icon(
                                   Icons.check_circle_outline,
                                   size: 48,
-                                  color: AppColors.gold.withOpacity(0.4),
+                                  color: AppColors.gold.withValues(alpha: 0.4),
                                 ),
                                 const SizedBox(height: 10),
                                 Text(
@@ -1003,12 +1046,12 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                                   color: isActive
                                       ? const Color(
                                           0xFFCB392B,
-                                        ).withOpacity(0.35)
+                                        ).withValues(alpha: 0.35)
                                       : AppColors.border,
                                 ),
                                 boxShadow: [
                                   BoxShadow(
-                                    color: Colors.black.withOpacity(0.04),
+                                    color: Colors.black.withValues(alpha: 0.04),
                                     blurRadius: 8,
                                     offset: const Offset(0, 3),
                                   ),
@@ -1108,7 +1151,7 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                                                   BorderRadius.circular(8),
                                               border: Border.all(
                                                 color: AppColors.gold
-                                                    .withOpacity(0.4),
+                                                    .withValues(alpha: 0.4),
                                               ),
                                             ),
                                             child: Text(
@@ -1256,7 +1299,7 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                                         ),
                                         boxShadow: [
                                           BoxShadow(
-                                            color: AppColors.green.withOpacity(
+                                            color: AppColors.green.withValues(alpha: 
                                               0.2,
                                             ),
                                             blurRadius: 20,
@@ -1336,7 +1379,7 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                                   color: AppColors.cream,
                                   borderRadius: BorderRadius.circular(2),
                                   border: Border.all(
-                                    color: AppColors.border.withOpacity(0.5),
+                                    color: AppColors.border.withValues(alpha: 0.5),
                                   ),
                                 ),
                                 child: Column(
@@ -1348,7 +1391,7 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                                         fontFamily: _bf,
                                         fontSize: 9,
                                         letterSpacing: 4,
-                                        color: AppColors.gold.withOpacity(0.8),
+                                        color: AppColors.gold.withValues(alpha: 0.8),
                                         fontWeight: FontWeight.w300,
                                       ),
                                     ),
@@ -1372,7 +1415,7 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                                         fontFamily: _bf,
                                         fontSize: 9,
                                         letterSpacing: 1,
-                                        color: AppColors.textSub.withOpacity(
+                                        color: AppColors.textSub.withValues(alpha: 
                                           0.6,
                                         ),
                                       ),
@@ -1422,7 +1465,7 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                                       alignment: Alignment.center,
                                       decoration: BoxDecoration(
                                         border: Border.all(
-                                          color: AppColors.gold.withOpacity(
+                                          color: AppColors.gold.withValues(alpha: 
                                             0.65,
                                           ),
                                         ),
@@ -1486,409 +1529,426 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
   // ─── LUXURY SETTINGS SHEET ─────────────────────────────────────
 
   Future<void> _showSettingsDialog() async {
-    await showModalBottomSheet<void>(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (sheetCtx) {
-        bool localAlerts = _alertsEnabled;
-        bool localSms = _smsAlertsEnabled;
-        bool localEmail = _emailAlertsEnabled;
-        bool isSaving = false;
-        final childUidCtrl = TextEditingController(text: _childUid);
-        final childPhoneCtrl = TextEditingController(text: _childPhone);
+    final inviteStudentUidCtrl = TextEditingController();
+    final inviteStudentPhoneCtrl = TextEditingController();
+    try {
+      await showModalBottomSheet<void>(
+        context: context,
+        isScrollControlled: true,
+        backgroundColor: Colors.transparent,
+        builder: (sheetCtx) {
+          bool localAlerts = _alertsEnabled;
+          bool localSms = _smsAlertsEnabled;
+          bool localEmail = _emailAlertsEnabled;
+          bool isSaving = false;
+          bool isSendingInvite = false;
+          String selectedChildUid = _childUid;
 
-        return StatefulBuilder(
-          builder: (context, setSheet) {
-            return Padding(
-              padding: EdgeInsets.only(
-                bottom: MediaQuery.of(context).viewInsets.bottom,
-              ),
-              child: Container(
-                decoration: const BoxDecoration(
-                  color: AppColors.offWhite,
-                  borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+          return StatefulBuilder(
+            builder: (context, setSheet) {
+              return Padding(
+                padding: EdgeInsets.only(
+                  bottom: MediaQuery.of(context).viewInsets.bottom,
                 ),
-                child: SingleChildScrollView(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Container(
-                        height: 1,
-                        decoration: const BoxDecoration(
-                          gradient: LinearGradient(
-                            colors: [
-                              Colors.transparent,
-                              AppColors.gold,
-                              Colors.transparent,
-                            ],
+                child: Container(
+                  decoration: const BoxDecoration(
+                    color: AppColors.offWhite,
+                    borderRadius: BorderRadius.vertical(
+                      top: Radius.circular(28),
+                    ),
+                  ),
+                  child: SingleChildScrollView(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Container(
+                          height: 1,
+                          decoration: const BoxDecoration(
+                            gradient: LinearGradient(
+                              colors: [
+                                Colors.transparent,
+                                AppColors.gold,
+                                Colors.transparent,
+                              ],
+                            ),
                           ),
                         ),
-                      ),
-                      const SizedBox(height: 14),
-                      Container(
-                        width: 36,
-                        height: 4,
-                        decoration: BoxDecoration(
-                          color: AppColors.border,
-                          borderRadius: BorderRadius.circular(99),
+                        const SizedBox(height: 14),
+                        Container(
+                          width: 36,
+                          height: 4,
+                          decoration: BoxDecoration(
+                            color: AppColors.border,
+                            borderRadius: BorderRadius.circular(99),
+                          ),
                         ),
-                      ),
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(24, 20, 24, 36),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              'PREFERENCES',
-                              style: TextStyle(
-                                fontFamily: _bf,
-                                fontSize: 9,
-                                letterSpacing: 4,
-                                color: AppColors.gold,
-                                fontWeight: FontWeight.w300,
-                              ),
-                            ),
-                            const SizedBox(height: 6),
-                            RichText(
-                              text: const TextSpan(
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(24, 20, 24, 36),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'PREFERENCES',
                                 style: TextStyle(
-                                  fontFamily: _hf,
-                                  fontSize: 34,
-                                  height: 1.05,
-                                  color: AppColors.green,
+                                  fontFamily: _bf,
+                                  fontSize: 9,
+                                  letterSpacing: 4,
+                                  color: AppColors.gold,
                                   fontWeight: FontWeight.w300,
                                 ),
-                                children: [
-                                  TextSpan(text: 'Account\n'),
-                                  TextSpan(
-                                    text: 'Settings',
-                                    style: TextStyle(
-                                      fontStyle: FontStyle.italic,
-                                      color: AppColors.goldDark,
-                                    ),
+                              ),
+                              const SizedBox(height: 6),
+                              RichText(
+                                text: const TextSpan(
+                                  style: TextStyle(
+                                    fontFamily: _hf,
+                                    fontSize: 34,
+                                    height: 1.05,
+                                    color: AppColors.green,
+                                    fontWeight: FontWeight.w300,
                                   ),
-                                ],
-                              ),
-                            ),
-                            const SizedBox(height: 24),
-                            Container(
-                              height: 1,
-                              decoration: const BoxDecoration(
-                                gradient: LinearGradient(
-                                  colors: [AppColors.gold, Colors.transparent],
-                                ),
-                              ),
-                            ),
-                            const SizedBox(height: 22),
-
-                            // Section: Notifications
-                            Text(
-                              'NOTIFICATIONS',
-                              style: TextStyle(
-                                fontFamily: _bf,
-                                fontSize: 9,
-                                letterSpacing: 4,
-                                color: AppColors.gold,
-                                fontWeight: FontWeight.w300,
-                              ),
-                            ),
-                            const SizedBox(height: 14),
-
-                            _DashSettingsTile(
-                              title: 'Enable Alerts',
-                              subtitle: 'Receive emergency notifications',
-                              icon: Icons.notifications_outlined,
-                              value: localAlerts,
-                              onChanged: (v) => setSheet(() => localAlerts = v),
-                            ),
-                            const SizedBox(height: 10),
-
-                            _DashSettingsTile(
-                              title: 'SMS Alerts',
-                              subtitle: 'Receive alerts via SMS',
-                              icon: Icons.sms_outlined,
-                              value: localSms,
-                              onChanged: (v) => setSheet(() => localSms = v),
-                            ),
-                            const SizedBox(height: 10),
-
-                            _DashSettingsTile(
-                              title: 'Email Alerts',
-                              subtitle: 'Receive alerts via email',
-                              icon: Icons.email_outlined,
-                              value: localEmail,
-                              onChanged: (v) => setSheet(() => localEmail = v),
-                            ),
-
-                            const SizedBox(height: 22),
-
-                            // Section: Child Link
-                            Text(
-                              'LINKED STUDENT',
-                              style: TextStyle(
-                                fontFamily: _bf,
-                                fontSize: 9,
-                                letterSpacing: 4,
-                                color: AppColors.gold,
-                                fontWeight: FontWeight.w300,
-                              ),
-                            ),
-                            const SizedBox(height: 14),
-
-                            // Current child display
-                            if (_childName.isNotEmpty && _childUid.isNotEmpty)
-                              Container(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 14,
-                                  vertical: 12,
-                                ),
-                                decoration: BoxDecoration(
-                                  color: AppColors.green.withOpacity(0.04),
-                                  borderRadius: BorderRadius.circular(12),
-                                  border: Border.all(
-                                    color: AppColors.gold.withOpacity(0.3),
-                                  ),
-                                ),
-                                child: Row(
                                   children: [
-                                    Container(
-                                      width: 36,
-                                      height: 36,
-                                      decoration: BoxDecoration(
-                                        shape: BoxShape.circle,
-                                        color: AppColors.green,
-                                        border: Border.all(
-                                          color: AppColors.gold,
-                                          width: 0.8,
-                                        ),
+                                    TextSpan(text: 'Account\n'),
+                                    TextSpan(
+                                      text: 'Settings',
+                                      style: TextStyle(
+                                        fontStyle: FontStyle.italic,
+                                        color: AppColors.goldDark,
                                       ),
-                                      child: Center(
-                                        child: Text(
-                                          _childName.isNotEmpty
-                                              ? _childName[0].toUpperCase()
-                                              : 'S',
-                                          style: const TextStyle(
-                                            fontFamily: _hf,
-                                            fontSize: 16,
-                                            color: AppColors.gold,
-                                            fontWeight: FontWeight.w300,
-                                          ),
-                                        ),
-                                      ),
-                                    ),
-                                    const SizedBox(width: 12),
-                                    Column(
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.start,
-                                      children: [
-                                        Text(
-                                          _childName,
-                                          style: const TextStyle(
-                                            fontFamily: _bf,
-                                            fontSize: 14,
-                                            letterSpacing: 0.5,
-                                            color: AppColors.green,
-                                            fontWeight: FontWeight.w600,
-                                          ),
-                                        ),
-                                        Text(
-                                          'Currently linked student',
-                                          style: TextStyle(
-                                            fontFamily: _bf,
-                                            fontSize: 10,
-                                            color: AppColors.textSub,
-                                            letterSpacing: 0.3,
-                                          ),
-                                        ),
-                                        const SizedBox(height: 2),
-                                        Text(
-                                          'UID: ${_childUid.isEmpty ? 'Not set' : _childUid}',
-                                          style: TextStyle(
-                                            fontFamily: _bf,
-                                            fontSize: 10,
-                                            color: AppColors.textSub,
-                                            letterSpacing: 0.2,
-                                          ),
-                                        ),
-                                        Text(
-                                          'Phone: ${_childPhone.isEmpty ? 'Not set' : _childPhone}',
-                                          style: TextStyle(
-                                            fontFamily: _bf,
-                                            fontSize: 10,
-                                            color: AppColors.textSub,
-                                            letterSpacing: 0.2,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                    const Spacer(),
-                                    Icon(
-                                      Icons.verified,
-                                      color: AppColors.gold.withOpacity(0.7),
-                                      size: 18,
                                     ),
                                   ],
                                 ),
                               ),
-                            const SizedBox(height: 12),
-
-                            _DashLuxuryField(
-                              label: 'CHANGE STUDENT UID',
-                              hint: 'Leave blank to keep current',
-                              controller: childUidCtrl,
-                            ),
-                            const SizedBox(height: 12),
-                            _DashLuxuryField(
-                              label: 'OR STUDENT PHONE NUMBER',
-                              hint: 'Example: +63 9XXXXXXXXX',
-                              controller: childPhoneCtrl,
-                              keyboardType: TextInputType.phone,
-                            ),
-                            const SizedBox(height: 8),
-                            Text(
-                              'You can enter either Student UID or Student phone number.',
-                              style: TextStyle(
-                                fontFamily: _bf,
-                                fontSize: 10,
-                                color: AppColors.textSub,
-                                letterSpacing: 0.2,
+                              const SizedBox(height: 24),
+                              Container(
+                                height: 1,
+                                decoration: const BoxDecoration(
+                                  gradient: LinearGradient(
+                                    colors: [
+                                      AppColors.gold,
+                                      Colors.transparent,
+                                    ],
+                                  ),
+                                ),
                               ),
-                            ),
-
-                            const SizedBox(height: 28),
-
-                            // Save button
-                            SizedBox(
-                              width: double.infinity,
-                              child: Material(
-                                color: AppColors.green,
-                                child: InkWell(
-                                  onTap: isSaving
+                              const SizedBox(height: 22),
+                              Text(
+                                'NOTIFICATIONS',
+                                style: TextStyle(
+                                  fontFamily: _bf,
+                                  fontSize: 9,
+                                  letterSpacing: 4,
+                                  color: AppColors.gold,
+                                  fontWeight: FontWeight.w300,
+                                ),
+                              ),
+                              const SizedBox(height: 14),
+                              _DashSettingsTile(
+                                title: 'Enable Alerts',
+                                subtitle: 'Receive emergency notifications',
+                                icon: Icons.notifications_outlined,
+                                value: localAlerts,
+                                onChanged: (v) =>
+                                    setSheet(() => localAlerts = v),
+                              ),
+                              const SizedBox(height: 10),
+                              _DashSettingsTile(
+                                title: 'SMS Alerts',
+                                subtitle: 'Receive alerts via SMS',
+                                icon: Icons.sms_outlined,
+                                value: localSms,
+                                onChanged: (v) => setSheet(() => localSms = v),
+                              ),
+                              const SizedBox(height: 10),
+                              _DashSettingsTile(
+                                title: 'Email Alerts',
+                                subtitle: 'Receive alerts via email',
+                                icon: Icons.email_outlined,
+                                value: localEmail,
+                                onChanged: (v) =>
+                                    setSheet(() => localEmail = v),
+                              ),
+                              const SizedBox(height: 22),
+                              Text(
+                                'LINKED STUDENTS',
+                                style: TextStyle(
+                                  fontFamily: _bf,
+                                  fontSize: 9,
+                                  letterSpacing: 4,
+                                  color: AppColors.gold,
+                                  fontWeight: FontWeight.w300,
+                                ),
+                              ),
+                              const SizedBox(height: 10),
+                              if (_linkedStudents.isEmpty)
+                                Container(
+                                  width: double.infinity,
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 14,
+                                    vertical: 12,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: AppColors.white,
+                                    borderRadius: BorderRadius.circular(12),
+                                    border: Border.all(color: AppColors.border),
+                                  ),
+                                  child: Text(
+                                    'No linked students yet. Send an invitation below.',
+                                    style: TextStyle(
+                                      fontFamily: _bf,
+                                      fontSize: 11,
+                                      color: AppColors.textSub,
+                                    ),
+                                  ),
+                                )
+                              else
+                                Wrap(
+                                  spacing: 8,
+                                  runSpacing: 8,
+                                  children: _linkedStudents.map((student) {
+                                    final selected =
+                                        selectedChildUid == student.uid;
+                                    final shortUid = student.uid.length > 6
+                                        ? student.uid.substring(0, 6)
+                                        : student.uid;
+                                    return ChoiceChip(
+                                      label: Text(
+                                        '${student.name} - $shortUid',
+                                        style: TextStyle(
+                                          fontFamily: _bf,
+                                          fontSize: 10,
+                                          color: selected
+                                              ? AppColors.white
+                                              : AppColors.green,
+                                        ),
+                                      ),
+                                      selected: selected,
+                                      onSelected: (_) => setSheet(
+                                        () => selectedChildUid = student.uid,
+                                      ),
+                                      selectedColor: AppColors.green,
+                                      backgroundColor: AppColors.white,
+                                      side: BorderSide(
+                                        color: selected
+                                            ? AppColors.gold.withValues(alpha: 0.6)
+                                            : AppColors.border,
+                                      ),
+                                    );
+                                  }).toList(),
+                                ),
+                              const SizedBox(height: 16),
+                              Text(
+                                'INVITE STUDENT',
+                                style: TextStyle(
+                                  fontFamily: _bf,
+                                  fontSize: 9,
+                                  letterSpacing: 4,
+                                  color: AppColors.gold,
+                                  fontWeight: FontWeight.w300,
+                                ),
+                              ),
+                              const SizedBox(height: 12),
+                              _DashLuxuryField(
+                                label: 'STUDENT UID',
+                                hint: 'Enter student UID',
+                                controller: inviteStudentUidCtrl,
+                              ),
+                              const SizedBox(height: 12),
+                              _DashLuxuryField(
+                                label: 'OR STUDENT PHONE NUMBER',
+                                hint: 'Example: +63 9XXXXXXXXX',
+                                controller: inviteStudentPhoneCtrl,
+                                keyboardType: TextInputType.phone,
+                              ),
+                              const SizedBox(height: 8),
+                              Text(
+                                'Student must accept this invitation from their dashboard.',
+                                style: TextStyle(
+                                  fontFamily: _bf,
+                                  fontSize: 10,
+                                  color: AppColors.textSub,
+                                ),
+                              ),
+                              const SizedBox(height: 10),
+                              SizedBox(
+                                width: double.infinity,
+                                child: OutlinedButton(
+                                  onPressed: isSendingInvite
                                       ? null
                                       : () async {
-                                          setSheet(() => isSaving = true);
-                                          final enteredUid = childUidCtrl.text
-                                              .trim();
-                                          final enteredPhone = childPhoneCtrl
-                                              .text
-                                              .trim();
-                                          if (enteredUid.isNotEmpty) {
-                                            final uidIsValid =
-                                                await _isValidStudentUid(
-                                                  enteredUid,
-                                                );
-                                            if (!uidIsValid) {
-                                              setSheet(() => isSaving = false);
+                                          setSheet(
+                                            () => isSendingInvite = true,
+                                          );
+                                          try {
+                                            final enteredUid =
+                                                inviteStudentUidCtrl.text
+                                                    .trim();
+                                            final enteredPhone =
+                                                inviteStudentPhoneCtrl.text
+                                                    .trim();
+                                            String targetUid = enteredUid;
+                                            if (targetUid.isEmpty &&
+                                                enteredPhone.isNotEmpty) {
+                                              targetUid =
+                                                  await _resolveStudentUidFromPhone(
+                                                    enteredPhone,
+                                                  );
+                                            }
+                                            if (targetUid.isEmpty) {
                                               _showActionSnack(
-                                                'Invalid Student UID. Please enter a valid student account UID.',
+                                                'Enter a valid student UID or phone number.',
                                                 isError: true,
                                               );
                                               return;
                                             }
-                                          }
-                                          String resolvedChildUid =
-                                              enteredUid.isEmpty
-                                              ? _childUid
-                                              : enteredUid;
-                                          if (resolvedChildUid.isEmpty &&
-                                              enteredPhone.isNotEmpty) {
-                                            resolvedChildUid =
-                                                await _resolveStudentUidFromPhone(
-                                                  enteredPhone,
-                                                );
-                                          }
-                                          if (resolvedChildUid.isEmpty) {
-                                            setSheet(() => isSaving = false);
-                                            _showActionSnack(
-                                              'Unable to find student. Enter a valid Student UID or linked phone number.',
-                                              isError: true,
+                                            await _sendStudentInvitation(
+                                              studentUid: targetUid,
                                             );
-                                            return;
-                                          }
-                                          await _saveSettings(
-                                            alertsEnabled: localAlerts,
-                                            smsAlertsEnabled: localSms,
-                                            emailAlertsEnabled: localEmail,
-                                            childUid: resolvedChildUid,
-                                            childPhoneNumber:
-                                                enteredPhone.isEmpty
-                                                ? _childPhone
-                                                : enteredPhone,
-                                          );
-                                          childUidCtrl.dispose();
-                                          childPhoneCtrl.dispose();
-                                          if (sheetCtx.mounted) {
-                                            Navigator.pop(sheetCtx);
+                                            await _loadDashboard();
+                                            if (!sheetCtx.mounted) return;
+                                            setSheet(() {
+                                              if (selectedChildUid.isEmpty &&
+                                                  _linkedStudents.isNotEmpty) {
+                                                selectedChildUid =
+                                                    _linkedStudents.first.uid;
+                                              }
+                                              inviteStudentUidCtrl.clear();
+                                              inviteStudentPhoneCtrl.clear();
+                                            });
+                                          } finally {
+                                            if (sheetCtx.mounted) {
+                                              setSheet(
+                                                () => isSendingInvite = false,
+                                              );
+                                            }
                                           }
                                         },
-                                  child: Container(
+                                  style: OutlinedButton.styleFrom(
+                                    foregroundColor: AppColors.green,
+                                    side: BorderSide(
+                                      color: AppColors.gold.withValues(alpha: 0.55),
+                                    ),
                                     padding: const EdgeInsets.symmetric(
-                                      vertical: 16,
+                                      vertical: 12,
                                     ),
-                                    alignment: Alignment.center,
-                                    decoration: BoxDecoration(
-                                      border: Border.all(
-                                        color: AppColors.gold.withOpacity(0.65),
-                                      ),
-                                    ),
-                                    child: isSaving
-                                        ? const SizedBox(
-                                            width: 18,
-                                            height: 18,
-                                            child: CircularProgressIndicator(
-                                              strokeWidth: 2,
-                                              color: AppColors.gold,
-                                            ),
-                                          )
-                                        : Text(
-                                            'SAVE SETTINGS',
-                                            style: TextStyle(
-                                              fontFamily: _bf,
-                                              color: AppColors.white,
-                                              letterSpacing: 4,
-                                              fontSize: 11,
-                                              fontWeight: FontWeight.w400,
-                                            ),
+                                  ),
+                                  child: isSendingInvite
+                                      ? const SizedBox(
+                                          width: 18,
+                                          height: 18,
+                                          child: CircularProgressIndicator(
+                                            strokeWidth: 2,
                                           ),
+                                        )
+                                      : const Text(
+                                          'SEND INVITATION',
+                                          style: TextStyle(
+                                            fontFamily: _bf,
+                                            fontSize: 11,
+                                            letterSpacing: 2.2,
+                                            fontWeight: FontWeight.w600,
+                                          ),
+                                        ),
+                                ),
+                              ),
+                              const SizedBox(height: 28),
+                              SizedBox(
+                                width: double.infinity,
+                                child: Material(
+                                  color: AppColors.green,
+                                  child: InkWell(
+                                    onTap: isSaving
+                                        ? null
+                                        : () async {
+                                            setSheet(() => isSaving = true);
+                                            String selectedPhone = '';
+                                            for (final student
+                                                in _linkedStudents) {
+                                              if (student.uid ==
+                                                  selectedChildUid) {
+                                                selectedPhone = student.phone;
+                                                break;
+                                              }
+                                            }
+                                            await _saveSettings(
+                                              alertsEnabled: localAlerts,
+                                              smsAlertsEnabled: localSms,
+                                              emailAlertsEnabled: localEmail,
+                                              childUid: selectedChildUid,
+                                              childPhoneNumber: selectedPhone,
+                                            );
+                                            if (sheetCtx.mounted) {
+                                              Navigator.pop(sheetCtx);
+                                            }
+                                          },
+                                    child: Container(
+                                      padding: const EdgeInsets.symmetric(
+                                        vertical: 16,
+                                      ),
+                                      alignment: Alignment.center,
+                                      decoration: BoxDecoration(
+                                        border: Border.all(
+                                          color: AppColors.gold.withValues(alpha: 
+                                            0.65,
+                                          ),
+                                        ),
+                                      ),
+                                      child: isSaving
+                                          ? const SizedBox(
+                                              width: 18,
+                                              height: 18,
+                                              child: CircularProgressIndicator(
+                                                strokeWidth: 2,
+                                                color: AppColors.gold,
+                                              ),
+                                            )
+                                          : Text(
+                                              'SAVE SETTINGS',
+                                              style: TextStyle(
+                                                fontFamily: _bf,
+                                                color: AppColors.white,
+                                                letterSpacing: 4,
+                                                fontSize: 11,
+                                                fontWeight: FontWeight.w400,
+                                              ),
+                                            ),
+                                    ),
                                   ),
                                 ),
                               ),
-                            ),
-                            const SizedBox(height: 14),
-                            Center(
-                              child: GestureDetector(
-                                onTap: () {
-                                  childUidCtrl.dispose();
-                                  childPhoneCtrl.dispose();
-                                  Navigator.pop(sheetCtx);
-                                },
-                                child: Text(
-                                  'CANCEL',
-                                  style: TextStyle(
-                                    fontFamily: _bf,
-                                    fontSize: 9,
-                                    letterSpacing: 3,
-                                    color: AppColors.textSub,
-                                    fontWeight: FontWeight.w300,
+                              const SizedBox(height: 14),
+                              Center(
+                                child: GestureDetector(
+                                  onTap: () => Navigator.pop(sheetCtx),
+                                  child: Text(
+                                    'CANCEL',
+                                    style: TextStyle(
+                                      fontFamily: _bf,
+                                      fontSize: 9,
+                                      letterSpacing: 3,
+                                      color: AppColors.textSub,
+                                      fontWeight: FontWeight.w300,
+                                    ),
                                   ),
                                 ),
                               ),
-                            ),
-                          ],
+                            ],
+                          ),
                         ),
-                      ),
-                    ],
+                      ],
+                    ),
                   ),
                 ),
-              ),
-            );
-          },
-        );
-      },
-    );
+              );
+            },
+          );
+        },
+      );
+    } finally {
+      inviteStudentUidCtrl.dispose();
+      inviteStudentPhoneCtrl.dispose();
+    }
   }
-
   // ─── Handlers ─────────────────────────────────────────────────
 
   Future<void> _handleToolTap(String title) async {
@@ -1949,7 +2009,7 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
               height: 220,
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
-                color: AppColors.gold.withOpacity(0.07),
+                color: AppColors.gold.withValues(alpha: 0.07),
               ),
             ),
           ),
@@ -1961,7 +2021,7 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
               height: 250,
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
-                color: AppColors.green.withOpacity(0.05),
+                color: AppColors.green.withValues(alpha: 0.05),
               ),
             ),
           ),
@@ -2013,10 +2073,6 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
       children: [
         _buildHeroCard(),
         const SizedBox(height: 20),
-        _buildSectionLabel('CURRENT SESSION'),
-        const SizedBox(height: 10),
-        _buildSessionCard(),
-        const SizedBox(height: 20),
         _buildSectionLabel('TOOLS'),
         const SizedBox(height: 10),
         _buildToolList(),
@@ -2030,10 +2086,6 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
       children: [
         _buildHeroCard(),
         const SizedBox(height: 18),
-        _buildSectionLabel('CHILD MONITOR'),
-        const SizedBox(height: 10),
-        _buildSessionCard(),
-        const SizedBox(height: 16),
         _buildSectionLabel('CHILD LOCATION'),
         const SizedBox(height: 10),
         _buildChildMapCard(),
@@ -2045,11 +2097,6 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
           subtitle: 'TRACKING OVERVIEW',
           children: [
             _buildDashboardRow('Child', _childName),
-            const SizedBox(height: 8),
-            _buildDashboardRow(
-              'Walk Session',
-              _childSessionActive ? 'Active' : 'Inactive',
-            ),
             const SizedBox(height: 8),
             _buildDashboardRow('Device', _deviceName),
             const SizedBox(height: 8),
@@ -2111,11 +2158,6 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
               ],
             ),
             const SizedBox(height: 14),
-            _buildDashboardRow(
-              'Child Session',
-              _childSessionActive ? 'Active now' : 'No active walk',
-            ),
-            const SizedBox(height: 8),
             _buildDashboardRow('Current Route', _childRoute),
             const SizedBox(height: 14),
             SizedBox(
@@ -2233,7 +2275,7 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
             border: Border.all(color: AppColors.border),
             boxShadow: [
               BoxShadow(
-                color: Colors.black.withOpacity(0.08),
+                color: Colors.black.withValues(alpha: 0.08),
                 blurRadius: 16,
                 offset: const Offset(0, 8),
               ),
@@ -2284,7 +2326,7 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                         : const Color(0xFF0E5B3C),
                     borderRadius: BorderRadius.circular(999),
                     border: Border.all(
-                      color: AppColors.gold.withOpacity(0.3),
+                      color: AppColors.gold.withValues(alpha: 0.3),
                       width: 0.5,
                     ),
                   ),
@@ -2315,8 +2357,8 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                       begin: Alignment.topCenter,
                       end: Alignment.bottomCenter,
                       colors: [
-                        Colors.black.withOpacity(0.02),
-                        Colors.black.withOpacity(0.72),
+                        Colors.black.withValues(alpha: 0.02),
+                        Colors.black.withValues(alpha: 0.72),
                       ],
                     ),
                   ),
@@ -2357,6 +2399,13 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
   }
 
   Widget _buildProfileTab() {
+    final linkedPreview = _linkedStudents.isEmpty
+        ? 'None'
+        : _linkedStudents.take(3).map((student) => student.name).join(', ') +
+              (_linkedStudents.length > 3
+                  ? ' +${_linkedStudents.length - 3} more'
+                  : '');
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -2378,15 +2427,25 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
               _parentPhone.isEmpty ? '-' : _parentPhone,
             ),
             const SizedBox(height: 8),
-            _buildDashboardRow('Linked Child', _childName),
+            _buildDashboardRow(
+              'Connected Students',
+              _linkedStudents.length.toString(),
+            ),
+            const SizedBox(height: 8),
+            _buildDashboardRow('Student List', linkedPreview),
             const SizedBox(height: 8),
             _buildDashboardRow(
-              'Child UID',
+              'Active Student',
+              _childName.isEmpty ? 'Not set' : _childName,
+            ),
+            const SizedBox(height: 8),
+            _buildDashboardRow(
+              'Active Student UID',
               _childUid.isEmpty ? 'Not set' : _childUid,
             ),
             const SizedBox(height: 8),
             _buildDashboardRow(
-              'Child Phone',
+              'Active Student Phone',
               _childPhone.isEmpty ? 'Not set' : _childPhone,
             ),
             const SizedBox(height: 14),
@@ -2398,6 +2457,13 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
   }
 
   Widget _buildSettingsTab() {
+    final linkedPreview = _linkedStudents.isEmpty
+        ? 'None'
+        : _linkedStudents.take(3).map((student) => student.name).join(', ') +
+              (_linkedStudents.length > 3
+                  ? ' +${_linkedStudents.length - 3} more'
+                  : '');
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -2425,17 +2491,24 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
             ),
             const SizedBox(height: 8),
             _buildDashboardRow(
-              'Linked Child UID',
-              _childUid.isEmpty ? 'Not set' : _childUid,
+              'Connected Students',
+              _linkedStudents.length.toString(),
             ),
             const SizedBox(height: 8),
+            _buildDashboardRow('Student List', linkedPreview),
+            const SizedBox(height: 8),
             _buildDashboardRow(
-              'Linked Child Name',
+              'Active Student Name',
               _childName.isEmpty ? 'Not set' : _childName,
             ),
             const SizedBox(height: 8),
             _buildDashboardRow(
-              'Linked Child Phone',
+              'Active Student UID',
+              _childUid.isEmpty ? 'Not set' : _childUid,
+            ),
+            const SizedBox(height: 8),
+            _buildDashboardRow(
+              'Active Student Phone',
               _childPhone.isEmpty ? 'Not set' : _childPhone,
             ),
             const SizedBox(height: 14),
@@ -2477,7 +2550,7 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
         border: Border.all(color: AppColors.border),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.05),
+            color: Colors.black.withValues(alpha: 0.05),
             blurRadius: 14,
             offset: const Offset(0, 5),
           ),
@@ -2581,7 +2654,7 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
             borderRadius: BorderRadius.circular(10),
             border: Border.all(
               color: isPrimary
-                  ? AppColors.gold.withOpacity(0.45)
+                  ? AppColors.gold.withValues(alpha: 0.45)
                   : AppColors.border,
             ),
           ),
@@ -2611,10 +2684,10 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
           colors: [Color(0xFF05412B), Color(0xFF042D1F)],
         ),
         borderRadius: BorderRadius.circular(26),
-        border: Border.all(color: AppColors.gold.withOpacity(0.25), width: 1),
+        border: Border.all(color: AppColors.gold.withValues(alpha: 0.25), width: 1),
         boxShadow: [
           BoxShadow(
-            color: AppColors.green.withOpacity(0.25),
+            color: AppColors.green.withValues(alpha: 0.25),
             blurRadius: 24,
             offset: const Offset(0, 10),
           ),
@@ -2663,7 +2736,7 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                     'PARENT / GUARDIAN',
                     style: TextStyle(
                       fontFamily: _bf,
-                      color: AppColors.gold.withOpacity(0.7),
+                      color: AppColors.gold.withValues(alpha: 0.7),
                       fontSize: 9,
                       letterSpacing: 3,
                       fontWeight: FontWeight.w300,
@@ -2711,7 +2784,7 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                     color: const Color(0xFF124733),
                     borderRadius: BorderRadius.circular(10),
                     border: Border.all(
-                      color: AppColors.gold.withOpacity(0.3),
+                      color: AppColors.gold.withValues(alpha: 0.3),
                       width: 0.8,
                     ),
                   ),
@@ -2729,7 +2802,7 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
             'Good morning,',
             style: TextStyle(
               fontFamily: _bf,
-              color: AppColors.white.withOpacity(0.7),
+              color: AppColors.white.withValues(alpha: 0.7),
               fontSize: 13,
               letterSpacing: 1,
               fontWeight: FontWeight.w300,
@@ -2800,175 +2873,12 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
             height: 1,
             decoration: BoxDecoration(
               gradient: LinearGradient(
-                colors: [AppColors.gold.withOpacity(0.3), Colors.transparent],
+                colors: [AppColors.gold.withValues(alpha: 0.3), Colors.transparent],
               ),
             ),
           ),
         ),
       ],
-    );
-  }
-
-  Widget _buildSessionCard() {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.fromLTRB(18, 16, 18, 18),
-      decoration: BoxDecoration(
-        color: AppColors.white,
-        borderRadius: BorderRadius.circular(22),
-        border: Border.all(color: AppColors.border),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.05),
-            blurRadius: 14,
-            offset: const Offset(0, 5),
-          ),
-        ],
-      ),
-      child: Column(
-        children: [
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      'Safe Walk',
-                      style: TextStyle(
-                        fontFamily: _hf,
-                        color: AppColors.green,
-                        fontSize: 36,
-                        height: 1,
-                        fontWeight: FontWeight.w300,
-                        fontStyle: FontStyle.italic,
-                      ),
-                    ),
-                    Text(
-                      'Session',
-                      style: TextStyle(
-                        fontFamily: _hf,
-                        color: AppColors.goldDark,
-                        fontSize: 28,
-                        height: 1.1,
-                        fontWeight: FontWeight.w300,
-                      ),
-                    ),
-                    const SizedBox(height: 6),
-                    Text(
-                      _childSessionActive
-                          ? 'Monitoring $_childName'
-                          : 'No active walk session',
-                      style: TextStyle(
-                        fontFamily: _bf,
-                        color: AppColors.textSub,
-                        fontSize: 11,
-                        letterSpacing: 0.5,
-                        fontWeight: FontWeight.w300,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 12,
-                  vertical: 6,
-                ),
-                decoration: BoxDecoration(
-                  color: const Color(0xFFF4F8F6),
-                  borderRadius: BorderRadius.circular(999),
-                  border: Border.all(color: AppColors.border),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(
-                      Icons.circle,
-                      size: 7,
-                      color: _childSessionActive
-                          ? const Color(0xFF60CC8A)
-                          : const Color(0xFFFF7F7F),
-                    ),
-                    const SizedBox(width: 5),
-                    Text(
-                      _childSessionActive ? 'Active' : 'Inactive',
-                      style: TextStyle(
-                        fontFamily: _bf,
-                        color: AppColors.green,
-                        fontSize: 11,
-                        letterSpacing: 1,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 16),
-          Container(
-            height: 1,
-            decoration: const BoxDecoration(
-              gradient: LinearGradient(
-                colors: [
-                  Colors.transparent,
-                  AppColors.border,
-                  Colors.transparent,
-                ],
-              ),
-            ),
-          ),
-          const SizedBox(height: 14),
-          Row(
-            children: [
-              Expanded(
-                child: _MetricCell(value: _routeMetric, label: 'ROUTE'),
-              ),
-              Expanded(
-                child: _MetricCell(value: _elapsedLabel, label: 'ELAPSED'),
-              ),
-              Expanded(
-                child: _MetricCell(
-                  value: '${_childDistanceKm.toStringAsFixed(1)} km',
-                  label: 'DISTANCE',
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 16),
-          SizedBox(
-            width: double.infinity,
-            child: Material(
-              color: AppColors.green,
-              borderRadius: BorderRadius.circular(12),
-              child: InkWell(
-                onTap: _showSessionDetailsDialog,
-                borderRadius: BorderRadius.circular(12),
-                child: Container(
-                  padding: const EdgeInsets.symmetric(vertical: 14),
-                  alignment: Alignment.center,
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: AppColors.gold.withOpacity(0.5)),
-                  ),
-                  child: Text(
-                    'VIEW DETAILS',
-                    style: TextStyle(
-                      fontFamily: _bf,
-                      color: AppColors.white,
-                      fontSize: 11,
-                      letterSpacing: 4,
-                      fontWeight: FontWeight.w400,
-                    ),
-                  ),
-                ),
-              ),
-            ),
-          ),
-        ],
-      ),
     );
   }
 
@@ -2988,7 +2898,7 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                 border: Border.all(color: AppColors.border),
                 boxShadow: [
                   BoxShadow(
-                    color: Colors.black.withOpacity(0.04),
+                    color: Colors.black.withValues(alpha: 0.04),
                     blurRadius: 8,
                     offset: const Offset(0, 3),
                   ),
@@ -3064,7 +2974,7 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
         border: Border(top: BorderSide(color: AppColors.border)),
         boxShadow: [
           BoxShadow(
-            color: AppColors.gold.withOpacity(0.06),
+            color: AppColors.gold.withValues(alpha: 0.06),
             blurRadius: 20,
             offset: const Offset(0, -4),
           ),
@@ -3093,12 +3003,12 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                         height: 36,
                         decoration: BoxDecoration(
                           color: selected
-                              ? AppColors.green.withOpacity(0.1)
+                              ? AppColors.green.withValues(alpha: 0.1)
                               : Colors.transparent,
                           shape: BoxShape.circle,
                           border: selected
                               ? Border.all(
-                                  color: AppColors.gold.withOpacity(0.3),
+                                  color: AppColors.gold.withValues(alpha: 0.3),
                                   width: 0.5,
                                 )
                               : null,
@@ -3142,6 +3052,18 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
 //  Data models
 // ─────────────────────────────────────────────────────────────────
 
+class _LinkedStudent {
+  final String uid;
+  final String name;
+  final String phone;
+
+  const _LinkedStudent({
+    required this.uid,
+    required this.name,
+    required this.phone,
+  });
+}
+
 class _InfoRow {
   final String label;
   final String value;
@@ -3173,42 +3095,6 @@ class _NavItem {
 //  Reusable Widgets
 // ─────────────────────────────────────────────────────────────────
 
-class _MetricCell extends StatelessWidget {
-  final String value;
-  final String label;
-  const _MetricCell({required this.value, required this.label});
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      children: [
-        Text(
-          value,
-          style: const TextStyle(
-            fontFamily: 'CormorantGaramond',
-            color: AppColors.green,
-            fontSize: 32,
-            height: 1,
-            fontWeight: FontWeight.w300,
-            fontStyle: FontStyle.italic,
-          ),
-        ),
-        const SizedBox(height: 4),
-        Text(
-          label,
-          style: const TextStyle(
-            fontFamily: 'JosefinSans',
-            color: AppColors.textSub,
-            fontSize: 9,
-            letterSpacing: 3,
-            fontWeight: FontWeight.w300,
-          ),
-        ),
-      ],
-    );
-  }
-}
-
 class _StatusPill extends StatelessWidget {
   final String label;
   final Color dotColor;
@@ -3221,7 +3107,7 @@ class _StatusPill extends StatelessWidget {
       decoration: BoxDecoration(
         color: const Color(0xFF164837),
         borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: AppColors.gold.withOpacity(0.25), width: 0.8),
+        border: Border.all(color: AppColors.gold.withValues(alpha: 0.25), width: 0.8),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
@@ -3255,12 +3141,12 @@ class _AlertBadge extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       decoration: BoxDecoration(
         color: isActive
-            ? const Color(0xFFCB392B).withOpacity(0.1)
+            ? const Color(0xFFCB392B).withValues(alpha: 0.1)
             : AppColors.cream,
         borderRadius: BorderRadius.circular(6),
         border: Border.all(
           color: isActive
-              ? const Color(0xFFCB392B).withOpacity(0.3)
+              ? const Color(0xFFCB392B).withValues(alpha: 0.3)
               : AppColors.border,
         ),
       ),
@@ -3287,16 +3173,12 @@ class _DashLuxuryField extends StatefulWidget {
   final String hint;
   final TextEditingController controller;
   final TextInputType keyboardType;
-  final bool obscure;
-  final Widget? suffixIcon;
 
   const _DashLuxuryField({
     required this.label,
     required this.hint,
     required this.controller,
     this.keyboardType = TextInputType.text,
-    this.obscure = false,
-    this.suffixIcon,
   });
 
   @override
@@ -3353,14 +3235,14 @@ class _DashLuxuryFieldState extends State<_DashLuxuryField>
                   color: AppColors.white,
                   borderRadius: BorderRadius.circular(2),
                   border: Border.all(
-                    color: AppColors.border.withOpacity(0.6),
+                    color: AppColors.border.withValues(alpha: 0.6),
                     width: 1,
                   ),
                 ),
                 child: TextField(
                   controller: widget.controller,
                   keyboardType: widget.keyboardType,
-                  obscureText: widget.obscure,
+                  obscureText: false,
                   style: const TextStyle(
                     fontFamily: 'JosefinSans',
                     fontSize: 14,
@@ -3373,11 +3255,10 @@ class _DashLuxuryFieldState extends State<_DashLuxuryField>
                     hintText: widget.hint,
                     hintStyle: TextStyle(
                       fontFamily: 'JosefinSans',
-                      color: AppColors.textSub.withOpacity(0.45),
+                      color: AppColors.textSub.withValues(alpha: 0.45),
                       fontSize: 13,
                       letterSpacing: 1,
                     ),
-                    suffixIcon: widget.suffixIcon,
                     border: InputBorder.none,
                     contentPadding: const EdgeInsets.symmetric(
                       horizontal: 14,
@@ -3435,10 +3316,10 @@ class _DashSettingsTile extends StatelessWidget {
       duration: const Duration(milliseconds: 200),
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
       decoration: BoxDecoration(
-        color: value ? AppColors.green.withOpacity(0.04) : AppColors.white,
+        color: value ? AppColors.green.withValues(alpha: 0.04) : AppColors.white,
         borderRadius: BorderRadius.circular(14),
         border: Border.all(
-          color: value ? AppColors.gold.withOpacity(0.5) : AppColors.border,
+          color: value ? AppColors.gold.withValues(alpha: 0.5) : AppColors.border,
         ),
       ),
       child: Row(
@@ -3452,7 +3333,7 @@ class _DashSettingsTile extends StatelessWidget {
               borderRadius: BorderRadius.circular(12),
               border: Border.all(
                 color: value
-                    ? AppColors.gold.withOpacity(0.4)
+                    ? AppColors.gold.withValues(alpha: 0.4)
                     : AppColors.border,
                 width: 0.8,
               ),
@@ -3495,8 +3376,8 @@ class _DashSettingsTile extends StatelessWidget {
           Switch(
             value: value,
             onChanged: onChanged,
-            activeColor: AppColors.gold,
-            activeTrackColor: AppColors.green.withOpacity(0.4),
+            activeThumbColor: AppColors.gold,
+            activeTrackColor: AppColors.green.withValues(alpha: 0.4),
             inactiveThumbColor: AppColors.textSub,
             inactiveTrackColor: AppColors.cream,
           ),
@@ -3505,3 +3386,4 @@ class _DashSettingsTile extends StatelessWidget {
     );
   }
 }
+
