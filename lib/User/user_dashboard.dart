@@ -251,6 +251,9 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
     return _formatCoordinateLabel(_deviceCoordinates);
   }
 
+  bool get _mobileMapLiteMode =>
+      !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
+
   Future<Uint8List> _buildSosMarkerBytes({int size = 144}) async {
     final markerSize = size.toDouble();
     final recorder = ui.PictureRecorder();
@@ -995,6 +998,7 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                                     target: center,
                                     zoom: hasPoint ? 16 : 12,
                                   ),
+                                  liteModeEnabled: _mobileMapLiteMode,
                                   mapType: MapType.normal,
                                   markers: hasPoint
                                       ? {
@@ -3205,6 +3209,7 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                         target: center,
                         zoom: hasPoint ? 16 : 12,
                       ),
+                      liteModeEnabled: _mobileMapLiteMode,
                       mapType: MapType.normal,
                       markers: hasPoint
                           ? {

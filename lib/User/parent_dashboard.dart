@@ -53,6 +53,9 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
   bool _smsAlertsEnabled = true;
   bool _emailAlertsEnabled = true;
 
+  bool get _mobileMapLiteMode =>
+      !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
+
   final List<_ToolItem> _tools = const [
     _ToolItem(
       title: 'Device Connection',
@@ -2298,6 +2301,7 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                             target: center,
                             zoom: hasPoint ? 16 : 12,
                           ),
+                          liteModeEnabled: _mobileMapLiteMode,
                           mapType: MapType.normal,
                           markers: markers,
                           circles: circles,

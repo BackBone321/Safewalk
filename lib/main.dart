@@ -1,7 +1,9 @@
 import 'package:firebase_core/firebase_core.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'firebase/firebase_options.dart';
 import 'login_dashboard/landing_page.dart';
+import 'login_dashboard/login_page.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -22,7 +24,7 @@ class SafewalkApp extends StatelessWidget {
       title: 'Safewalk',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(fontFamily: 'JosefinSans'),
-      home: const LandingPage(),
+      home: kIsWeb ? const LandingPage() : const LoginPage(),
     );
   }
 }

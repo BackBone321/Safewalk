@@ -1,10 +1,18 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+
     <application
         android:label="safewalk"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <meta-data
             android:name="com.google.android.geo.API_KEY"
+            android:value="AIzaSyAz2D3AzakuzV-yakdM9gFE_ik8x4MuEhI" />
+        <meta-data
+            android:name="com.google.android.maps.v2.API_KEY"
             android:value="AIzaSyAz2D3AzakuzV-yakdM9gFE_ik8x4MuEhI" />
         <activity
             android:name=".MainActivity"
