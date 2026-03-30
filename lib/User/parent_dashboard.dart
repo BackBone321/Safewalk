@@ -54,7 +54,7 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
   bool _emailAlertsEnabled = true;
 
   bool get _mobileMapLiteMode =>
-      !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
+      false;
 
   final List<_ToolItem> _tools = const [
     _ToolItem(

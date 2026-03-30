@@ -252,7 +252,7 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
   }
 
   bool get _mobileMapLiteMode =>
-      !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
+      false;
 
   Future<Uint8List> _buildSosMarkerBytes({int size = 144}) async {
     final markerSize = size.toDouble();
