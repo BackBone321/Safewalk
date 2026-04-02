@@ -2,6 +2,7 @@ import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -23,6 +24,10 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
   static const String _hf = 'CormorantGaramond';
   static const String _bf = 'JosefinSans';
   static const LatLng _defaultMapCenter = LatLng(14.5995, 120.9842);
+  static final Set<Factory<OneSequenceGestureRecognizer>> _mapGestureRecognizers =
+      <Factory<OneSequenceGestureRecognizer>>{
+    Factory<OneSequenceGestureRecognizer>(() => EagerGestureRecognizer()),
+  };
 
   final AuthService _authService = AuthService();
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
@@ -1000,6 +1005,9 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                                   ),
                                   liteModeEnabled: _mobileMapLiteMode,
                                   mapType: MapType.normal,
+                                  gestureRecognizers: _mapGestureRecognizers,
+                                  zoomGesturesEnabled: true,
+                                  scrollGesturesEnabled: true,
                                   markers: hasPoint
                                       ? {
                                           Marker(
@@ -3211,6 +3219,9 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                       ),
                       liteModeEnabled: _mobileMapLiteMode,
                       mapType: MapType.normal,
+                      gestureRecognizers: _mapGestureRecognizers,
+                      zoomGesturesEnabled: true,
+                      scrollGesturesEnabled: true,
                       markers: hasPoint
                           ? {
                               Marker(
