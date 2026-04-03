@@ -50,6 +50,9 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
   String _deviceStatus = 'offline';
   LatLng? _deviceCoordinates;
   BitmapDescriptor? _sosMarkerIcon;
+  GoogleMapController? _routeMapController;
+  LatLng? _nextMapFocusPoint;
+  LatLng? _lastFocusedMapPoint;
 
   bool _alertsEnabled = true;
   bool _safeModeEnabled = true;
@@ -259,6 +262,36 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
   bool get _mobileMapLiteMode =>
       false;
 
+  bool _isSamePoint(LatLng a, LatLng b) {
+    const tolerance = 0.00001;
+    return (a.latitude - b.latitude).abs() <= tolerance &&
+        (a.longitude - b.longitude).abs() <= tolerance;
+  }
+
+  void _focusRouteMapOnPoint(LatLng point, {double zoom = 16, bool force = false}) {
+    final controller = _routeMapController;
+    if (controller == null) return;
+
+    if (!force &&
+        _lastFocusedMapPoint != null &&
+        _isSamePoint(_lastFocusedMapPoint!, point)) {
+      return;
+    }
+
+    _lastFocusedMapPoint = point;
+    controller
+        .animateCamera(
+          CameraUpdate.newCameraPosition(
+            CameraPosition(target: point, zoom: zoom),
+          ),
+        )
+        .catchError((_) {});
+
+    if (_nextMapFocusPoint != null && _isSamePoint(_nextMapFocusPoint!, point)) {
+      _nextMapFocusPoint = null;
+    }
+  }
+
   Future<Uint8List> _buildSosMarkerBytes({int size = 144}) async {
     final markerSize = size.toDouble();
     final recorder = ui.PictureRecorder();
@@ -377,6 +410,7 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
 
   @override
   void dispose() {
+    _routeMapController?.dispose();
     _profileNameCtrl.dispose();
     _profilePhoneCtrl.dispose();
     super.dispose();
@@ -724,16 +758,14 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
         return;
       }
 
-      final mapPoint = _deviceCoordinates ?? _coordinatesFromText(_deviceLocation);
-      final locationGeoPoint = mapPoint == null
-          ? null
-          : GeoPoint(
-              mapPoint.latitude,
-              mapPoint.longitude,
-            );
-      final locationLabel = mapPoint == null
-          ? _deviceLocation
-          : _formatCoordinateLabel(mapPoint);
+      final mapPoint =
+          _deviceCoordinates ?? _coordinatesFromText(_deviceLocation) ?? _mapCenter;
+      final locationGeoPoint = GeoPoint(mapPoint.latitude, mapPoint.longitude);
+      final locationLabel =
+          _deviceLocation.trim().isEmpty ||
+              _deviceLocation.trim().toLowerCase() == 'unknown'
+          ? _formatCoordinateLabel(mapPoint)
+          : _deviceLocation;
 
       await _firestore.collection('emergency_alerts').add({
         'uid': user.uid,
@@ -748,13 +780,16 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
         'status': 'active',
         'message': 'SOS button pressed by $_fullName.',
         'location': locationLabel,
-        if (locationGeoPoint != null) 'coordinates': locationGeoPoint,
+        'coordinates': locationGeoPoint,
         'triggeredBy': 'student_dashboard',
         'clientTimestamp': Timestamp.now(),
         'timestamp': FieldValue.serverTimestamp(),
       });
       if (mounted) {
-        setState(() => _selectedNavIndex = 1);
+        setState(() {
+          _selectedNavIndex = 1;
+          _nextMapFocusPoint = mapPoint;
+        });
       }
       _showActionSnack('SOS sent to your linked parent.');
     } catch (e) {
@@ -2597,15 +2632,27 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
             snapshot.data?.docs ??
             <QueryDocumentSnapshot<Map<String, dynamic>>>[];
         final sosState = _resolveSosMapState(docs);
-        final mapPoint = sosState.coordinate ?? _deviceCoordinates;
+        final mapPoint =
+            sosState.coordinate ?? _nextMapFocusPoint ?? _deviceCoordinates;
         final hasPoint = mapPoint != null;
+        if (sosState.coordinate != null && _nextMapFocusPoint != null) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (!mounted) return;
+            setState(() => _nextMapFocusPoint = null);
+          });
+        }
         final trackingLabel = sosState.isActive
             ? 'SOS active'
             : hasPoint
             ? 'Active'
             : 'No coordinates';
+        final fallbackAreaLabel =
+            _deviceLocation.trim().isEmpty ||
+                _deviceLocation.trim().toLowerCase() == 'unknown'
+            ? _formatCoordinateLabel(mapPoint)
+            : _deviceLocation;
         final mapAreaLabel = sosState.areaLabel.isEmpty
-            ? _deviceLocation
+            ? fallbackAreaLabel
             : sosState.areaLabel;
 
         return Column(
@@ -3188,6 +3235,16 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
     final center = effectivePoint ?? _defaultMapCenter;
     final hasPoint = effectivePoint != null;
     final focusLabel = areaLabel.isEmpty ? _deviceLocation : areaLabel;
+    final requestedFocusPoint = _nextMapFocusPoint ?? effectivePoint;
+    if (requestedFocusPoint != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        _focusRouteMapOnPoint(
+          requestedFocusPoint,
+          zoom: hasPoint ? 16 : 12,
+        );
+      });
+    }
     return Container(
       height: 260,
       decoration: BoxDecoration(
@@ -3267,7 +3324,18 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                       compassEnabled: false,
                       rotateGesturesEnabled: false,
                       tiltGesturesEnabled: false,
-                      onMapCreated: (_) {},
+                      onMapCreated: (controller) {
+                        _routeMapController?.dispose();
+                        _routeMapController = controller;
+                        final focusPoint = _nextMapFocusPoint ?? effectivePoint;
+                        if (focusPoint != null) {
+                          _focusRouteMapOnPoint(
+                            focusPoint,
+                            zoom: hasPoint ? 16 : 12,
+                            force: true,
+                          );
+                        }
+                      },
                     ),
             ),
           ),
