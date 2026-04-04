@@ -45,5 +45,9 @@
 	<true/>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>SafeWalk uses your location to send accurate SOS alerts to guardians.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>SafeWalk uses your location to send accurate SOS alerts to guardians.</string>
 </dict>
 </plist>

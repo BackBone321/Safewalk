@@ -66,6 +66,41 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
     );
   }
 
+  Future<void> _confirmLogout() async {
+    final shouldLogout = await showDialog<bool>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Logout'),
+          content: const Text('Do you want to log out?'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('Cancel'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              child: const Text('Yes'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (shouldLogout != true) return;
+    await _logout();
+  }
+
+  Future<void> _logout() async {
+    await _authService.signOut();
+    if (!mounted) return;
+    Navigator.pushAndRemoveUntil(
+      context,
+      MaterialPageRoute(builder: (_) => const LoginPage()),
+      (route) => false,
+    );
+  }
+
   Future<void> _generateReport() async {
     if (_isGeneratingReport) return;
 
@@ -331,22 +366,6 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
           ),
         ),
         const Spacer(),
-        TextButton.icon(
-          onPressed: () async {
-            await _authService.signOut();
-            if (!mounted) return;
-            Navigator.pushAndRemoveUntil(
-              context,
-              MaterialPageRoute(builder: (_) => const LoginPage()),
-              (route) => false,
-            );
-          },
-          icon: const Icon(Icons.logout, color: AppColors.green),
-          label: const Text(
-            'SIGN OUT',
-            style: TextStyle(color: AppColors.green, letterSpacing: 2),
-          ),
-        ),
       ],
     );
   }
@@ -1524,8 +1543,19 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
           _buildRequirementChecklistCard(),
           const SizedBox(height: 12),
           _buildNotificationTestCard(),
+          const SizedBox(height: 12),
+          _buildSignOutTile(),
         ],
       ),
+    );
+  }
+
+  Widget _buildSignOutTile() {
+    return _SettingTile(
+      icon: Icons.logout_rounded,
+      title: 'Logout',
+      subtitle: 'Sign out of this device.',
+      onTap: _confirmLogout,
     );
   }
 
@@ -2098,50 +2128,64 @@ class _SettingTile extends StatelessWidget {
   final IconData icon;
   final String title;
   final String subtitle;
+  final Future<void> Function()? onTap;
 
   const _SettingTile({
     required this.icon,
     required this.title,
     required this.subtitle,
+    this.onTap,
   });
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: AppColors.offWhite,
-        border: Border.all(color: AppColors.border.withOpacity(0.5)),
-      ),
-      child: Row(
-        children: [
-          Icon(icon, color: AppColors.green, size: 26),
-          const SizedBox(width: 14),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  title,
-                  style: const TextStyle(
-                    fontSize: 15,
-                    fontWeight: FontWeight.w600,
-                    color: AppColors.green,
-                  ),
-                ),
-                const SizedBox(height: 6),
-                Text(
-                  subtitle,
-                  style: const TextStyle(
-                    fontSize: 12,
-                    color: AppColors.textSub,
-                    height: 1.5,
-                  ),
-                ),
-              ],
-            ),
+    return Material(
+      color: AppColors.offWhite,
+      child: InkWell(
+        onTap: onTap == null ? null : () => onTap!(),
+        child: Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: AppColors.offWhite,
+            border: Border.all(color: AppColors.border.withOpacity(0.5)),
           ),
-        ],
+          child: Row(
+            children: [
+              Icon(icon, color: AppColors.green, size: 26),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      style: const TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.w600,
+                        color: AppColors.green,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      subtitle,
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: AppColors.textSub,
+                        height: 1.5,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              if (onTap != null)
+                const Icon(
+                  Icons.chevron_right_rounded,
+                  size: 20,
+                  color: AppColors.textSub,
+                ),
+            ],
+          ),
+        ),
       ),
     );
   }

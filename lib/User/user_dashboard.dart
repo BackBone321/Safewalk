@@ -6,6 +6,7 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 
 import '../auth/auth_service.dart';
@@ -24,8 +25,8 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
   static const String _hf = 'CormorantGaramond';
   static const String _bf = 'JosefinSans';
   static const LatLng _defaultMapCenter = LatLng(14.5995, 120.9842);
-  static final Set<Factory<OneSequenceGestureRecognizer>> _mapGestureRecognizers =
-      <Factory<OneSequenceGestureRecognizer>>{
+  static final Set<Factory<OneSequenceGestureRecognizer>>
+  _mapGestureRecognizers = <Factory<OneSequenceGestureRecognizer>>{
     Factory<OneSequenceGestureRecognizer>(() => EagerGestureRecognizer()),
   };
 
@@ -229,9 +230,13 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
           final aClientTs = a.data()['clientTimestamp'] as Timestamp?;
           final bClientTs = b.data()['clientTimestamp'] as Timestamp?;
           final aMs =
-              aTs?.millisecondsSinceEpoch ?? aClientTs?.millisecondsSinceEpoch ?? 0;
+              aTs?.millisecondsSinceEpoch ??
+              aClientTs?.millisecondsSinceEpoch ??
+              0;
           final bMs =
-              bTs?.millisecondsSinceEpoch ?? bClientTs?.millisecondsSinceEpoch ?? 0;
+              bTs?.millisecondsSinceEpoch ??
+              bClientTs?.millisecondsSinceEpoch ??
+              0;
           return bMs.compareTo(aMs);
         });
 
@@ -259,8 +264,7 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
     return _formatCoordinateLabel(_deviceCoordinates);
   }
 
-  bool get _mobileMapLiteMode =>
-      false;
+  bool get _mobileMapLiteMode => false;
 
   bool _isSamePoint(LatLng a, LatLng b) {
     const tolerance = 0.00001;
@@ -268,7 +272,11 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
         (a.longitude - b.longitude).abs() <= tolerance;
   }
 
-  void _focusRouteMapOnPoint(LatLng point, {double zoom = 16, bool force = false}) {
+  void _focusRouteMapOnPoint(
+    LatLng point, {
+    double zoom = 16,
+    bool force = false,
+  }) {
     final controller = _routeMapController;
     if (controller == null) return;
 
@@ -287,7 +295,8 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
         )
         .catchError((_) {});
 
-    if (_nextMapFocusPoint != null && _isSamePoint(_nextMapFocusPoint!, point)) {
+    if (_nextMapFocusPoint != null &&
+        _isSamePoint(_nextMapFocusPoint!, point)) {
       _nextMapFocusPoint = null;
     }
   }
@@ -329,11 +338,7 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
       ..close();
     canvas.drawCircle(center, topRadius, pinPaint);
     canvas.drawPath(pinPath, pinPaint);
-    canvas.drawCircle(
-      center,
-      topRadius * 0.47,
-      Paint()..color = Colors.white,
-    );
+    canvas.drawCircle(center, topRadius * 0.47, Paint()..color = Colors.white);
 
     final picture = recorder.endRecording();
     final image = await picture.toImage(size, size);
@@ -741,6 +746,53 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
 
   // ─── Actions ───────────────────────────────────────────────────
 
+  Future<LatLng?> _getCurrentPhoneLocation() async {
+    try {
+      final isServiceEnabled = await Geolocator.isLocationServiceEnabled();
+      if (!isServiceEnabled) {
+        _showActionSnack(
+          'Location services are off. Using last known linked location.',
+          isError: true,
+        );
+        return null;
+      }
+
+      var permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+      }
+
+      if (permission == LocationPermission.denied) {
+        _showActionSnack(
+          'Location permission denied. Using last known linked location.',
+          isError: true,
+        );
+        return null;
+      }
+
+      if (permission == LocationPermission.deniedForever) {
+        _showActionSnack(
+          'Location permission is permanently denied. Enable it in app settings.',
+          isError: true,
+        );
+        return null;
+      }
+
+      final position = await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.bestForNavigation,
+        timeLimit: const Duration(seconds: 12),
+      );
+
+      return LatLng(position.latitude, position.longitude);
+    } catch (_) {
+      _showActionSnack(
+        'Could not get live GPS location. Using last known linked location.',
+        isError: true,
+      );
+      return null;
+    }
+  }
+
   Future<void> _createSosAlert() async {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) {
@@ -758,14 +810,14 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
         return;
       }
 
+      final livePoint = await _getCurrentPhoneLocation();
       final mapPoint =
-          _deviceCoordinates ?? _coordinatesFromText(_deviceLocation) ?? _mapCenter;
+          livePoint ??
+          _deviceCoordinates ??
+          _coordinatesFromText(_deviceLocation) ??
+          _mapCenter;
       final locationGeoPoint = GeoPoint(mapPoint.latitude, mapPoint.longitude);
-      final locationLabel =
-          _deviceLocation.trim().isEmpty ||
-              _deviceLocation.trim().toLowerCase() == 'unknown'
-          ? _formatCoordinateLabel(mapPoint)
-          : _deviceLocation;
+      final locationLabel = _formatCoordinateLabel(mapPoint);
 
       await _firestore.collection('emergency_alerts').add({
         'uid': user.uid,
@@ -781,6 +833,7 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
         'message': 'SOS button pressed by $_fullName.',
         'location': locationLabel,
         'coordinates': locationGeoPoint,
+        'locationSource': livePoint != null ? 'phone_gps' : 'linked_device',
         'triggeredBy': 'student_dashboard',
         'clientTimestamp': Timestamp.now(),
         'timestamp': FieldValue.serverTimestamp(),
@@ -789,9 +842,15 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
         setState(() {
           _selectedNavIndex = 1;
           _nextMapFocusPoint = mapPoint;
+          _deviceCoordinates = mapPoint;
+          _deviceLocation = locationLabel;
         });
       }
-      _showActionSnack('SOS sent to your linked parent.');
+      _showActionSnack(
+        livePoint != null
+            ? 'SOS sent with your live phone location.'
+            : 'SOS sent using your last linked location.',
+      );
     } catch (e) {
       _showActionSnack('Failed to send SOS alert: $e', isError: true);
     }
@@ -1119,7 +1178,10 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                             : 'Not active',
                       ),
                       const SizedBox(height: 10),
-                      infoTile('COORDINATES', _formatCoordinateLabel(effectivePoint)),
+                      infoTile(
+                        'COORDINATES',
+                        _formatCoordinateLabel(effectivePoint),
+                      ),
                       const SizedBox(height: 10),
                       infoTile(
                         'LOCATION SHARING',
@@ -2504,6 +2566,31 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
     setState(() => _selectedNavIndex = index);
   }
 
+  Future<void> _confirmLogout() async {
+    final shouldLogout = await showDialog<bool>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Logout'),
+          content: const Text('Do you want to log out?'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('Cancel'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              child: const Text('Yes'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (shouldLogout != true) return;
+    await _logout();
+  }
+
   Future<void> _logout() async {
     try {
       await _authService.signOut();
@@ -2672,7 +2759,10 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
               title: 'Map Overview',
               subtitle: 'LOCATION TRACKING',
               children: [
-                _buildDeviceRow('Coordinates', _formatCoordinateLabel(mapPoint)),
+                _buildDeviceRow(
+                  'Coordinates',
+                  _formatCoordinateLabel(mapPoint),
+                ),
                 const SizedBox(height: 8),
                 _buildDeviceRow('Tracking', trackingLabel),
                 const SizedBox(height: 8),
@@ -2939,6 +3029,11 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                   onTap: _loadDashboard,
                   isPrimary: false,
                 ),
+                _buildPanelAction(
+                  label: 'LOGOUT',
+                  onTap: _confirmLogout,
+                  isPrimary: false,
+                ),
               ],
             ),
           ],
@@ -3116,56 +3211,6 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                 ],
               ),
               const Spacer(),
-              Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 12,
-                  vertical: 6,
-                ),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF0E5B3C),
-                  borderRadius: BorderRadius.circular(999),
-                  border: Border.all(color: const Color(0xFF2D8760)),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Icon(Icons.circle, color: Color(0xFF5DF0A0), size: 7),
-                    const SizedBox(width: 6),
-                    Text(
-                      'ONLINE',
-                      style: TextStyle(
-                        fontFamily: _bf,
-                        color: const Color(0xFF5DF0A0),
-                        fontSize: 10,
-                        letterSpacing: 2,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(width: 8),
-              InkWell(
-                onTap: _logout,
-                borderRadius: BorderRadius.circular(12),
-                child: Container(
-                  width: 36,
-                  height: 36,
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF124733),
-                    borderRadius: BorderRadius.circular(10),
-                    border: Border.all(
-                      color: AppColors.gold.withOpacity(0.3),
-                      width: 0.8,
-                    ),
-                  ),
-                  child: const Icon(
-                    Icons.logout_rounded,
-                    color: Color(0xFFF0F5F2),
-                    size: 18,
-                  ),
-                ),
-              ),
             ],
           ),
           const SizedBox(height: 20),
@@ -3239,10 +3284,7 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
     if (requestedFocusPoint != null) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
-        _focusRouteMapOnPoint(
-          requestedFocusPoint,
-          zoom: hasPoint ? 16 : 12,
-        );
+        _focusRouteMapOnPoint(requestedFocusPoint, zoom: hasPoint ? 16 : 12);
       });
     }
     return Container(
@@ -3268,7 +3310,11 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                   ? _buildWebMapFallback(contextLabel: 'Student Route Card')
                   : GoogleMap(
                       key: ValueKey(
-                        'route-map-${center.latitude}-${center.longitude}-${sosIsActive ? 'sos' : hasPoint ? 'track' : 'none'}',
+                        'route-map-${center.latitude}-${center.longitude}-${sosIsActive
+                            ? 'sos'
+                            : hasPoint
+                            ? 'track'
+                            : 'none'}',
                       ),
                       initialCameraPosition: CameraPosition(
                         target: center,
@@ -3466,9 +3512,7 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                   ),
                   const SizedBox(height: 4),
                   Text(
-                    sosIsActive
-                        ? focusLabel
-                        : 'Google Maps tracking view',
+                    sosIsActive ? focusLabel : 'Google Maps tracking view',
                     style: TextStyle(
                       fontFamily: _bf,
                       color: Colors.white.withOpacity(0.85),

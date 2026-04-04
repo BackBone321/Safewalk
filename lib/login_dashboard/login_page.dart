@@ -174,10 +174,7 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
     ).animate(CurvedAnimation(parent: _cardAnim, curve: Curves.easeOut));
 
     _particleAnim =
-        AnimationController(
-            vsync: this,
-            duration: const Duration(seconds: 1),
-          )
+        AnimationController(vsync: this, duration: const Duration(seconds: 1))
           ..addListener(_tickParticles)
           ..repeat();
 

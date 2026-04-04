@@ -21,8 +21,8 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
   static const String _hf = 'CormorantGaramond';
   static const String _bf = 'JosefinSans';
   static const LatLng _defaultMapCenter = LatLng(14.5995, 120.9842);
-  static final Set<Factory<OneSequenceGestureRecognizer>> _mapGestureRecognizers =
-      <Factory<OneSequenceGestureRecognizer>>{
+  static final Set<Factory<OneSequenceGestureRecognizer>>
+  _mapGestureRecognizers = <Factory<OneSequenceGestureRecognizer>>{
     Factory<OneSequenceGestureRecognizer>(() => EagerGestureRecognizer()),
   };
 
@@ -58,8 +58,7 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
   bool _smsAlertsEnabled = true;
   bool _emailAlertsEnabled = true;
 
-  bool get _mobileMapLiteMode =>
-      false;
+  bool get _mobileMapLiteMode => false;
 
   final List<_ToolItem> _tools = const [
     _ToolItem(
@@ -1307,8 +1306,8 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                                         ),
                                         boxShadow: [
                                           BoxShadow(
-                                            color: AppColors.green.withValues(alpha: 
-                                              0.2,
+                                            color: AppColors.green.withValues(
+                                              alpha: 0.2,
                                             ),
                                             blurRadius: 20,
                                             spreadRadius: 2,
@@ -1387,7 +1386,9 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                                   color: AppColors.cream,
                                   borderRadius: BorderRadius.circular(2),
                                   border: Border.all(
-                                    color: AppColors.border.withValues(alpha: 0.5),
+                                    color: AppColors.border.withValues(
+                                      alpha: 0.5,
+                                    ),
                                   ),
                                 ),
                                 child: Column(
@@ -1399,7 +1400,9 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                                         fontFamily: _bf,
                                         fontSize: 9,
                                         letterSpacing: 4,
-                                        color: AppColors.gold.withValues(alpha: 0.8),
+                                        color: AppColors.gold.withValues(
+                                          alpha: 0.8,
+                                        ),
                                         fontWeight: FontWeight.w300,
                                       ),
                                     ),
@@ -1423,8 +1426,8 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                                         fontFamily: _bf,
                                         fontSize: 9,
                                         letterSpacing: 1,
-                                        color: AppColors.textSub.withValues(alpha: 
-                                          0.6,
+                                        color: AppColors.textSub.withValues(
+                                          alpha: 0.6,
                                         ),
                                       ),
                                     ),
@@ -1473,8 +1476,8 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                                       alignment: Alignment.center,
                                       decoration: BoxDecoration(
                                         border: Border.all(
-                                          color: AppColors.gold.withValues(alpha: 
-                                            0.65,
+                                          color: AppColors.gold.withValues(
+                                            alpha: 0.65,
                                           ),
                                         ),
                                       ),
@@ -1738,7 +1741,9 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                                       backgroundColor: AppColors.white,
                                       side: BorderSide(
                                         color: selected
-                                            ? AppColors.gold.withValues(alpha: 0.6)
+                                            ? AppColors.gold.withValues(
+                                                alpha: 0.6,
+                                              )
                                             : AppColors.border,
                                       ),
                                     );
@@ -1834,7 +1839,9 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                                   style: OutlinedButton.styleFrom(
                                     foregroundColor: AppColors.green,
                                     side: BorderSide(
-                                      color: AppColors.gold.withValues(alpha: 0.55),
+                                      color: AppColors.gold.withValues(
+                                        alpha: 0.55,
+                                      ),
                                     ),
                                     padding: const EdgeInsets.symmetric(
                                       vertical: 12,
@@ -1896,8 +1903,8 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                                       alignment: Alignment.center,
                                       decoration: BoxDecoration(
                                         border: Border.all(
-                                          color: AppColors.gold.withValues(alpha: 
-                                            0.65,
+                                          color: AppColors.gold.withValues(
+                                            alpha: 0.65,
                                           ),
                                         ),
                                       ),
@@ -1980,6 +1987,31 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
 
   Future<void> _onBottomNavTap(int index) async {
     setState(() => _selectedNavIndex = index);
+  }
+
+  Future<void> _confirmLogout() async {
+    final shouldLogout = await showDialog<bool>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Logout'),
+          content: const Text('Do you want to log out?'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('Cancel'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              child: const Text('Yes'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (shouldLogout != true) return;
+    await _logout();
   }
 
   Future<void> _logout() async {
@@ -2539,6 +2571,11 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                     onTap: _loadDashboard,
                     isPrimary: false,
                   ),
+                  _buildPanelAction(
+                    label: 'LOGOUT',
+                    onTap: _confirmLogout,
+                    isPrimary: false,
+                  ),
                 ],
               ),
             ),
@@ -2696,7 +2733,10 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
           colors: [Color(0xFF05412B), Color(0xFF042D1F)],
         ),
         borderRadius: BorderRadius.circular(26),
-        border: Border.all(color: AppColors.gold.withValues(alpha: 0.25), width: 1),
+        border: Border.all(
+          color: AppColors.gold.withValues(alpha: 0.25),
+          width: 1,
+        ),
         boxShadow: [
           BoxShadow(
             color: AppColors.green.withValues(alpha: 0.25),
@@ -2757,56 +2797,6 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                 ],
               ),
               const Spacer(),
-              Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 12,
-                  vertical: 6,
-                ),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF0E5B3C),
-                  borderRadius: BorderRadius.circular(999),
-                  border: Border.all(color: const Color(0xFF2D8760)),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Icon(Icons.circle, color: Color(0xFF5DF0A0), size: 7),
-                    const SizedBox(width: 6),
-                    Text(
-                      'ONLINE',
-                      style: TextStyle(
-                        fontFamily: _bf,
-                        color: const Color(0xFF5DF0A0),
-                        fontSize: 10,
-                        letterSpacing: 2,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(width: 8),
-              InkWell(
-                onTap: _logout,
-                borderRadius: BorderRadius.circular(12),
-                child: Container(
-                  width: 36,
-                  height: 36,
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF124733),
-                    borderRadius: BorderRadius.circular(10),
-                    border: Border.all(
-                      color: AppColors.gold.withValues(alpha: 0.3),
-                      width: 0.8,
-                    ),
-                  ),
-                  child: const Icon(
-                    Icons.logout_rounded,
-                    color: Color(0xFFF0F5F2),
-                    size: 18,
-                  ),
-                ),
-              ),
             ],
           ),
           const SizedBox(height: 20),
@@ -2885,7 +2875,10 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
             height: 1,
             decoration: BoxDecoration(
               gradient: LinearGradient(
-                colors: [AppColors.gold.withValues(alpha: 0.3), Colors.transparent],
+                colors: [
+                  AppColors.gold.withValues(alpha: 0.3),
+                  Colors.transparent,
+                ],
               ),
             ),
           ),
@@ -3119,7 +3112,10 @@ class _StatusPill extends StatelessWidget {
       decoration: BoxDecoration(
         color: const Color(0xFF164837),
         borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: AppColors.gold.withValues(alpha: 0.25), width: 0.8),
+        border: Border.all(
+          color: AppColors.gold.withValues(alpha: 0.25),
+          width: 0.8,
+        ),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
@@ -3328,10 +3324,14 @@ class _DashSettingsTile extends StatelessWidget {
       duration: const Duration(milliseconds: 200),
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
       decoration: BoxDecoration(
-        color: value ? AppColors.green.withValues(alpha: 0.04) : AppColors.white,
+        color: value
+            ? AppColors.green.withValues(alpha: 0.04)
+            : AppColors.white,
         borderRadius: BorderRadius.circular(14),
         border: Border.all(
-          color: value ? AppColors.gold.withValues(alpha: 0.5) : AppColors.border,
+          color: value
+              ? AppColors.gold.withValues(alpha: 0.5)
+              : AppColors.border,
         ),
       ),
       child: Row(
@@ -3398,4 +3398,3 @@ class _DashSettingsTile extends StatelessWidget {
     );
   }
 }
-

@@ -45,6 +45,7 @@ class _RegisterPageState extends State<RegisterPage>
   bool _obscureConfirm = true;
   bool _isLoading = false;
   bool _otpRequested = false;
+  bool _agreedToTerms = false;
 
   late final AnimationController _introController;
   late final Animation<double> _fadeAnim;
@@ -64,15 +65,10 @@ class _RegisterPageState extends State<RegisterPage>
       curve: Curves.easeOut,
     );
 
-    _slideAnim = Tween<Offset>(
-      begin: const Offset(0, 0.04),
-      end: Offset.zero,
-    ).animate(
-      CurvedAnimation(
-        parent: _introController,
-        curve: Curves.easeOutCubic,
-      ),
-    );
+    _slideAnim = Tween<Offset>(begin: const Offset(0, 0.04), end: Offset.zero)
+        .animate(
+          CurvedAnimation(parent: _introController, curve: Curves.easeOutCubic),
+        );
 
     _introController.forward();
   }
@@ -92,9 +88,9 @@ class _RegisterPageState extends State<RegisterPage>
   void _showMessage(String message) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).hideCurrentSnackBar();
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message)),
-    );
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
   }
 
   bool _validateInputs() {
@@ -123,7 +119,34 @@ class _RegisterPageState extends State<RegisterPage>
       return false;
     }
 
+    if (!_agreedToTerms) {
+      _showMessage('Please agree to the Terms and Services to continue.');
+      return false;
+    }
+
     return true;
+  }
+
+  Future<void> _showTermsDialog() async {
+    await showDialog<void>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Terms and Services'),
+          content: const SingleChildScrollView(
+            child: Text(
+              'By creating an account, you agree to use SafeWalk responsibly, provide accurate information, and protect your account credentials. SafeWalk may process account, location, and alert data to provide safety features and notifications.',
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('Close'),
+            ),
+          ],
+        );
+      },
+    );
   }
 
   Future<void> _sendOtp() async {
@@ -204,27 +227,17 @@ class _RegisterPageState extends State<RegisterPage>
           gradient: RadialGradient(
             center: Alignment(-0.45, -0.75),
             radius: 1.5,
-            colors: [
-              Color(0xFFEDF7F1),
-              _C.offWhite,
-            ],
+            colors: [Color(0xFFEDF7F1), _C.offWhite],
           ),
         ),
         child: Stack(
           children: [
-            const Positioned(
-              top: 0,
-              left: 0,
-              right: 0,
-              child: _TopAccentBar(),
-            ),
+            const Positioned(top: 0, left: 0, right: 0, child: _TopAccentBar()),
 
             const Positioned.fill(
               child: IgnorePointer(
                 child: RepaintBoundary(
-                  child: CustomPaint(
-                    painter: _CornerPainter(),
-                  ),
+                  child: CustomPaint(painter: _CornerPainter()),
                 ),
               ),
             ),
@@ -353,8 +366,9 @@ class _RegisterPageState extends State<RegisterPage>
                                         child: DropdownButton<String>(
                                           value: _accountType,
                                           isExpanded: true,
-                                          borderRadius:
-                                              BorderRadius.circular(14),
+                                          borderRadius: BorderRadius.circular(
+                                            14,
+                                          ),
                                           dropdownColor: _C.white,
                                           style: const TextStyle(
                                             fontSize: 14,
@@ -412,8 +426,9 @@ class _RegisterPageState extends State<RegisterPage>
                                       Align(
                                         alignment: Alignment.centerRight,
                                         child: TextButton(
-                                          onPressed:
-                                              _isLoading ? null : _sendOtp,
+                                          onPressed: _isLoading
+                                              ? null
+                                              : _sendOtp,
                                           child: const Text('Resend OTP'),
                                         ),
                                       ),
@@ -459,8 +474,7 @@ class _RegisterPageState extends State<RegisterPage>
                                       suffixIcon: IconButton(
                                         onPressed: () {
                                           setState(() {
-                                            _obscureConfirm =
-                                                !_obscureConfirm;
+                                            _obscureConfirm = !_obscureConfirm;
                                           });
                                         },
                                         icon: Icon(
@@ -474,6 +488,16 @@ class _RegisterPageState extends State<RegisterPage>
                                     ),
 
                                     const SizedBox(height: 28),
+                                    _TermsAgreementRow(
+                                      agreedToTerms: _agreedToTerms,
+                                      onAgreeToTerms: (value) {
+                                        setState(
+                                          () => _agreedToTerms = value ?? false,
+                                        );
+                                      },
+                                      onShowTerms: _showTermsDialog,
+                                    ),
+                                    const SizedBox(height: 20),
 
                                     _PrimaryButton(
                                       text: _otpRequested
@@ -540,9 +564,7 @@ class _RegisterPageState extends State<RegisterPage>
           width: 28,
           height: 1,
           decoration: const BoxDecoration(
-            gradient: LinearGradient(
-              colors: [_C.gold, Colors.transparent],
-            ),
+            gradient: LinearGradient(colors: [_C.gold, Colors.transparent]),
           ),
         ),
         const SizedBox(width: 8),
@@ -557,10 +579,7 @@ class _RegisterPageState extends State<RegisterPage>
         ),
         const SizedBox(width: 8),
         Expanded(
-          child: Container(
-            height: 1,
-            color: _C.border.withOpacity(0.35),
-          ),
+          child: Container(height: 1, color: _C.border.withOpacity(0.35)),
         ),
       ],
     );
@@ -570,6 +589,67 @@ class _RegisterPageState extends State<RegisterPage>
 // ─────────────────────────────────────────────
 //  Small UI Widgets
 // ─────────────────────────────────────────────
+class _TermsAgreementRow extends StatelessWidget {
+  final bool agreedToTerms;
+  final ValueChanged<bool?> onAgreeToTerms;
+  final VoidCallback onShowTerms;
+
+  const _TermsAgreementRow({
+    required this.agreedToTerms,
+    required this.onAgreeToTerms,
+    required this.onShowTerms,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.center,
+      children: [
+        SizedBox(
+          width: 18,
+          height: 18,
+          child: Checkbox(
+            value: agreedToTerms,
+            onChanged: onAgreeToTerms,
+            activeColor: _C.green,
+            checkColor: _C.goldLt,
+            side: const BorderSide(color: _C.border, width: 1),
+          ),
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Wrap(
+            spacing: 4,
+            runSpacing: 2,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              const Text(
+                'I AGREE TO THE',
+                style: TextStyle(
+                  fontSize: 10,
+                  color: _C.textSub,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+              GestureDetector(
+                onTap: onShowTerms,
+                child: const Text(
+                  'TERMS AND SERVICES.',
+                  style: TextStyle(
+                    fontSize: 10,
+                    color: _C.green,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
 class _TopAccentBar extends StatelessWidget {
   const _TopAccentBar();
 
@@ -578,9 +658,7 @@ class _TopAccentBar extends StatelessWidget {
     return Container(
       height: 4,
       decoration: const BoxDecoration(
-        gradient: LinearGradient(
-          colors: [_C.green, _C.bright, _C.gold],
-        ),
+        gradient: LinearGradient(colors: [_C.green, _C.bright, _C.gold]),
       ),
     );
   }
@@ -786,8 +864,7 @@ class _PrimaryButton extends StatelessWidget {
                       height: 22,
                       child: CircularProgressIndicator(
                         strokeWidth: 2,
-                        valueColor:
-                            AlwaysStoppedAnimation<Color>(_C.goldLt),
+                        valueColor: AlwaysStoppedAnimation<Color>(_C.goldLt),
                       ),
                     )
                   : Text(
@@ -834,16 +911,8 @@ class _CornerPainter extends CustomPainter {
     final br = Offset(size.width, size.height);
     canvas.drawLine(br, Offset(br.dx - d, br.dy), p);
     canvas.drawLine(br, Offset(br.dx, br.dy - d), p);
-    canvas.drawLine(
-      Offset(br.dx - s, br.dy),
-      Offset(br.dx - s, br.dy - s),
-      p,
-    );
-    canvas.drawLine(
-      Offset(br.dx, br.dy - s),
-      Offset(br.dx - s, br.dy - s),
-      p,
-    );
+    canvas.drawLine(Offset(br.dx - s, br.dy), Offset(br.dx - s, br.dy - s), p);
+    canvas.drawLine(Offset(br.dx, br.dy - s), Offset(br.dx - s, br.dy - s), p);
   }
 
   @override
