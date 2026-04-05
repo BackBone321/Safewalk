@@ -1,8 +1,12 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'add_device_page.dart';
 import '../auth/auth_service.dart';
 import '../login_dashboard/login_page.dart';
+import '../utils/google_maps_web_guard.dart';
 import '../services/notification_service.dart';
 import '../services/print_service.dart';
 import '../services/system_admin_service.dart';
@@ -36,6 +40,11 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
   String _latestReportText = '';
   String _lastReportId = '';
   String _lastBackupId = '';
+  static const LatLng _defaultMapCenter = LatLng(14.5995, 120.9842);
+  static final Set<Factory<OneSequenceGestureRecognizer>>
+  _mapGestureRecognizers = <Factory<OneSequenceGestureRecognizer>>{
+    Factory<OneSequenceGestureRecognizer>(() => EagerGestureRecognizer()),
+  };
 
   final List<_AdminMenuItem> _menuItems = const [
     _AdminMenuItem('User Management', Icons.people_alt_outlined),
@@ -62,6 +71,110 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
       SnackBar(
         content: Text(message),
         backgroundColor: isError ? Colors.red.shade700 : AppColors.green,
+      ),
+    );
+  }
+
+  double? _toDouble(dynamic value) {
+    if (value is num) return value.toDouble();
+    if (value is String) return double.tryParse(value.trim());
+    return null;
+  }
+
+  bool _isValidLatLng(double lat, double lng) {
+    return lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180;
+  }
+
+  LatLng? _coordinatesFromValues(dynamic latValue, dynamic lngValue) {
+    final lat = _toDouble(latValue);
+    final lng = _toDouble(lngValue);
+    if (lat == null || lng == null) return null;
+    if (!_isValidLatLng(lat, lng)) return null;
+    return LatLng(lat, lng);
+  }
+
+  LatLng? _coordinatesFromText(String text) {
+    final match = RegExp(
+      r'(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)',
+    ).firstMatch(text);
+    if (match == null) return null;
+    final lat = double.tryParse(match.group(1) ?? '');
+    final lng = double.tryParse(match.group(2) ?? '');
+    if (lat == null || lng == null) return null;
+    if (!_isValidLatLng(lat, lng)) return null;
+    return LatLng(lat, lng);
+  }
+
+  LatLng? _extractAlertCoordinates(Map<String, dynamic> data) {
+    final coordinates = data['coordinates'];
+    if (coordinates is GeoPoint) {
+      return LatLng(coordinates.latitude, coordinates.longitude);
+    }
+    if (coordinates is Map) {
+      final nested = _coordinatesFromValues(
+        coordinates['latitude'] ?? coordinates['lat'],
+        coordinates['longitude'] ?? coordinates['lng'] ?? coordinates['lon'],
+      );
+      if (nested != null) return nested;
+    }
+
+    final direct = _coordinatesFromValues(
+      data['latitude'] ?? data['lat'],
+      data['longitude'] ?? data['lng'] ?? data['lon'],
+    );
+    if (direct != null) return direct;
+
+    final location = data['location'];
+    if (location is String) {
+      return _coordinatesFromText(location);
+    }
+    if (location is GeoPoint) {
+      return LatLng(location.latitude, location.longitude);
+    }
+    return null;
+  }
+
+  String _formatCoordinateValue(LatLng? value) {
+    if (value == null) return 'Unknown';
+    return '${value.latitude.toStringAsFixed(6)}, ${value.longitude.toStringAsFixed(6)}';
+  }
+
+  String _resolveAlertSenderName(Map<String, dynamic> data) {
+    final fullName = (data['fullName'] ?? '').toString().trim();
+    if (fullName.isNotEmpty) return fullName;
+    final studentName = (data['studentName'] ?? '').toString().trim();
+    if (studentName.isNotEmpty) return studentName;
+    final userName = (data['userName'] ?? '').toString().trim();
+    if (userName.isNotEmpty) return userName;
+    final email = (data['email'] ?? '').toString().trim();
+    if (email.isNotEmpty) return email;
+    return 'Unknown sender';
+  }
+
+  String _formatTimestamp(Timestamp? ts) {
+    if (ts == null) return 'Unknown time';
+    final dt = ts.toDate().toLocal();
+    final m = dt.month.toString().padLeft(2, '0');
+    final d = dt.day.toString().padLeft(2, '0');
+    final h = dt.hour.toString().padLeft(2, '0');
+    final min = dt.minute.toString().padLeft(2, '0');
+    return '$m/$d ${dt.year} $h:$min';
+  }
+
+  Widget _buildWebMapFallback({required String contextLabel}) {
+    return Container(
+      color: const Color(0xFF830C0C),
+      padding: const EdgeInsets.all(14),
+      alignment: Alignment.centerLeft,
+      child: Text(
+        'Google Maps is not ready on Web.\n'
+        'Set your API key in web/index.html and reload.\n'
+        'Context: $contextLabel',
+        style: const TextStyle(
+          color: Color(0xFFFFF1B8),
+          fontSize: 12,
+          fontWeight: FontWeight.w600,
+        ),
       ),
     );
   }
@@ -1003,6 +1116,193 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
     );
   }
 
+  Widget _buildEmergencySosMap(
+    List<QueryDocumentSnapshot<Map<String, dynamic>>> docs,
+  ) {
+    final sosDocs = docs.where((doc) {
+      final type = (doc.data()['type'] ?? '').toString().toLowerCase();
+      return type == 'sos';
+    }).toList()..sort((a, b) {
+      final aTs = a.data()['timestamp'] as Timestamp?;
+      final bTs = b.data()['timestamp'] as Timestamp?;
+      return (bTs?.millisecondsSinceEpoch ?? 0).compareTo(
+        aTs?.millisecondsSinceEpoch ?? 0,
+      );
+    });
+
+    final latestBySender =
+        <String, QueryDocumentSnapshot<Map<String, dynamic>>>{};
+    for (final doc in sosDocs) {
+      final data = doc.data();
+      final senderUid = (data['uid'] ?? data['studentUid'] ?? '').toString();
+      final key = senderUid.trim().isEmpty ? doc.id : senderUid.trim();
+      latestBySender.putIfAbsent(key, () => doc);
+    }
+
+    final markers = <Marker>{};
+    final circles = <Circle>{};
+    LatLng? firstPoint;
+    for (final entry in latestBySender.entries) {
+      final data = entry.value.data();
+      final point = _extractAlertCoordinates(data);
+      if (point == null) continue;
+      firstPoint ??= point;
+      final sender = _resolveAlertSenderName(data);
+      final isActive =
+          (data['status'] ?? '').toString().toLowerCase() == 'active';
+      final pointLabel = _formatCoordinateValue(point);
+      markers.add(
+        Marker(
+          markerId: MarkerId('admin-sos-${entry.key}'),
+          position: point,
+          icon: BitmapDescriptor.defaultMarkerWithHue(
+            isActive ? BitmapDescriptor.hueRed : BitmapDescriptor.hueOrange,
+          ),
+          infoWindow: InfoWindow(
+            title: '$sender - SOS',
+            snippet: pointLabel,
+          ),
+        ),
+      );
+      circles.add(
+        Circle(
+          circleId: CircleId('admin-sos-circle-${entry.key}'),
+          center: point,
+          radius: isActive ? 90 : 60,
+          fillColor: isActive
+              ? const Color(0x55CB392B)
+              : const Color(0x35CB6D2B),
+          strokeColor: isActive
+              ? const Color(0xFFCB392B)
+              : const Color(0xFFCB6D2B),
+          strokeWidth: 2,
+        ),
+      );
+    }
+
+    final markerCount = markers.length;
+    final latestData = sosDocs.isNotEmpty ? sosDocs.first.data() : null;
+    final latestSender = latestData == null
+        ? 'Unknown sender'
+        : _resolveAlertSenderName(latestData);
+    final latestLabel = latestData == null
+        ? ''
+        : _formatTimestamp(latestData['timestamp'] as Timestamp?);
+    final latestPoint = latestData == null
+        ? null
+        : _extractAlertCoordinates(latestData);
+    final center = firstPoint ?? latestPoint ?? _defaultMapCenter;
+    final hasPoint = markerCount > 0;
+    final footerTitle = hasPoint
+        ? 'LATEST SOS: $latestSender${latestLabel.isEmpty ? '' : ' | $latestLabel'}'
+        : 'NO SOS LOCATION YET';
+    final footerLocation = hasPoint
+        ? _formatCoordinateValue(latestPoint ?? firstPoint)
+        : 'Waiting for SOS coordinates';
+
+    return Container(
+      height: 240,
+      decoration: BoxDecoration(
+        color: AppColors.white,
+        border: Border.all(color: AppColors.border.withOpacity(0.5)),
+      ),
+      child: Stack(
+        children: [
+          Positioned.fill(
+            child: ClipRRect(
+              child: kIsWeb && !isGoogleMapsJsLoaded()
+                  ? _buildWebMapFallback(contextLabel: 'Admin SOS Map')
+                  : GoogleMap(
+                      key: ValueKey(
+                        'admin-sos-map-${center.latitude}-${center.longitude}-$markerCount',
+                      ),
+                      initialCameraPosition: CameraPosition(
+                        target: center,
+                        zoom: hasPoint ? 15 : 12,
+                      ),
+                      mapType: MapType.normal,
+                      gestureRecognizers: _mapGestureRecognizers,
+                      zoomGesturesEnabled: true,
+                      scrollGesturesEnabled: true,
+                      markers: markers,
+                      circles: circles,
+                      myLocationEnabled: false,
+                      myLocationButtonEnabled: false,
+                      zoomControlsEnabled: false,
+                      mapToolbarEnabled: false,
+                      compassEnabled: false,
+                      rotateGesturesEnabled: false,
+                      tiltGesturesEnabled: false,
+                      onMapCreated: (_) {},
+                    ),
+            ),
+          ),
+          Positioned(
+            top: 14,
+            left: 14,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              decoration: BoxDecoration(
+                color: const Color(0xFF7E1F14),
+                border: Border.all(color: AppColors.gold.withOpacity(0.3)),
+              ),
+              child: Text(
+                markerCount > 0 ? '$markerCount SOS MARKERS' : 'NO SOS MARKERS',
+                style: const TextStyle(
+                  color: AppColors.gold,
+                  fontSize: 9,
+                  letterSpacing: 1.8,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+          ),
+          Positioned(
+            left: 0,
+            right: 0,
+            bottom: 0,
+            child: Container(
+              padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  colors: [
+                    Colors.black.withOpacity(0.02),
+                    Colors.black.withOpacity(0.72),
+                  ],
+                ),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    footerTitle,
+                    style: const TextStyle(
+                      color: AppColors.gold,
+                      fontSize: 9,
+                      letterSpacing: 2.2,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                  const SizedBox(height: 3),
+                  Text(
+                    footerLocation,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildEmergencyAlerts() {
     return _LuxuryPanel(
       title: 'EMERGENCY ALERTS',
@@ -1027,63 +1327,92 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
             );
           }
 
-          return ListView.separated(
-            padding: const EdgeInsets.all(16),
-            itemCount: docs.length,
-            separatorBuilder: (_, __) => const SizedBox(height: 12),
-            itemBuilder: (context, index) {
-              final data = docs[index].data();
+          return Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 16, 16, 12),
+                child: _buildEmergencySosMap(docs),
+              ),
+              Expanded(
+                child: ListView.separated(
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                  itemCount: docs.length,
+                  separatorBuilder: (_, __) => const SizedBox(height: 12),
+                  itemBuilder: (context, index) {
+                    final data = docs[index].data();
+                    final sender = _resolveAlertSenderName(data);
+                    final locationText = (data['location'] ?? 'Unknown')
+                        .toString();
+                    final status = (data['status'] ?? 'unknown')
+                        .toString()
+                        .toUpperCase();
+                    final timestamp = _formatTimestamp(
+                      data['timestamp'] as Timestamp?,
+                    );
 
-              return Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: Colors.red.shade50,
-                  border: Border.all(color: Colors.red.shade200),
-                ),
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Icon(
-                      Icons.warning_amber_rounded,
-                      color: Colors.red.shade700,
-                      size: 28,
-                    ),
-                    const SizedBox(width: 14),
-                    Expanded(
-                      child: Column(
+                    return Container(
+                      padding: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        color: Colors.red.shade50,
+                        border: Border.all(color: Colors.red.shade200),
+                      ),
+                      child: Row(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Text(
-                            data['message'] ?? 'Emergency Alert',
-                            style: TextStyle(
-                              fontSize: 15,
-                              fontWeight: FontWeight.w700,
-                              color: Colors.red.shade700,
-                            ),
+                          Icon(
+                            Icons.warning_amber_rounded,
+                            color: Colors.red.shade700,
+                            size: 28,
                           ),
-                          const SizedBox(height: 8),
-                          Text(
-                            'User: ${data['userName'] ?? data['email'] ?? 'Unknown'}',
-                            style: const TextStyle(
-                              fontSize: 12,
-                              color: AppColors.textMain,
-                            ),
-                          ),
-                          const SizedBox(height: 4),
-                          Text(
-                            'Location: ${data['location'] ?? 'Unknown'}',
-                            style: const TextStyle(
-                              fontSize: 12,
-                              color: AppColors.textMain,
+                          const SizedBox(width: 14),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  (data['message'] ?? 'Emergency Alert')
+                                      .toString(),
+                                  style: TextStyle(
+                                    fontSize: 15,
+                                    fontWeight: FontWeight.w700,
+                                    color: Colors.red.shade700,
+                                  ),
+                                ),
+                                const SizedBox(height: 8),
+                                Text(
+                                  'Sender: $sender',
+                                  style: const TextStyle(
+                                    fontSize: 12,
+                                    color: AppColors.textMain,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                                const SizedBox(height: 4),
+                                Text(
+                                  'Location: $locationText',
+                                  style: const TextStyle(
+                                    fontSize: 12,
+                                    color: AppColors.textMain,
+                                  ),
+                                ),
+                                const SizedBox(height: 4),
+                                Text(
+                                  'Status: $status | Time: $timestamp',
+                                  style: const TextStyle(
+                                    fontSize: 12,
+                                    color: AppColors.textMain,
+                                  ),
+                                ),
+                              ],
                             ),
                           ),
                         ],
                       ),
-                    ),
-                  ],
+                    );
+                  },
                 ),
-              );
-            },
+              ),
+            ],
           );
         },
       ),
