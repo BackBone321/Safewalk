@@ -32,7 +32,7 @@ class AuthService {
         password: _defaultAdminPassword,
       );
     } on FirebaseAuthException catch (e) {
-      if (e.code != 'user-not-found' && e.code != 'invalid-credential') {
+      if (e.code != 'user-not-found' && e.code != 'invalid-password') {
         rethrow;
       }
 
@@ -52,10 +52,9 @@ class AuthService {
 
     final payload = <String, dynamic>{
       'uid': user.uid,
-      'fullName':
-          (displayName == null || displayName.isEmpty)
-              ? _defaultAdminName
-              : displayName,
+      'fullName': (displayName == null || displayName.isEmpty)
+          ? _defaultAdminName
+          : displayName,
       'email': _defaultAdminEmail,
       'phoneNumber': '',
       'role': 'admin',
@@ -423,8 +422,8 @@ class AuthService {
           return 'Password is too weak.';
         case 'network-request-failed':
           return 'Network error. Please check your internet connection.';
-        case 'invalid-credential':
-          return 'Invalid login credentials.';
+        case 'invalid-password':
+          return 'Invalid password.';
         case 'invalid-verification-code':
           return 'Invalid OTP code.';
         case 'invalid-verification-id':

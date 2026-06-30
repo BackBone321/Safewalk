@@ -1,4 +1,5 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
@@ -22,24 +23,12 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
   final AuthService _authService = AuthService();
   final SystemAdminService _systemAdminService = SystemAdminService();
   final NotificationService _notificationService = NotificationService();
-  final TextEditingController _reportTitleCtrl = TextEditingController(
-    text: 'SafeWalk System Report',
-  );
-  final TextEditingController _testEmailCtrl = TextEditingController(
-    text: 'admin@gmail.com',
-  );
-  final TextEditingController _testPhoneCtrl = TextEditingController();
+
 
   String _selectedFilter = 'all';
   String _searchText = '';
   int _selectedMenuIndex = 0;
-  bool _isGeneratingReport = false;
-  bool _isCreatingBackup = false;
-  bool _isSendingTestEmail = false;
-  bool _isSendingTestSms = false;
-  String _latestReportText = '';
-  String _lastReportId = '';
-  String _lastBackupId = '';
+
   static const LatLng _defaultMapCenter = LatLng(14.5995, 120.9842);
   static final Set<Factory<OneSequenceGestureRecognizer>>
   _mapGestureRecognizers = <Factory<OneSequenceGestureRecognizer>>{
@@ -49,19 +38,14 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
   final List<_AdminMenuItem> _menuItems = const [
     _AdminMenuItem('User Management', Icons.people_alt_outlined),
     _AdminMenuItem('Device Management', Icons.memory_outlined),
-    _AdminMenuItem('Live Location Monitoring', Icons.location_on_outlined),
     _AdminMenuItem('Emergency Alerts', Icons.warning_amber_rounded),
     _AdminMenuItem('Login Activity', Icons.login_outlined),
-    _AdminMenuItem('SMS Logs', Icons.sms_outlined),
-    _AdminMenuItem('Reports', Icons.bar_chart_outlined),
-    _AdminMenuItem('Settings', Icons.settings_outlined),
+    _AdminMenuItem('Logout', Icons.logout_rounded),
   ];
 
   @override
   void dispose() {
-    _reportTitleCtrl.dispose();
-    _testEmailCtrl.dispose();
-    _testPhoneCtrl.dispose();
+
     super.dispose();
   }
 
@@ -204,6 +188,190 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
     await _logout();
   }
 
+  Future<void> _changePasswordDialog(
+    String uid,
+    String userName,
+    String email,
+  ) async {
+    final newPassCtrl = TextEditingController();
+    final confirmPassCtrl = TextEditingController();
+    bool isLoading = false;
+    bool obscureNew = true;
+    bool obscureConfirm = true;
+
+    await showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          backgroundColor: AppColors.white,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(4),
+            side: BorderSide(color: AppColors.border.withOpacity(0.5)),
+          ),
+          title: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'CHANGE PASSWORD',
+                style: TextStyle(
+                  fontSize: 10,
+                  letterSpacing: 4,
+                  color: AppColors.gold.withOpacity(0.9),
+                  fontWeight: FontWeight.w300,
+                ),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                userName,
+                style: const TextStyle(
+                  fontFamily: 'CormorantGaramond',
+                  fontSize: 22,
+                  fontWeight: FontWeight.w300,
+                  color: AppColors.green,
+                ),
+              ),
+              Text(
+                email,
+                style: const TextStyle(
+                  fontSize: 12,
+                  color: AppColors.textSub,
+                ),
+              ),
+            ],
+          ),
+          content: SizedBox(
+            width: 360,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: newPassCtrl,
+                  obscureText: obscureNew,
+                  decoration: InputDecoration(
+                    labelText: 'New Password',
+                    hintText: 'Minimum 6 characters',
+                    border: OutlineInputBorder(
+                      borderSide: BorderSide(color: AppColors.border.withOpacity(0.6)),
+                    ),
+                    enabledBorder: OutlineInputBorder(
+                      borderSide: BorderSide(color: AppColors.border.withOpacity(0.6)),
+                    ),
+                    focusedBorder: const OutlineInputBorder(
+                      borderSide: BorderSide(color: AppColors.green),
+                    ),
+                    isDense: true,
+                    filled: true,
+                    fillColor: AppColors.offWhite,
+                    suffixIcon: IconButton(
+                      icon: Icon(
+                        obscureNew ? Icons.visibility_off_outlined : Icons.visibility_outlined,
+                        color: AppColors.textSub,
+                        size: 20,
+                      ),
+                      onPressed: () => setDialogState(() => obscureNew = !obscureNew),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 14),
+                TextField(
+                  controller: confirmPassCtrl,
+                  obscureText: obscureConfirm,
+                  decoration: InputDecoration(
+                    labelText: 'Confirm Password',
+                    border: OutlineInputBorder(
+                      borderSide: BorderSide(color: AppColors.border.withOpacity(0.6)),
+                    ),
+                    enabledBorder: OutlineInputBorder(
+                      borderSide: BorderSide(color: AppColors.border.withOpacity(0.6)),
+                    ),
+                    focusedBorder: const OutlineInputBorder(
+                      borderSide: BorderSide(color: AppColors.green),
+                    ),
+                    isDense: true,
+                    filled: true,
+                    fillColor: AppColors.offWhite,
+                    suffixIcon: IconButton(
+                      icon: Icon(
+                        obscureConfirm ? Icons.visibility_off_outlined : Icons.visibility_outlined,
+                        color: AppColors.textSub,
+                        size: 20,
+                      ),
+                      onPressed: () => setDialogState(() => obscureConfirm = !obscureConfirm),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: isLoading ? null : () => Navigator.pop(context),
+              child: const Text(
+                'Cancel',
+                style: TextStyle(color: AppColors.textSub),
+              ),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.green,
+                foregroundColor: AppColors.goldLt,
+                elevation: 0,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(2)),
+              ),
+              onPressed: isLoading
+                  ? null
+                  : () async {
+                      final newPass = newPassCtrl.text.trim();
+                      final confirmPass = confirmPassCtrl.text.trim();
+
+                      if (newPass.length < 6) {
+                        _showMessage('Password must be at least 6 characters.', isError: true);
+                        return;
+                      }
+                      if (newPass != confirmPass) {
+                        _showMessage('Passwords do not match.', isError: true);
+                        return;
+                      }
+
+                      setDialogState(() => isLoading = true);
+                      try {
+                        final callable = FirebaseFunctions.instance
+                            .httpsCallable('updateUserPassword');
+                        await callable.call({
+                          'uid': uid,
+                          'newPassword': newPass,
+                        });
+                        if (mounted) Navigator.pop(context);
+                        _showMessage('Password updated for $userName.');
+                      } on FirebaseFunctionsException catch (e) {
+                        _showMessage(
+                          e.message ?? 'Failed to update password.',
+                          isError: true,
+                        );
+                      } catch (e) {
+                        _showMessage('Error: $e', isError: true);
+                      } finally {
+                        setDialogState(() => isLoading = false);
+                      }
+                    },
+              child: isLoading
+                  ? const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: AppColors.goldLt,
+                      ),
+                    )
+                  : const Text('Update Password'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Future<void> _logout() async {
     await _authService.signOut();
     if (!mounted) return;
@@ -214,158 +382,7 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
     );
   }
 
-  Future<void> _generateReport() async {
-    if (_isGeneratingReport) return;
 
-    setState(() => _isGeneratingReport = true);
-
-    try {
-      final report = await _systemAdminService.generateSystemReport();
-      final reportId = await _systemAdminService.saveGeneratedReport(report);
-      final reportText = SystemAdminService.formatReportAsText(report);
-
-      if (!mounted) return;
-      setState(() {
-        _latestReportText = reportText;
-        _lastReportId = reportId;
-      });
-
-      _showMessage('Report generated successfully. ID: $reportId');
-    } catch (e) {
-      _showMessage('Failed to generate report: $e', isError: true);
-    } finally {
-      if (mounted) {
-        setState(() => _isGeneratingReport = false);
-      }
-    }
-  }
-
-  Future<void> _printLatestReport() async {
-    if (_latestReportText.isEmpty) {
-      await _generateReport();
-      if (_latestReportText.isEmpty) return;
-    }
-
-    final title = _reportTitleCtrl.text.trim().isEmpty
-        ? 'SafeWalk System Report'
-        : _reportTitleCtrl.text.trim();
-    final printed = await printReportHtml(
-      title: title,
-      content: _latestReportText,
-    );
-
-    if (printed) {
-      _showMessage('Print window opened.');
-      return;
-    }
-
-    if (!mounted) return;
-    await showDialog<void>(
-      context: context,
-      builder: (context) {
-        return AlertDialog(
-          title: const Text('Report Preview'),
-          content: SizedBox(
-            width: 560,
-            child: SingleChildScrollView(
-              child: SelectableText(
-                _latestReportText,
-                style: const TextStyle(fontSize: 13, height: 1.45),
-              ),
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('Close'),
-            ),
-          ],
-        );
-      },
-    );
-
-    _showMessage(
-      'Use Ctrl+P from the report preview if browser print is unavailable.',
-    );
-  }
-
-  Future<void> _createBackupSnapshot() async {
-    if (_isCreatingBackup) return;
-
-    setState(() => _isCreatingBackup = true);
-
-    try {
-      final result = await _systemAdminService.createBackupSnapshot();
-      if (!mounted) return;
-      setState(() {
-        _lastBackupId = result.backupId;
-      });
-      _showMessage(
-        'Backup created. ID: ${result.backupId} (${result.totalDocuments} docs)',
-      );
-    } catch (e) {
-      _showMessage('Backup failed: $e', isError: true);
-    } finally {
-      if (mounted) {
-        setState(() => _isCreatingBackup = false);
-      }
-    }
-  }
-
-  Future<void> _sendTestEmail() async {
-    if (_isSendingTestEmail) return;
-
-    final targetEmail = _testEmailCtrl.text.trim();
-    if (targetEmail.isEmpty) {
-      _showMessage('Enter an email address first.', isError: true);
-      return;
-    }
-
-    setState(() => _isSendingTestEmail = true);
-    try {
-      await _notificationService.sendEmailNotification(
-        toEmail: targetEmail,
-        toName: 'SafeWalk Admin',
-        subject: 'SafeWalk Test Email',
-        message:
-            'This is a test email notification from SafeWalk admin settings.',
-        triggeredBy: 'admin_dashboard',
-      );
-      _showMessage('Test email sent to $targetEmail');
-    } catch (e) {
-      _showMessage('Email send failed: $e', isError: true);
-    } finally {
-      if (mounted) {
-        setState(() => _isSendingTestEmail = false);
-      }
-    }
-  }
-
-  Future<void> _sendTestSms() async {
-    if (_isSendingTestSms) return;
-
-    final targetPhone = _testPhoneCtrl.text.trim();
-    if (targetPhone.isEmpty) {
-      _showMessage('Enter a phone number first.', isError: true);
-      return;
-    }
-
-    setState(() => _isSendingTestSms = true);
-    try {
-      await _notificationService.sendSmsNotification(
-        phoneNumber: targetPhone,
-        message: 'SafeWalk test SMS notification from admin dashboard.',
-        triggeredBy: 'admin_dashboard',
-      );
-      _showMessage('Test SMS sent to $targetPhone');
-    } catch (e) {
-      _showMessage('SMS send failed: $e', isError: true);
-    } finally {
-      if (mounted) {
-        setState(() => _isSendingTestSms = false);
-      }
-    }
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -382,29 +399,18 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
                   _buildTopBar(),
                   const SizedBox(height: 20),
                   Expanded(
-                    child: Row(
+                    child: Column(
                       children: [
-                        _buildBrandPanel(),
-                        const SizedBox(width: 18),
+                        _buildSummaryRow(),
+                        const SizedBox(height: 16),
                         Expanded(
-                          flex: 4,
-                          child: Column(
+                          child: Row(
                             children: [
-                              _buildHeroHeader(),
-                              const SizedBox(height: 16),
-                              _buildSummaryRow(),
-                              const SizedBox(height: 16),
+                              _buildMenuPanel(),
+                              const SizedBox(width: 16),
                               Expanded(
-                                child: Row(
-                                  children: [
-                                    _buildMenuPanel(),
-                                    const SizedBox(width: 16),
-                                    Expanded(
-                                      flex: 3,
-                                      child: _buildContentArea(),
-                                    ),
-                                  ],
-                                ),
+                                flex: 3,
+                                child: _buildContentArea(),
                               ),
                             ],
                           ),
@@ -418,7 +424,8 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
           ),
         ],
       ),
-      floatingActionButton: _selectedMenuIndex == 1
+      floatingActionButton:
+          _menuItems[_selectedMenuIndex].title == 'Device Management'
           ? FloatingActionButton.extended(
               backgroundColor: AppColors.green,
               foregroundColor: AppColors.goldLt,
@@ -483,186 +490,8 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
     );
   }
 
-  Widget _buildBrandPanel() {
-    return Expanded(
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 34),
-        decoration: BoxDecoration(
-          color: AppColors.white.withOpacity(0.88),
-          border: Border.all(color: AppColors.border),
-          boxShadow: const [
-            BoxShadow(
-              color: AppColors.shadow,
-              blurRadius: 30,
-              offset: Offset(0, 12),
-            ),
-          ],
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            RichText(
-              text: const TextSpan(
-                style: TextStyle(
-                  fontFamily: 'CormorantGaramond',
-                  fontSize: 46,
-                  fontWeight: FontWeight.w300,
-                  height: 1.05,
-                  color: AppColors.green,
-                ),
-                children: [
-                  TextSpan(text: 'Safe\n'),
-                  TextSpan(
-                    text: 'Walk',
-                    style: TextStyle(
-                      fontStyle: FontStyle.italic,
-                      color: AppColors.goldDark,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 10),
-            Text(
-              'ADMIN CONTROL CENTER',
-              style: TextStyle(
-                fontSize: 9,
-                letterSpacing: 5,
-                color: AppColors.gold.withOpacity(0.9),
-                fontWeight: FontWeight.w300,
-              ),
-            ),
-            const SizedBox(height: 30),
-            Container(
-              width: 48,
-              height: 1,
-              decoration: const BoxDecoration(
-                gradient: LinearGradient(
-                  colors: [AppColors.gold, Colors.transparent],
-                ),
-              ),
-            ),
-            const SizedBox(height: 28),
-            const Text(
-              'MANAGE USERS, DEVICES,\nLOGIN RECORDS, ALERTS,\nAND SYSTEM SETTINGS.',
-              style: TextStyle(
-                fontSize: 11,
-                letterSpacing: 2,
-                height: 2,
-                color: AppColors.textSub,
-                fontWeight: FontWeight.w300,
-              ),
-            ),
-            const Spacer(),
-            Container(
-              padding: const EdgeInsets.all(18),
-              decoration: BoxDecoration(
-                color: AppColors.offWhite,
-                border: Border.all(color: AppColors.border.withOpacity(0.5)),
-              ),
-              child: const Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'ADMIN FEATURES',
-                    style: TextStyle(
-                      fontSize: 9,
-                      letterSpacing: 4,
-                      color: AppColors.goldDark,
-                    ),
-                  ),
-                  SizedBox(height: 12),
-                  _FeatureText('• User Management'),
-                  _FeatureText('• Device Management'),
-                  _FeatureText('• Live Location Monitoring'),
-                  _FeatureText('• Emergency Alerts'),
-                  _FeatureText('• Login Activity'),
-                  _FeatureText('• SMS Logs'),
-                  _FeatureText('• Reports'),
-                  _FeatureText('• Settings'),
-                ],
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
 
-  Widget _buildHeroHeader() {
-    final selectedTitle = _menuItems[_selectedMenuIndex].title;
 
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(24),
-      decoration: BoxDecoration(
-        color: AppColors.white,
-        border: Border.all(color: AppColors.border),
-        boxShadow: const [
-          BoxShadow(
-            color: AppColors.shadow,
-            blurRadius: 24,
-            offset: Offset(0, 10),
-          ),
-        ],
-      ),
-      child: Stack(
-        children: [
-          Positioned(
-            top: 0,
-            left: 0,
-            right: 0,
-            child: Container(
-              height: 1,
-              decoration: const BoxDecoration(
-                gradient: LinearGradient(
-                  colors: [
-                    Colors.transparent,
-                    AppColors.gold,
-                    Colors.transparent,
-                  ],
-                ),
-              ),
-            ),
-          ),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                'CONTROL PANEL',
-                style: TextStyle(
-                  fontSize: 9,
-                  letterSpacing: 5,
-                  color: AppColors.gold.withOpacity(0.9),
-                  fontWeight: FontWeight.w300,
-                ),
-              ),
-              const SizedBox(height: 10),
-              Text(
-                selectedTitle,
-                style: const TextStyle(
-                  fontFamily: 'CormorantGaramond',
-                  fontSize: 34,
-                  fontWeight: FontWeight.w300,
-                  height: 1.1,
-                  color: AppColors.green,
-                ),
-              ),
-              const SizedBox(height: 12),
-              Text(
-                _getSectionDescription(selectedTitle),
-                style: const TextStyle(
-                  fontSize: 13,
-                  height: 1.7,
-                  color: AppColors.textSub,
-                ),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
 
   Widget _buildSummaryRow() {
     return Row(
@@ -743,9 +572,13 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
 
                 return InkWell(
                   onTap: () {
-                    setState(() {
-                      _selectedMenuIndex = index;
-                    });
+                    if (item.title == 'Logout') {
+                      _confirmLogout();
+                    } else {
+                      setState(() {
+                        _selectedMenuIndex = index;
+                      });
+                    }
                   },
                   child: Container(
                     padding: const EdgeInsets.symmetric(
@@ -799,25 +632,18 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
   }
 
   Widget _buildContentArea() {
-    switch (_selectedMenuIndex) {
-      case 0:
+    final title = _menuItems[_selectedMenuIndex].title;
+    switch (title) {
+      case 'User Management':
         return _buildUserManagement();
-      case 1:
+      case 'Device Management':
         return _buildDeviceManagement();
-      case 2:
-        return _buildLiveLocationMonitoring();
-      case 3:
+      case 'Emergency Alerts':
         return _buildEmergencyAlerts();
-      case 4:
+      case 'Login Activity':
         return _buildLoginActivity();
-      case 5:
-        return _buildSmsLogs();
-      case 6:
-        return _buildReports();
-      case 7:
-        return _buildSettings();
       default:
-        return _buildLoginActivity();
+        return _buildUserManagement();
     }
   }
 
@@ -909,6 +735,21 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
                             ),
                           ),
                         ],
+                      ),
+                    ),
+                    // Change Password button
+                    Tooltip(
+                      message: 'Change Password',
+                      child: IconButton(
+                        icon: const Icon(
+                          Icons.lock_reset_rounded,
+                          color: AppColors.goldDark,
+                        ),
+                        onPressed: () => _changePasswordDialog(
+                          docs[index].id,
+                          (data['fullName'] ?? 'User').toString(),
+                          (data['email'] ?? '').toString(),
+                        ),
                       ),
                     ),
                   ],
@@ -1033,102 +874,20 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
     );
   }
 
-  Widget _buildLiveLocationMonitoring() {
-    return _LuxuryPanel(
-      title: 'LIVE LOCATION MONITORING',
-      child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-        stream: FirebaseFirestore.instance.collection('devices').snapshots(),
-        builder: (context, snapshot) {
-          if (!snapshot.hasData) {
-            return const Center(child: CircularProgressIndicator());
-          }
-
-          final docs = snapshot.data!.docs;
-
-          if (docs.isEmpty) {
-            return const Center(
-              child: Text(
-                'No location records found.',
-                style: TextStyle(color: AppColors.textSub),
-              ),
-            );
-          }
-
-          return ListView.separated(
-            padding: const EdgeInsets.all(16),
-            itemCount: docs.length,
-            separatorBuilder: (_, __) => const SizedBox(height: 12),
-            itemBuilder: (context, index) {
-              final data = docs[index].data();
-
-              return Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: AppColors.offWhite,
-                  border: Border.all(color: AppColors.border.withOpacity(0.5)),
-                ),
-                child: Row(
-                  children: [
-                    const Icon(
-                      Icons.location_on,
-                      color: AppColors.green,
-                      size: 28,
-                    ),
-                    const SizedBox(width: 14),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            data['deviceName'] ?? 'Unknown Device',
-                            style: const TextStyle(
-                              fontSize: 15,
-                              fontWeight: FontWeight.w600,
-                              color: AppColors.green,
-                            ),
-                          ),
-                          const SizedBox(height: 8),
-                          Text(
-                            'Last Known Location: ${data['location'] ?? 'Unknown'}',
-                            style: const TextStyle(
-                              fontSize: 12,
-                              color: AppColors.textMain,
-                            ),
-                          ),
-                          const SizedBox(height: 4),
-                          Text(
-                            'Phone Number: ${data['phoneNumber'] ?? 'Unknown'}',
-                            style: const TextStyle(
-                              fontSize: 12,
-                              color: AppColors.textMain,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
-              );
-            },
-          );
-        },
-      ),
-    );
-  }
-
   Widget _buildEmergencySosMap(
     List<QueryDocumentSnapshot<Map<String, dynamic>>> docs,
   ) {
-    final sosDocs = docs.where((doc) {
-      final type = (doc.data()['type'] ?? '').toString().toLowerCase();
-      return type == 'sos';
-    }).toList()..sort((a, b) {
-      final aTs = a.data()['timestamp'] as Timestamp?;
-      final bTs = b.data()['timestamp'] as Timestamp?;
-      return (bTs?.millisecondsSinceEpoch ?? 0).compareTo(
-        aTs?.millisecondsSinceEpoch ?? 0,
-      );
-    });
+    final sosDocs =
+        docs.where((doc) {
+          final type = (doc.data()['type'] ?? '').toString().toLowerCase();
+          return type == 'sos';
+        }).toList()..sort((a, b) {
+          final aTs = a.data()['timestamp'] as Timestamp?;
+          final bTs = b.data()['timestamp'] as Timestamp?;
+          return (bTs?.millisecondsSinceEpoch ?? 0).compareTo(
+            aTs?.millisecondsSinceEpoch ?? 0,
+          );
+        });
 
     final latestBySender =
         <String, QueryDocumentSnapshot<Map<String, dynamic>>>{};
@@ -1158,10 +917,7 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
           icon: BitmapDescriptor.defaultMarkerWithHue(
             isActive ? BitmapDescriptor.hueRed : BitmapDescriptor.hueOrange,
           ),
-          infoWindow: InfoWindow(
-            title: '$sender - SOS',
-            snippet: pointLabel,
-          ),
+          infoWindow: InfoWindow(title: '$sender - SOS', snippet: pointLabel),
         ),
       );
       circles.add(
@@ -1575,546 +1331,7 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
     );
   }
 
-  Widget _buildSmsLogs() {
-    return _LuxuryPanel(
-      title: 'SMS LOGS',
-      child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-        stream: FirebaseFirestore.instance
-            .collection('sms_logs')
-            .orderBy('timestamp', descending: true)
-            .snapshots(),
-        builder: (context, snapshot) {
-          if (!snapshot.hasData) {
-            return const Center(child: CircularProgressIndicator());
-          }
 
-          final docs = snapshot.data!.docs;
-
-          if (docs.isEmpty) {
-            return const Center(
-              child: Text(
-                'No SMS logs found.',
-                style: TextStyle(color: AppColors.textSub),
-              ),
-            );
-          }
-
-          return ListView.separated(
-            padding: const EdgeInsets.all(16),
-            itemCount: docs.length,
-            separatorBuilder: (_, __) => const SizedBox(height: 12),
-            itemBuilder: (context, index) {
-              final data = docs[index].data();
-
-              return Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: AppColors.offWhite,
-                  border: Border.all(color: AppColors.border.withOpacity(0.5)),
-                ),
-                child: Row(
-                  children: [
-                    const Icon(Icons.sms, color: AppColors.green),
-                    const SizedBox(width: 14),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            data['phoneNumber'] ?? 'No Number',
-                            style: const TextStyle(
-                              fontSize: 15,
-                              fontWeight: FontWeight.w600,
-                              color: AppColors.green,
-                            ),
-                          ),
-                          const SizedBox(height: 8),
-                          Text(
-                            'Message: ${data['message'] ?? 'No message'}',
-                            style: const TextStyle(
-                              fontSize: 12,
-                              color: AppColors.textMain,
-                            ),
-                          ),
-                          const SizedBox(height: 4),
-                          Text(
-                            'Status: ${data['status'] ?? 'Unknown'}',
-                            style: const TextStyle(
-                              fontSize: 12,
-                              color: AppColors.textSub,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
-              );
-            },
-          );
-        },
-      ),
-    );
-  }
-
-  Widget _buildReports() {
-    return _LuxuryPanel(
-      title: 'REPORTS OVERVIEW',
-      child: ListView(
-        padding: const EdgeInsets.all(18),
-        children: [
-          Row(
-            children: [
-              _ReportCard(
-                title: 'Total Users',
-                icon: Icons.people_outline,
-                stream: FirebaseFirestore.instance
-                    .collection('users')
-                    .snapshots(),
-              ),
-              const SizedBox(width: 12),
-              _ReportCard(
-                title: 'Total Devices',
-                icon: Icons.memory_outlined,
-                stream: FirebaseFirestore.instance
-                    .collection('devices')
-                    .snapshots(),
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          Row(
-            children: [
-              _ReportCard(
-                title: 'Emergency Alerts',
-                icon: Icons.warning_amber_rounded,
-                stream: FirebaseFirestore.instance
-                    .collection('emergency_alerts')
-                    .snapshots(),
-              ),
-              const SizedBox(width: 12),
-              _ReportCard(
-                title: 'SMS Logs',
-                icon: Icons.sms_outlined,
-                stream: FirebaseFirestore.instance
-                    .collection('sms_logs')
-                    .snapshots(),
-              ),
-            ],
-          ),
-          const SizedBox(height: 16),
-          Container(
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              color: AppColors.offWhite,
-              border: Border.all(color: AppColors.border.withOpacity(0.5)),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text(
-                  'REPORT GENERATION AND BACKUP',
-                  style: TextStyle(
-                    fontSize: 10,
-                    letterSpacing: 3,
-                    color: AppColors.goldDark,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-                const SizedBox(height: 12),
-                TextField(
-                  controller: _reportTitleCtrl,
-                  decoration: InputDecoration(
-                    labelText: 'Report title',
-                    border: OutlineInputBorder(
-                      borderSide: BorderSide(
-                        color: AppColors.border.withOpacity(0.6),
-                      ),
-                    ),
-                    enabledBorder: OutlineInputBorder(
-                      borderSide: BorderSide(
-                        color: AppColors.border.withOpacity(0.6),
-                      ),
-                    ),
-                    isDense: true,
-                    filled: true,
-                    fillColor: AppColors.white,
-                  ),
-                ),
-                const SizedBox(height: 12),
-                Wrap(
-                  spacing: 10,
-                  runSpacing: 10,
-                  children: [
-                    ElevatedButton.icon(
-                      onPressed: _isGeneratingReport ? null : _generateReport,
-                      icon: _isGeneratingReport
-                          ? const SizedBox(
-                              width: 14,
-                              height: 14,
-                              child: CircularProgressIndicator(strokeWidth: 2),
-                            )
-                          : const Icon(Icons.description_outlined),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: AppColors.green,
-                        foregroundColor: AppColors.white,
-                      ),
-                      label: const Text('Generate Report'),
-                    ),
-                    ElevatedButton.icon(
-                      onPressed: _latestReportText.isEmpty
-                          ? null
-                          : _printLatestReport,
-                      icon: const Icon(Icons.print_outlined),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: AppColors.goldDark,
-                        foregroundColor: AppColors.white,
-                      ),
-                      label: const Text('Print Report'),
-                    ),
-                    ElevatedButton.icon(
-                      onPressed: _isCreatingBackup
-                          ? null
-                          : _createBackupSnapshot,
-                      icon: _isCreatingBackup
-                          ? const SizedBox(
-                              width: 14,
-                              height: 14,
-                              child: CircularProgressIndicator(strokeWidth: 2),
-                            )
-                          : const Icon(Icons.backup_outlined),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: AppColors.greenMid,
-                        foregroundColor: AppColors.white,
-                      ),
-                      label: const Text('Create Backup'),
-                    ),
-                  ],
-                ),
-                if (_lastReportId.isNotEmpty || _lastBackupId.isNotEmpty) ...[
-                  const SizedBox(height: 12),
-                  Text(
-                    'Last report: ${_lastReportId.isEmpty ? 'N/A' : _lastReportId}',
-                    style: const TextStyle(
-                      fontSize: 12,
-                      color: AppColors.textMain,
-                    ),
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    'Last backup: ${_lastBackupId.isEmpty ? 'N/A' : _lastBackupId}',
-                    style: const TextStyle(
-                      fontSize: 12,
-                      color: AppColors.textMain,
-                    ),
-                  ),
-                ],
-              ],
-            ),
-          ),
-          if (_latestReportText.isNotEmpty) ...[
-            const SizedBox(height: 12),
-            Container(
-              width: double.infinity,
-              constraints: const BoxConstraints(maxHeight: 220),
-              padding: const EdgeInsets.all(14),
-              decoration: BoxDecoration(
-                color: AppColors.offWhite,
-                border: Border.all(color: AppColors.border.withOpacity(0.5)),
-              ),
-              child: SingleChildScrollView(
-                child: SelectableText(
-                  _latestReportText,
-                  style: const TextStyle(
-                    fontSize: 12,
-                    color: AppColors.textMain,
-                    height: 1.5,
-                  ),
-                ),
-              ),
-            ),
-          ],
-        ],
-      ),
-    );
-  }
-
-  Widget _buildSettings() {
-    return _LuxuryPanel(
-      title: 'SYSTEM SETTINGS',
-      child: ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
-          const _SettingTile(
-            icon: Icons.admin_panel_settings_outlined,
-            title: 'Admin Account Settings',
-            subtitle: 'Manage admin profile and access control.',
-          ),
-          const SizedBox(height: 12),
-          const _SettingTile(
-            icon: Icons.notifications_outlined,
-            title: 'Notification Settings',
-            subtitle: 'Configure alerts and app notifications.',
-          ),
-          const SizedBox(height: 12),
-          const _SettingTile(
-            icon: Icons.security_outlined,
-            title: 'Security Settings',
-            subtitle: 'Manage login protection and account security.',
-          ),
-          const SizedBox(height: 12),
-          const _SettingTile(
-            icon: Icons.phone_android_outlined,
-            title: 'Device Settings',
-            subtitle: 'Adjust device connection and monitoring options.',
-          ),
-          const SizedBox(height: 12),
-          _buildRequirementChecklistCard(),
-          const SizedBox(height: 12),
-          _buildNotificationTestCard(),
-          const SizedBox(height: 12),
-          _buildSignOutTile(),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildSignOutTile() {
-    return _SettingTile(
-      icon: Icons.logout_rounded,
-      title: 'Logout',
-      subtitle: 'Sign out of this device.',
-      onTap: _confirmLogout,
-    );
-  }
-
-  Widget _buildRequirementChecklistCard() {
-    final notificationSystemReady =
-        _notificationService.isEmailConfigured &&
-        _notificationService.isSmsConfigured;
-
-    final requirementItems = [
-      _RequirementItem(
-        title: 'Be ONLINE',
-        detail: 'Connected through Firebase services and cloud database.',
-        isMet: true,
-      ),
-      _RequirementItem(
-        title: 'Be a Web-based Application',
-        detail: 'Flutter Web build is supported by this project.',
-        isMet: true,
-      ),
-      _RequirementItem(
-        title: 'Have a Mobile Application',
-        detail: 'Flutter Android/iOS targets are already configured.',
-        isMet: true,
-      ),
-      _RequirementItem(
-        title: 'Have Email and SMS notification system',
-        detail: notificationSystemReady
-            ? 'EmailJS and SMS gateway configuration detected.'
-            : 'EmailJS is configured, but SMS gateway still needs credentials.',
-        isMet: notificationSystemReady,
-      ),
-      _RequirementItem(
-        title: 'Have Backup mechanism',
-        detail:
-            'Admin can create Firestore backup snapshots into system_backups.',
-        isMet: true,
-      ),
-      _RequirementItem(
-        title: 'Generate and Print Report',
-        detail:
-            'Admin report generation and printable output are available in Reports.',
-        isMet: true,
-      ),
-    ];
-
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: AppColors.offWhite,
-        border: Border.all(color: AppColors.border.withOpacity(0.5)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text(
-            'CAPSTONE REQUIREMENTS',
-            style: TextStyle(
-              fontSize: 10,
-              letterSpacing: 3,
-              color: AppColors.goldDark,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-          const SizedBox(height: 12),
-          ...requirementItems.map(
-            (item) => Padding(
-              padding: const EdgeInsets.only(bottom: 10),
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Icon(
-                    item.isMet
-                        ? Icons.check_circle_outline_rounded
-                        : Icons.error_outline_rounded,
-                    color: item.isMet
-                        ? AppColors.green
-                        : Colors.orange.shade700,
-                    size: 20,
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          item.title,
-                          style: const TextStyle(
-                            fontSize: 13,
-                            color: AppColors.green,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                        const SizedBox(height: 2),
-                        Text(
-                          item.detail,
-                          style: const TextStyle(
-                            fontSize: 12,
-                            color: AppColors.textSub,
-                            height: 1.4,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-          if (!notificationSystemReady) ...[
-            const SizedBox(height: 4),
-            Text(
-              'SMS gateway setup needed in lib/config/sms_config.dart',
-              style: TextStyle(fontSize: 11, color: Colors.orange.shade800),
-            ),
-          ],
-        ],
-      ),
-    );
-  }
-
-  Widget _buildNotificationTestCard() {
-    final isEmailReady = _notificationService.isEmailConfigured;
-    final isSmsReady = _notificationService.isSmsConfigured;
-
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: AppColors.offWhite,
-        border: Border.all(color: AppColors.border.withOpacity(0.5)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text(
-            'NOTIFICATION TEST TOOLS',
-            style: TextStyle(
-              fontSize: 10,
-              letterSpacing: 3,
-              color: AppColors.goldDark,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-          const SizedBox(height: 10),
-          Text(
-            'Email config: ${isEmailReady ? 'Ready' : 'Missing'} | SMS config: ${isSmsReady ? 'Ready' : 'Missing'}',
-            style: const TextStyle(fontSize: 12, color: AppColors.textSub),
-          ),
-          const SizedBox(height: 12),
-          TextField(
-            controller: _testEmailCtrl,
-            keyboardType: TextInputType.emailAddress,
-            decoration: InputDecoration(
-              labelText: 'Test email address',
-              border: OutlineInputBorder(
-                borderSide: BorderSide(
-                  color: AppColors.border.withOpacity(0.6),
-                ),
-              ),
-              enabledBorder: OutlineInputBorder(
-                borderSide: BorderSide(
-                  color: AppColors.border.withOpacity(0.6),
-                ),
-              ),
-              isDense: true,
-              filled: true,
-              fillColor: AppColors.white,
-            ),
-          ),
-          const SizedBox(height: 10),
-          TextField(
-            controller: _testPhoneCtrl,
-            keyboardType: TextInputType.phone,
-            decoration: InputDecoration(
-              labelText: 'Test SMS number',
-              border: OutlineInputBorder(
-                borderSide: BorderSide(
-                  color: AppColors.border.withOpacity(0.6),
-                ),
-              ),
-              enabledBorder: OutlineInputBorder(
-                borderSide: BorderSide(
-                  color: AppColors.border.withOpacity(0.6),
-                ),
-              ),
-              isDense: true,
-              filled: true,
-              fillColor: AppColors.white,
-            ),
-          ),
-          const SizedBox(height: 12),
-          Wrap(
-            spacing: 10,
-            runSpacing: 10,
-            children: [
-              ElevatedButton.icon(
-                onPressed: _isSendingTestEmail ? null : _sendTestEmail,
-                icon: _isSendingTestEmail
-                    ? const SizedBox(
-                        width: 14,
-                        height: 14,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Icon(Icons.email_outlined),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: AppColors.green,
-                  foregroundColor: AppColors.white,
-                ),
-                label: const Text('Send Test Email'),
-              ),
-              ElevatedButton.icon(
-                onPressed: _isSendingTestSms ? null : _sendTestSms,
-                icon: _isSendingTestSms
-                    ? const SizedBox(
-                        width: 14,
-                        height: 14,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Icon(Icons.sms_outlined),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: AppColors.greenMid,
-                  foregroundColor: AppColors.white,
-                ),
-                label: const Text('Send Test SMS'),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
 
   Widget _buildFilterBar() {
     return Container(
@@ -2168,28 +1385,7 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
     );
   }
 
-  String _getSectionDescription(String title) {
-    switch (title) {
-      case 'User Management':
-        return 'Manage student, parent, and admin accounts from one secure panel.';
-      case 'Device Management':
-        return 'Track registered IoT devices, phone numbers, and current device status.';
-      case 'Live Location Monitoring':
-        return 'View the latest available location information from connected devices.';
-      case 'Emergency Alerts':
-        return 'Monitor alerts triggered by users or connected emergency devices.';
-      case 'Login Activity':
-        return 'Review login success, failed attempts, and access activity records.';
-      case 'SMS Logs':
-        return 'Inspect SMS activity sent through your emergency device workflow.';
-      case 'Reports':
-        return 'See overall counts and quick report summaries for the SafeWalk system.';
-      case 'Settings':
-        return 'Manage general system configuration and admin preferences.';
-      default:
-        return 'Manage your SafeWalk system with a clean and elegant dashboard.';
-    }
-  }
+
 }
 
 class _AdminMenuItem {
@@ -2199,17 +1395,7 @@ class _AdminMenuItem {
   const _AdminMenuItem(this.title, this.icon);
 }
 
-class _RequirementItem {
-  final String title;
-  final String detail;
-  final bool isMet;
 
-  const _RequirementItem({
-    required this.title,
-    required this.detail,
-    required this.isMet,
-  });
-}
 
 class _LuxurySummaryCard extends StatelessWidget {
   final String title;
@@ -2374,151 +1560,7 @@ class _MiniTag extends StatelessWidget {
   }
 }
 
-class _FeatureText extends StatelessWidget {
-  final String text;
 
-  const _FeatureText(this.text);
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 8),
-      child: Text(
-        text,
-        style: const TextStyle(
-          fontSize: 12,
-          color: AppColors.textMain,
-          height: 1.6,
-        ),
-      ),
-    );
-  }
-}
-
-class _ReportCard extends StatelessWidget {
-  final String title;
-  final IconData icon;
-  final Stream<QuerySnapshot> stream;
-
-  const _ReportCard({
-    required this.title,
-    required this.icon,
-    required this.stream,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Expanded(
-      child: Container(
-        padding: const EdgeInsets.all(18),
-        decoration: BoxDecoration(
-          color: AppColors.offWhite,
-          border: Border.all(color: AppColors.border.withOpacity(0.5)),
-        ),
-        child: StreamBuilder<QuerySnapshot>(
-          stream: stream,
-          builder: (context, snapshot) {
-            final count = snapshot.data?.docs.length ?? 0;
-
-            return Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Icon(icon, color: AppColors.green, size: 24),
-                const SizedBox(height: 14),
-                Text(
-                  title,
-                  style: TextStyle(
-                    fontSize: 10,
-                    letterSpacing: 2,
-                    color: AppColors.goldDark,
-                    fontWeight: FontWeight.w500,
-                  ),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  '$count',
-                  style: const TextStyle(
-                    fontFamily: 'CormorantGaramond',
-                    fontSize: 30,
-                    fontWeight: FontWeight.w300,
-                    color: AppColors.green,
-                  ),
-                ),
-              ],
-            );
-          },
-        ),
-      ),
-    );
-  }
-}
-
-class _SettingTile extends StatelessWidget {
-  final IconData icon;
-  final String title;
-  final String subtitle;
-  final Future<void> Function()? onTap;
-
-  const _SettingTile({
-    required this.icon,
-    required this.title,
-    required this.subtitle,
-    this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Material(
-      color: AppColors.offWhite,
-      child: InkWell(
-        onTap: onTap == null ? null : () => onTap!(),
-        child: Container(
-          padding: const EdgeInsets.all(16),
-          decoration: BoxDecoration(
-            color: AppColors.offWhite,
-            border: Border.all(color: AppColors.border.withOpacity(0.5)),
-          ),
-          child: Row(
-            children: [
-              Icon(icon, color: AppColors.green, size: 26),
-              const SizedBox(width: 14),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      title,
-                      style: const TextStyle(
-                        fontSize: 15,
-                        fontWeight: FontWeight.w600,
-                        color: AppColors.green,
-                      ),
-                    ),
-                    const SizedBox(height: 6),
-                    Text(
-                      subtitle,
-                      style: const TextStyle(
-                        fontSize: 12,
-                        color: AppColors.textSub,
-                        height: 1.5,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              if (onTap != null)
-                const Icon(
-                  Icons.chevron_right_rounded,
-                  size: 20,
-                  color: AppColors.textSub,
-                ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
 
 class _AdminBackground extends StatelessWidget {
   const _AdminBackground();
