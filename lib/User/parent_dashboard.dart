@@ -641,15 +641,141 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
   // ─── LUXURY SHEETS ─────────────────────────────────────────────
 
   Future<void> _showChildStatusDialog() async {
-    await _showLuxuryInfoSheet(
-      title: 'Child Status',
-      subtitle: 'STUDENT MONITOR',
-      icon: Icons.shield_outlined,
-      rows: [
-        _InfoRow('Child', _childName),
-        _InfoRow('Route', _childRoute),
-        _InfoRow('Distance', '${_childDistanceKm.toStringAsFixed(1)} km'),
-      ],
+    if (_linkedStudents.isEmpty) {
+      _showActionSnack('No linked student account found.', isError: true);
+      return;
+    }
+
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) {
+        return DraggableScrollableSheet(
+          initialChildSize: 0.82,
+          minChildSize: 0.55,
+          maxChildSize: 0.95,
+          expand: false,
+          builder: (ctx2, scrollController) {
+            return Container(
+              decoration: const BoxDecoration(
+                color: AppColors.offWhite,
+                borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+              ),
+              child: Column(
+                children: [
+                  Container(
+                    height: 1,
+                    decoration: const BoxDecoration(
+                      gradient: LinearGradient(
+                        colors: [
+                          Colors.transparent,
+                          AppColors.gold,
+                          Colors.transparent,
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                  Container(
+                    width: 36,
+                    height: 4,
+                    decoration: BoxDecoration(
+                      color: AppColors.border,
+                      borderRadius: BorderRadius.circular(99),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 24),
+                    child: Row(
+                      children: [
+                        Container(
+                          width: 40,
+                          height: 40,
+                          decoration: BoxDecoration(
+                            color: AppColors.green,
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(
+                              color: AppColors.gold,
+                              width: 0.8,
+                            ),
+                          ),
+                          child: const Icon(
+                            Icons.my_location_rounded,
+                            color: AppColors.gold,
+                            size: 20,
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'ALL LINKED CHILDREN | STATUS',
+                              style: TextStyle(
+                                fontFamily: _bf,
+                                fontSize: 9,
+                                letterSpacing: 4,
+                                color: AppColors.gold,
+                                fontWeight: FontWeight.w300,
+                              ),
+                            ),
+                            const Text(
+                              'Child Status',
+                              style: TextStyle(
+                                fontFamily: _hf,
+                                fontSize: 26,
+                                height: 1,
+                                color: AppColors.green,
+                                fontWeight: FontWeight.w300,
+                                fontStyle: FontStyle.italic,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 24),
+                    child: Container(
+                      height: 1,
+                      decoration: const BoxDecoration(
+                        gradient: LinearGradient(
+                          colors: [AppColors.gold, Colors.transparent],
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  Expanded(
+                    child: ListView.separated(
+                      controller: scrollController,
+                      padding: const EdgeInsets.fromLTRB(20, 6, 20, 32),
+                      itemCount: _linkedStudents.length,
+                      separatorBuilder: (_, __) =>
+                          const SizedBox(height: 10),
+                      itemBuilder: (context, i) {
+                        final student = _linkedStudents[i];
+                        return _StudentStatusCard(
+                          student: student,
+                          isSelected: student.uid == _childUid,
+                          onTap: () {
+                            Navigator.pop(ctx);
+                            _switchActiveChild(student.uid);
+                          },
+                        );
+                      },
+                    ),
+                  ),
+                ],
+              ),
+            );
+          },
+        );
+      },
     );
   }
 
@@ -1074,6 +1200,10 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                               data,
                               linkedNameByUid: linkedNameByUid,
                             );
+                            final alertCoordinate = _extractAlertCoordinates(data);
+                            final locationText = alertCoordinate != null
+                                ? _formatCoordinateValue(alertCoordinate)
+                                : (data['location'] ?? '').toString().trim();
                             return Container(
                               padding: const EdgeInsets.all(14),
                               decoration: BoxDecoration(
@@ -1143,6 +1273,19 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                                       fontWeight: FontWeight.w500,
                                     ),
                                   ),
+                                  if (locationText.isNotEmpty) ...[
+                                    const SizedBox(height: 4),
+                                    Text(
+                                      'SOS Location: $locationText',
+                                      style: TextStyle(
+                                        fontFamily: _bf,
+                                        fontSize: 10,
+                                        letterSpacing: 1.2,
+                                        color: AppColors.textSub,
+                                        fontWeight: FontWeight.w500,
+                                      ),
+                                    ),
+                                  ],
                                   const SizedBox(height: 10),
                                   Row(
                                     children: [
@@ -2172,8 +2315,10 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                             .toString()
                             .trim();
                         return alertType == 'sos' &&
-                            (linkedUidSet.isEmpty ||
-                                linkedUidSet.contains(alertChildUid)) &&
+                            (_childUid.isNotEmpty
+                                ? alertChildUid == _childUid
+                                : (linkedUidSet.isEmpty ||
+                                    linkedUidSet.contains(alertChildUid))) &&
                             (alertParentUid.isEmpty ||
                                 alertParentUid == parentUidForAlerts);
                       }).toList()..sort((a, b) {
@@ -2230,10 +2375,6 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                         spacing: 8,
                         runSpacing: 8,
                         children: [
-                          _buildPanelAction(
-                            label: 'CHILD STATUS',
-                            onTap: _showChildStatusDialog,
-                          ),
                           _buildPanelAction(
                             label: 'ALERT HISTORY',
                             onTap: _showAlertHistorySheet,
@@ -2294,10 +2435,6 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                     label: 'ALERT HISTORY',
                     onTap: _showAlertHistorySheet,
                   ),
-                  _buildPanelAction(
-                    label: 'ALERT SETTINGS',
-                    onTap: _showSettingsDialog,
-                  ),
                 ],
               ),
             ),
@@ -2331,7 +2468,9 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
               final alertChildUid =
                   (data['uid'] ?? data['studentUid'] ?? '').toString().trim();
               return alertType == 'sos' &&
-                  (linkedUidSet.isEmpty || linkedUidSet.contains(alertChildUid));
+                  (_childUid.isNotEmpty
+                      ? alertChildUid == _childUid
+                      : (linkedUidSet.isEmpty || linkedUidSet.contains(alertChildUid)));
             }),
           );
           sosDocs.sort((a, b) {
@@ -3742,6 +3881,208 @@ class _DashSettingsTile extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+class _StudentStatusCard extends StatelessWidget {
+  final _LinkedStudent student;
+  final bool isSelected;
+  final VoidCallback? onTap;
+
+  const _StudentStatusCard({
+    required this.student,
+    this.isSelected = false,
+    this.onTap,
+  });
+
+  String _normalizePhoneForLookup(String raw) {
+    final cleaned = raw.trim().replaceAll(RegExp(r'\s+|-'), '');
+    if (cleaned.startsWith('+')) return cleaned;
+    if (cleaned.startsWith('09') && cleaned.length == 11) {
+      return '+63${cleaned.substring(1)}';
+    }
+    if (cleaned.startsWith('639') && cleaned.length == 12) {
+      return '+$cleaned';
+    }
+    return cleaned;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final firestore = FirebaseFirestore.instance;
+    final rawPhone = student.phone.trim();
+    final normalizedPhone = _normalizePhoneForLookup(rawPhone);
+
+    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+      stream: firestore
+          .collection('devices')
+          .where('phoneNumber', whereIn: [rawPhone, normalizedPhone])
+          .limit(1)
+          .snapshots(),
+      builder: (context, deviceSnapshot) {
+        return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+          stream: firestore
+              .collection('walk_sessions')
+              .where('uid', isEqualTo: student.uid)
+              .where('status', isEqualTo: 'active')
+              .limit(1)
+              .snapshots(),
+          builder: (context, walkSnapshot) {
+            final hasDevice = deviceSnapshot.hasData &&
+                deviceSnapshot.data!.docs.isNotEmpty;
+            final deviceData = hasDevice ? deviceSnapshot.data!.docs.first.data() : null;
+
+            final hasWalk = walkSnapshot.hasData &&
+                walkSnapshot.data!.docs.isNotEmpty;
+            final walkData = hasWalk ? walkSnapshot.data!.docs.first.data() : null;
+
+            final deviceStatus = (deviceData?['status'] ?? 'offline')
+                .toString()
+                .toLowerCase();
+            final isOnline = deviceStatus == 'active' || deviceStatus == 'online';
+
+            final activeRoute = hasWalk
+                ? (walkData?['route'] ?? 'Active Route').toString()
+                : 'No active route';
+            final distanceKm = hasWalk
+                ? (walkData?['distanceKm'] as num?)?.toDouble() ?? 0.0
+                : 0.0;
+
+            final locationField = deviceData?['location'];
+            String locationStr = 'Unknown';
+            if (locationField is GeoPoint) {
+              locationStr =
+                  '${locationField.latitude.toStringAsFixed(6)}, ${locationField.longitude.toStringAsFixed(6)}';
+            } else if (locationField != null) {
+              locationStr = locationField.toString();
+            }
+
+            return GestureDetector(
+              onTap: onTap,
+              child: Container(
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: AppColors.white,
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(
+                    color: isSelected
+                        ? AppColors.gold
+                        : (isOnline
+                            ? AppColors.green.withValues(alpha: 0.35)
+                            : AppColors.border),
+                    width: isSelected ? 1.5 : 1.0,
+                  ),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: 0.04),
+                      blurRadius: 8,
+                      offset: const Offset(0, 3),
+                    ),
+                  ],
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Container(
+                          width: 32,
+                          height: 32,
+                          decoration: BoxDecoration(
+                            color: isOnline
+                                ? const Color(0xFFE8F5E9)
+                                : AppColors.cream,
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: Icon(
+                            Icons.person,
+                            size: 17,
+                            color: isOnline
+                                ? AppColors.green
+                                : AppColors.textSub,
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                student.name.toUpperCase(),
+                                style: const TextStyle(
+                                  fontFamily: 'JosefinSans',
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.bold,
+                                  color: AppColors.green,
+                                  letterSpacing: 1.5,
+                                ),
+                              ),
+                              Text(
+                                isOnline ? 'ONLINE' : 'OFFLINE',
+                                style: TextStyle(
+                                  fontFamily: 'JosefinSans',
+                                  fontSize: 9,
+                                  fontWeight: FontWeight.w600,
+                                  color: isOnline
+                                      ? AppColors.green
+                                      : AppColors.textSub,
+                                  letterSpacing: 1,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    const Divider(color: AppColors.border, height: 1),
+                    const SizedBox(height: 10),
+                    _buildDetailRow('Route', activeRoute),
+                    const SizedBox(height: 6),
+                    _buildDetailRow('Location', locationStr),
+                    if (hasWalk) ...[
+                      const SizedBox(height: 6),
+                      _buildDetailRow('Distance', '${distanceKm.toStringAsFixed(1)} km'),
+                    ],
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Widget _buildDetailRow(String label, String value) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SizedBox(
+          width: 80,
+          child: Text(
+            label,
+            style: const TextStyle(
+              fontFamily: 'JosefinSans',
+              fontSize: 11,
+              fontWeight: FontWeight.w500,
+              color: AppColors.textSub,
+            ),
+          ),
+        ),
+        Expanded(
+          child: Text(
+            value,
+            style: const TextStyle(
+              fontFamily: 'JosefinSans',
+              fontSize: 11,
+              fontWeight: FontWeight.w600,
+              color: AppColors.textMain,
+            ),
+          ),
+        ),
+      ],
     );
   }
 }

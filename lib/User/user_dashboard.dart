@@ -2916,11 +2916,6 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                   onTap: _showAlertHistorySheet,
                   isPrimary: false,
                 ),
-                _buildPanelAction(
-                  label: 'ALERT SETTINGS',
-                  onTap: _showSettingsDialog,
-                  isPrimary: false,
-                ),
               ],
             ),
           ],
