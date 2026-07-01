@@ -43,6 +43,7 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
   String _email = '';
   String _phoneNumber = '';
   String _studentUid = '';
+  String _avatarMood = 'happy';
   final String _activeRoute = 'Main Campus -> Dorm Block C';
 
   String _deviceId = 'Not linked';
@@ -63,37 +64,6 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
   String _linkedParentName = '';
   List<_ParentInvitation> _pendingInvitations = const [];
   bool _isLoadingInvitations = false;
-
-  final List<_ToolItem> _tools = const [
-    _ToolItem(
-      title: 'Device Connection',
-      subtitle: 'Check your linked emergency device',
-      icon: Icons.smartphone_rounded,
-      iconColor: Color(0xFF1E7E55),
-      iconBg: Color(0xFFEAF5EF),
-    ),
-    _ToolItem(
-      title: 'Alert History',
-      subtitle: 'Recent alerts and emergency logs',
-      icon: Icons.history,
-      iconColor: Color(0xFF9C7A24),
-      iconBg: Color(0xFFFAF3DF),
-    ),
-    _ToolItem(
-      title: 'Profile',
-      subtitle: 'Edit personal information',
-      icon: Icons.person_outline,
-      iconColor: Color(0xFF4156B8),
-      iconBg: Color(0xFFEFF2FF),
-    ),
-    _ToolItem(
-      title: 'Settings',
-      subtitle: 'Preferences and account settings',
-      icon: Icons.settings_outlined,
-      iconColor: Color(0xFF6E6D67),
-      iconBg: Color(0xFFF2F1ED),
-    ),
-  ];
 
   final List<_NavItem> _navItems = const [
     _NavItem('Home', Icons.home_outlined),
@@ -443,6 +413,7 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
         _fullName = (userDoc.data()?['fullName'] ?? 'Student').toString();
         _email = (userDoc.data()?['email'] ?? '').toString();
         _phoneNumber = (userDoc.data()?['phoneNumber'] ?? '').toString();
+        _avatarMood = (userDoc.data()?['avatarMood'] ?? 'happy').toString();
         _alertsEnabled =
             (settingsDoc.data()?['alertsEnabled'] as bool?) ?? true;
         _safeModeEnabled =
@@ -844,6 +815,7 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
           _nextMapFocusPoint = mapPoint;
           _deviceCoordinates = mapPoint;
           _deviceLocation = locationLabel;
+          _avatarMood = 'angry';
         });
       }
       _showActionSnack(
@@ -856,7 +828,7 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
     }
   }
 
-  Future<void> _saveProfile(String fullName, String phoneNumber) async {
+  Future<void> _saveProfile(String fullName, String phoneNumber, String avatarMood) async {
     final uid = FirebaseAuth.instance.currentUser?.uid;
     if (uid == null) {
       _showActionSnack('Please login again.', isError: true);
@@ -866,11 +838,13 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
       await _firestore.collection('users').doc(uid).set({
         'fullName': fullName.trim(),
         'phoneNumber': phoneNumber.trim(),
+        'avatarMood': avatarMood,
       }, SetOptions(merge: true));
       if (!mounted) return;
       setState(() {
         _fullName = fullName.trim();
         _phoneNumber = phoneNumber.trim();
+        _avatarMood = avatarMood;
       });
       await _loadLinkedDevice();
       await _loadLinkedParent();
@@ -911,6 +885,144 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
   }
 
   // ─── LUXURY DIALOGS ────────────────────────────────────────────
+
+  Widget _RobotAvatar({required String mood, required double size}) {
+    return Container(
+      width: size,
+      height: size,
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(size * 0.35),
+        gradient: const LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [Color(0xFF1A5E3D), Color(0xFF0B2C1E)],
+        ),
+        border: Border.all(color: AppColors.gold, width: size > 50 ? 2 : 1.4),
+        boxShadow: [
+          BoxShadow(
+            color: AppColors.gold.withOpacity(0.2),
+            blurRadius: size > 50 ? 14 : 10,
+          ),
+        ],
+      ),
+      child: Stack(
+        alignment: Alignment.center,
+        children: [
+          Container(
+            width: size * 0.75,
+            height: size * 0.55,
+            decoration: BoxDecoration(
+              color: const Color(0xFF041C12),
+              borderRadius: BorderRadius.circular(size * 0.15),
+              border: Border.all(
+                color: AppColors.green.withOpacity(0.5),
+                width: 1,
+              ),
+            ),
+            child: Stack(
+              children: [
+                Positioned(
+                  top: size * 0.1,
+                  left: size * 0.1,
+                  right: size * 0.1,
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceAround,
+                    children: [
+                      _buildRobotEye(mood, size),
+                      _buildRobotEye(mood, size),
+                    ],
+                  ),
+                ),
+                Positioned(
+                  bottom: size * 0.1,
+                  left: 0,
+                  right: 0,
+                  child: Center(child: _buildRobotMouth(mood, size)),
+                ),
+                if (mood == 'angry')
+                  Positioned(
+                    top: size * 0.05,
+                    left: 0,
+                    right: 0,
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceAround,
+                      children: [
+                        Transform.rotate(
+                          angle: 0.3,
+                          child: Container(
+                            width: size * 0.2,
+                            height: size * 0.04,
+                            color: const Color(0xFFCB392B),
+                          ),
+                        ),
+                        Transform.rotate(
+                          angle: -0.3,
+                          child: Container(
+                            width: size * 0.2,
+                            height: size * 0.04,
+                            color: const Color(0xFFCB392B),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildRobotEye(String mood, double size) {
+    if (mood == 'heart_eyes') {
+      return Icon(
+        Icons.favorite,
+        color: const Color(0xFFFF4B4B),
+        size: size * 0.25,
+      );
+    }
+    final color = mood == 'angry' ? const Color(0xFFCB392B) : AppColors.gold;
+    return Container(
+      width: size * 0.15,
+      height: size * 0.15,
+      decoration: BoxDecoration(
+        color: color,
+        shape: BoxShape.circle,
+        boxShadow: [
+          BoxShadow(
+            color: color.withOpacity(0.8),
+            blurRadius: 4,
+            spreadRadius: 1,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildRobotMouth(String mood, double size) {
+    final width = size * 0.3;
+    final height = size * 0.12;
+    if (mood == 'angry') {
+      return Container(
+        width: width,
+        height: size * 0.04,
+        color: const Color(0xFFCB392B),
+      );
+    }
+    return Container(
+      width: width,
+      height: height,
+      decoration: BoxDecoration(
+        border: Border(
+          bottom: BorderSide(color: AppColors.gold, width: size * 0.03),
+        ),
+        borderRadius: BorderRadius.vertical(
+          bottom: Radius.circular(size * 0.3),
+        ),
+      ),
+    );
+  }
 
   Future<void> _showLocationDialog({
     LatLng? mapPoint,
@@ -1291,7 +1403,6 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              // Gold top accent
               Container(
                 height: 1,
                 decoration: const BoxDecoration(
@@ -1318,7 +1429,6 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    // Header
                     Row(
                       children: [
                         Container(
@@ -1371,7 +1481,6 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                       ),
                     ),
                     const SizedBox(height: 16),
-                    // Rows
                     ...rows.map(
                       (row) => Padding(
                         padding: const EdgeInsets.only(bottom: 12),
@@ -1768,6 +1877,7 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
         backgroundColor: Colors.transparent,
         builder: (sheetCtx) {
           bool isSaving = false;
+          String localMood = _avatarMood;
           return StatefulBuilder(
             builder: (context, setSheet) {
               return Padding(
@@ -1785,7 +1895,6 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        // Gold top accent line
                         Container(
                           height: 1,
                           decoration: const BoxDecoration(
@@ -1812,7 +1921,6 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              // Header label + title
                               Text(
                                 'EDIT PROFILE',
                                 style: TextStyle(
@@ -1846,83 +1954,22 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                                 ),
                               ),
                               const SizedBox(height: 24),
-
-                              // Avatar
-                              Center(
-                                child: Stack(
-                                  alignment: Alignment.bottomRight,
-                                  children: [
-                                    Container(
-                                      width: 76,
-                                      height: 76,
-                                      decoration: BoxDecoration(
-                                        shape: BoxShape.circle,
-                                        color: AppColors.green,
-                                        border: Border.all(
-                                          color: AppColors.gold,
-                                          width: 1.5,
-                                        ),
-                                        boxShadow: [
-                                          BoxShadow(
-                                            color: AppColors.green.withOpacity(
-                                              0.2,
-                                            ),
-                                            blurRadius: 20,
-                                            spreadRadius: 2,
-                                          ),
-                                        ],
-                                      ),
-                                      child: Center(
-                                        child: Text(
-                                          _fullName.isNotEmpty
-                                              ? _fullName[0].toUpperCase()
-                                              : 'S',
-                                          style: const TextStyle(
-                                            fontFamily: _hf,
-                                            fontSize: 32,
-                                            color: AppColors.gold,
-                                            fontWeight: FontWeight.w300,
-                                          ),
-                                        ),
-                                      ),
+                              Center(child: _RobotAvatar(mood: localMood, size: 84)),
+                              const SizedBox(height: 16),
+                              Row(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: ['happy', 'angry', 'heart_eyes'].map((m) {
+                                  return IconButton(
+                                    onPressed: () => setSheet(() => localMood = m),
+                                    icon: Icon(
+                                      Icons.circle,
+                                      color: localMood == m ? AppColors.gold : AppColors.border,
+                                      size: 16,
                                     ),
-                                    Container(
-                                      width: 22,
-                                      height: 22,
-                                      decoration: BoxDecoration(
-                                        shape: BoxShape.circle,
-                                        color: AppColors.gold,
-                                        border: Border.all(
-                                          color: AppColors.offWhite,
-                                          width: 2,
-                                        ),
-                                      ),
-                                      child: const Icon(
-                                        Icons.edit,
-                                        size: 11,
-                                        color: AppColors.green,
-                                      ),
-                                    ),
-                                  ],
-                                ),
+                                  );
+                                }).toList(),
                               ),
-                              const SizedBox(height: 8),
-                              Center(
-                                child: Text(
-                                  'STUDENT',
-                                  style: TextStyle(
-                                    fontFamily: _bf,
-                                    fontSize: 9,
-                                    letterSpacing: 4,
-                                    color: AppColors.textSub,
-                                    fontWeight: FontWeight.w300,
-                                  ),
-                                ),
-                              ),
-
                               const SizedBox(height: 28),
-
-                              // Gold divider
                               Container(
                                 height: 1,
                                 decoration: const BoxDecoration(
@@ -1935,8 +1982,6 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                                 ),
                               ),
                               const SizedBox(height: 24),
-
-                              // Email display (read-only)
                               Container(
                                 width: double.infinity,
                                 padding: const EdgeInsets.symmetric(
@@ -1990,16 +2035,12 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                                 ),
                               ),
                               const SizedBox(height: 20),
-
-                              // Full name field
                               _DashLuxuryField(
                                 label: 'FULL NAME',
                                 hint: 'Enter your full name',
                                 controller: _profileNameCtrl,
                               ),
                               const SizedBox(height: 20),
-
-                              // Phone field
                               _DashLuxuryField(
                                 label: 'PHONE NUMBER',
                                 hint: 'e.g. 09XXXXXXXXX',
@@ -2007,8 +2048,6 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                                 keyboardType: TextInputType.phone,
                               ),
                               const SizedBox(height: 32),
-
-                              // Save button
                               SizedBox(
                                 width: double.infinity,
                                 child: Material(
@@ -2021,6 +2060,7 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                                             await _saveProfile(
                                               _profileNameCtrl.text,
                                               _profilePhoneCtrl.text,
+                                              localMood,
                                             );
                                             if (sheetCtx.mounted) {
                                               Navigator.pop(sheetCtx);
@@ -2541,26 +2581,7 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
       },
     );
   }
-  // ─── Tool Handlers ─────────────────────────────────────────────
 
-  Future<void> _handleToolTap(String title) async {
-    switch (title) {
-      case 'Device Connection':
-        await _showDeviceDialog();
-        return;
-      case 'Alert History':
-        await _showAlertHistorySheet();
-        return;
-      case 'Profile':
-        setState(() => _selectedNavIndex = 4);
-        return;
-      case 'Settings':
-        setState(() => _selectedNavIndex = 5);
-        return;
-      default:
-        _showActionSnack('$title tapped');
-    }
-  }
 
   Future<void> _onBottomNavTap(int index) async {
     setState(() => _selectedNavIndex = index);
@@ -2697,10 +2718,6 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
         _buildSectionLabel('DEVICE STATUS'),
         const SizedBox(height: 10),
         _buildDeviceCard(),
-        const SizedBox(height: 20),
-        _buildSectionLabel('TOOLS'),
-        const SizedBox(height: 10),
-        _buildToolList(),
       ],
     );
   }
@@ -2920,6 +2937,63 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
         const SizedBox(height: 16),
         _buildSectionLabel('PROFILE'),
         const SizedBox(height: 10),
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.symmetric(vertical: 28, horizontal: 20),
+          decoration: BoxDecoration(
+            gradient: const LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [Color(0xFF05412B), Color(0xFF042D1F)],
+            ),
+            borderRadius: BorderRadius.circular(22),
+            border: Border.all(color: AppColors.gold.withOpacity(0.25)),
+            boxShadow: [
+              BoxShadow(
+                color: AppColors.green.withOpacity(0.2),
+                blurRadius: 20,
+                offset: const Offset(0, 8),
+              ),
+            ],
+          ),
+          child: Column(
+            children: [
+              _RobotAvatar(mood: _avatarMood, size: 72),
+              const SizedBox(height: 14),
+              Text(
+                _fullName,
+                style: TextStyle(
+                  fontFamily: _hf,
+                  color: AppColors.white,
+                  fontSize: 26,
+                  height: 1,
+                  fontWeight: FontWeight.w300,
+                  fontStyle: FontStyle.italic,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 5),
+                decoration: BoxDecoration(
+                  color: AppColors.gold.withOpacity(0.15),
+                  borderRadius: BorderRadius.circular(999),
+                  border: Border.all(color: AppColors.gold.withOpacity(0.4)),
+                ),
+                child: Text(
+                  'STUDENT',
+                  style: TextStyle(
+                    fontFamily: _bf,
+                    color: AppColors.goldLt,
+                    fontSize: 10,
+                    letterSpacing: 3,
+                    fontWeight: FontWeight.w400,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 14),
         _buildDashboardPanel(
           title: _fullName,
           subtitle: 'STUDENT ACCOUNT',
@@ -2939,11 +3013,6 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
             ),
             const SizedBox(height: 8),
             _buildDeviceRow('Current Route', _activeRoute),
-            const SizedBox(height: 8),
-            _buildDeviceRow(
-              'Parent UID',
-              _linkedParentUid.isEmpty ? 'Not linked' : _linkedParentUid,
-            ),
             const SizedBox(height: 8),
             _buildDeviceRow(
               'Parent Name',
@@ -3029,14 +3098,95 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                   onTap: _loadDashboard,
                   isPrimary: false,
                 ),
-                _buildPanelAction(
-                  label: 'LOGOUT',
-                  onTap: _confirmLogout,
-                  isPrimary: false,
-                ),
               ],
             ),
           ],
+        ),
+        const SizedBox(height: 20),
+        _buildSectionLabel('DANGER ZONE'),
+        const SizedBox(height: 10),
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.fromLTRB(18, 16, 18, 18),
+          decoration: BoxDecoration(
+            color: const Color(0xFFFFF8F8),
+            borderRadius: BorderRadius.circular(22),
+            border: Border.all(color: const Color(0xFFCB392B).withOpacity(0.25)),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'ACCOUNT',
+                style: TextStyle(
+                  fontFamily: _bf,
+                  color: const Color(0xFFCB392B).withOpacity(0.7),
+                  fontSize: 9,
+                  letterSpacing: 3,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                'Session & Security',
+                style: TextStyle(
+                  fontFamily: _hf,
+                  color: const Color(0xFF7E1F14),
+                  fontSize: 26,
+                  height: 1,
+                  fontWeight: FontWeight.w300,
+                  fontStyle: FontStyle.italic,
+                ),
+              ),
+              const SizedBox(height: 12),
+              Container(
+                height: 1,
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: [
+                      const Color(0xFFCB392B).withOpacity(0.3),
+                      Colors.transparent,
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 14),
+              SizedBox(
+                width: double.infinity,
+                child: Material(
+                  color: const Color(0xFFCB392B),
+                  borderRadius: BorderRadius.circular(10),
+                  child: InkWell(
+                    onTap: _confirmLogout,
+                    borderRadius: BorderRadius.circular(10),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 14,
+                      ),
+                      alignment: Alignment.center,
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(
+                          color: const Color(0xFFCB392B).withOpacity(0.5),
+                        ),
+                      ),
+                      child: Text(
+                        'LOG OUT',
+                        style: TextStyle(
+                          fontFamily: _bf,
+                          color: AppColors.white,
+                          fontSize: 11,
+                          letterSpacing: 3,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
         ),
       ],
     );
@@ -3139,6 +3289,13 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
     );
   }
 
+  String _getDynamicGreeting() {
+    final hour = DateTime.now().hour;
+    if (hour < 12) return 'Good morning,';
+    if (hour < 17) return 'Good afternoon,';
+    return 'Good evening,';
+  }
+
   Widget _buildHeroCard() {
     return Container(
       width: double.infinity,
@@ -3211,13 +3368,12 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                 ],
               ),
               const Spacer(),
+              _RobotAvatar(mood: _avatarMood, size: 42),
             ],
           ),
           const SizedBox(height: 20),
-
-          // Good morning + name
           Text(
-            'Good morning,',
+            _getDynamicGreeting(),
             style: TextStyle(
               fontFamily: _bf,
               color: AppColors.white.withOpacity(0.7),
@@ -3238,7 +3394,6 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
               fontStyle: FontStyle.italic,
             ),
           ),
-
           const SizedBox(height: 16),
           Wrap(
             spacing: 8,
@@ -3756,90 +3911,7 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
     );
   }
 
-  Widget _buildToolList() {
-    return Column(
-      children: _tools.map((item) {
-        return Padding(
-          padding: const EdgeInsets.only(bottom: 10),
-          child: InkWell(
-            onTap: () => _handleToolTap(item.title),
-            borderRadius: BorderRadius.circular(18),
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-              decoration: BoxDecoration(
-                color: AppColors.white,
-                borderRadius: BorderRadius.circular(18),
-                border: Border.all(color: AppColors.border),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withOpacity(0.04),
-                    blurRadius: 8,
-                    offset: const Offset(0, 3),
-                  ),
-                ],
-              ),
-              child: Row(
-                children: [
-                  Container(
-                    width: 40,
-                    height: 40,
-                    decoration: BoxDecoration(
-                      color: item.iconBg,
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: Icon(item.icon, color: item.iconColor, size: 20),
-                  ),
-                  const SizedBox(width: 14),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          item.title,
-                          style: TextStyle(
-                            fontFamily: _bf,
-                            color: AppColors.green,
-                            fontSize: 14,
-                            letterSpacing: 0.5,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                        const SizedBox(height: 2),
-                        Text(
-                          item.subtitle,
-                          style: TextStyle(
-                            fontFamily: _bf,
-                            color: AppColors.textSub,
-                            fontSize: 11,
-                            letterSpacing: 0.3,
-                            fontWeight: FontWeight.w300,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  Container(
-                    width: 28,
-                    height: 28,
-                    decoration: BoxDecoration(
-                      color: AppColors.offWhite,
-                      borderRadius: BorderRadius.circular(8),
-                      border: Border.all(color: AppColors.border),
-                    ),
-                    child: const Icon(
-                      Icons.chevron_right,
-                      color: AppColors.textSub,
-                      size: 18,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        );
-      }).toList(),
-    );
-  }
+
 
   Widget _buildBottomNav() {
     return Container(
@@ -3854,69 +3926,89 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
           ),
         ],
       ),
-      padding: const EdgeInsets.fromLTRB(10, 8, 10, 4),
-      child: SafeArea(
-        top: false,
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.spaceAround,
-          children: List.generate(_navItems.length, (index) {
-            final item = _navItems[index];
-            final selected = index == _selectedNavIndex;
-            return Expanded(
-              child: InkWell(
-                onTap: () => _onBottomNavTap(index),
-                borderRadius: BorderRadius.circular(14),
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 6),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      AnimatedContainer(
-                        duration: const Duration(milliseconds: 200),
-                        width: 36,
-                        height: 36,
-                        decoration: BoxDecoration(
-                          color: selected
-                              ? AppColors.green.withOpacity(0.1)
-                              : Colors.transparent,
-                          shape: BoxShape.circle,
-                          border: selected
-                              ? Border.all(
-                                  color: AppColors.gold.withOpacity(0.3),
-                                  width: 0.5,
-                                )
-                              : null,
-                        ),
-                        child: Icon(
-                          item.icon,
-                          size: 20,
-                          color: selected
-                              ? AppColors.green
-                              : const Color(0xFFA6A49D),
-                        ),
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        item.label,
-                        style: TextStyle(
-                          fontFamily: _bf,
-                          color: selected
-                              ? AppColors.green
-                              : const Color(0xFFA6A49D),
-                          fontSize: 9,
-                          letterSpacing: 1,
-                          fontWeight: selected
-                              ? FontWeight.w600
-                              : FontWeight.w300,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // Gold gradient accent top line
+          Container(
+            height: 2,
+            decoration: const BoxDecoration(
+              gradient: LinearGradient(
+                colors: [
+                  Colors.transparent,
+                  AppColors.gold,
+                  Colors.transparent,
+                ],
               ),
-            );
-          }),
-        ),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(10, 8, 10, 4),
+            child: SafeArea(
+              top: false,
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceAround,
+                children: List.generate(_navItems.length, (index) {
+                  final item = _navItems[index];
+                  final selected = index == _selectedNavIndex;
+                  return Expanded(
+                    child: InkWell(
+                      onTap: () => _onBottomNavTap(index),
+                      borderRadius: BorderRadius.circular(14),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 6),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            AnimatedContainer(
+                              duration: const Duration(milliseconds: 200),
+                              width: 36,
+                              height: 36,
+                              decoration: BoxDecoration(
+                                color: selected
+                                    ? AppColors.green.withOpacity(0.1)
+                                    : Colors.transparent,
+                                shape: BoxShape.circle,
+                                border: selected
+                                    ? Border.all(
+                                        color: AppColors.gold.withOpacity(0.3),
+                                        width: 0.5,
+                                      )
+                                    : null,
+                              ),
+                              child: Icon(
+                                item.icon,
+                                size: 20,
+                                color: selected
+                                    ? AppColors.green
+                                    : const Color(0xFFA6A49D),
+                              ),
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              item.label,
+                              style: TextStyle(
+                                fontFamily: _bf,
+                                color: selected
+                                    ? AppColors.green
+                                    : const Color(0xFFA6A49D),
+                                fontSize: 9,
+                                letterSpacing: 1,
+                                fontWeight: selected
+                                    ? FontWeight.w600
+                                    : FontWeight.w300,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  );
+                }),
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -3962,21 +4054,6 @@ class _InfoRow {
   final String label;
   final String value;
   const _InfoRow(this.label, this.value);
-}
-
-class _ToolItem {
-  final String title;
-  final String subtitle;
-  final IconData icon;
-  final Color iconColor;
-  final Color iconBg;
-  const _ToolItem({
-    required this.title,
-    required this.subtitle,
-    required this.icon,
-    required this.iconColor,
-    required this.iconBg,
-  });
 }
 
 class _NavItem {

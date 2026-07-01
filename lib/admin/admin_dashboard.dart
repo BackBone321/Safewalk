@@ -391,6 +391,20 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
       body: Stack(
         children: [
           const Positioned.fill(child: _AdminBackground()),
+          // Top gradient accent bar
+          Positioned(
+            top: 0,
+            left: 0,
+            right: 0,
+            child: Container(
+              height: 3,
+              decoration: const BoxDecoration(
+                gradient: LinearGradient(
+                  colors: [AppColors.green, AppColors.bright, AppColors.gold],
+                ),
+              ),
+            ),
+          ),
           SafeArea(
             child: Padding(
               padding: const EdgeInsets.all(24),
@@ -445,6 +459,13 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
     );
   }
 
+  String _getAdminGreeting() {
+    final hour = DateTime.now().hour;
+    if (hour < 12) return 'Good morning';
+    if (hour < 17) return 'Good afternoon';
+    return 'Good evening';
+  }
+
   Widget _buildTopBar() {
     return Row(
       children: [
@@ -475,15 +496,30 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
             ),
           ),
         ),
-        const SizedBox(width: 12),
-        const Text(
-          'SAFEWALK ADMIN',
-          style: TextStyle(
-            fontSize: 10,
-            letterSpacing: 4,
-            color: AppColors.goldDark,
-            fontWeight: FontWeight.w400,
-          ),
+        const SizedBox(width: 14),
+        Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'SAFEWALK ADMIN',
+              style: TextStyle(
+                fontSize: 10,
+                letterSpacing: 4,
+                color: AppColors.goldDark,
+                fontWeight: FontWeight.w400,
+              ),
+            ),
+            Text(
+              _getAdminGreeting(),
+              style: const TextStyle(
+                fontFamily: 'CormorantGaramond',
+                fontSize: 18,
+                fontWeight: FontWeight.w300,
+                color: AppColors.green,
+                fontStyle: FontStyle.italic,
+              ),
+            ),
+          ],
         ),
         const Spacer(),
       ],
@@ -532,6 +568,7 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
       width: 290,
       decoration: BoxDecoration(
         color: AppColors.white,
+        borderRadius: BorderRadius.circular(16),
         border: Border.all(color: AppColors.border),
         boxShadow: const [
           BoxShadow(
@@ -541,92 +578,134 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
           ),
         ],
       ),
-      child: Column(
-        children: [
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.all(18),
-            decoration: BoxDecoration(
-              border: Border(
-                bottom: BorderSide(color: AppColors.border.withOpacity(0.5)),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(16),
+        child: Column(
+          children: [
+            // Sidebar header with green gradient
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.fromLTRB(18, 20, 18, 16),
+              decoration: const BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [Color(0xFF05412B), Color(0xFF0B2C1E)],
+                ),
               ),
-            ),
-            child: Text(
-              'ADMIN MENU',
-              style: TextStyle(
-                fontSize: 9,
-                letterSpacing: 4,
-                color: AppColors.gold.withOpacity(0.9),
-                fontWeight: FontWeight.w300,
-              ),
-            ),
-          ),
-          Expanded(
-            child: ListView.separated(
-              padding: const EdgeInsets.all(14),
-              itemCount: _menuItems.length,
-              separatorBuilder: (_, __) => const SizedBox(height: 10),
-              itemBuilder: (context, index) {
-                final item = _menuItems[index];
-                final isSelected = _selectedMenuIndex == index;
-
-                return InkWell(
-                  onTap: () {
-                    if (item.title == 'Logout') {
-                      _confirmLogout();
-                    } else {
-                      setState(() {
-                        _selectedMenuIndex = index;
-                      });
-                    }
-                  },
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 14,
-                      vertical: 14,
-                    ),
-                    decoration: BoxDecoration(
-                      color: isSelected
-                          ? AppColors.green.withOpacity(0.08)
-                          : AppColors.offWhite,
-                      border: Border.all(
-                        color: isSelected
-                            ? AppColors.gold
-                            : AppColors.border.withOpacity(0.5),
-                      ),
-                    ),
-                    child: Row(
-                      children: [
-                        Icon(
-                          item.icon,
-                          color: isSelected
-                              ? AppColors.green
-                              : AppColors.textSub,
-                          size: 20,
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: Text(
-                            item.title,
-                            style: TextStyle(
-                              fontSize: 13,
-                              fontWeight: isSelected
-                                  ? FontWeight.w600
-                                  : FontWeight.w400,
-                              color: isSelected
-                                  ? AppColors.green
-                                  : AppColors.textMain,
-                            ),
-                          ),
-                        ),
-                      ],
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'NAVIGATION',
+                    style: TextStyle(
+                      fontSize: 9,
+                      letterSpacing: 4,
+                      color: AppColors.gold.withOpacity(0.8),
+                      fontWeight: FontWeight.w300,
                     ),
                   ),
-                );
-              },
+                  const SizedBox(height: 4),
+                  const Text(
+                    'Admin Panel',
+                    style: TextStyle(
+                      fontFamily: 'CormorantGaramond',
+                      fontSize: 22,
+                      fontWeight: FontWeight.w300,
+                      color: AppColors.goldLt,
+                      fontStyle: FontStyle.italic,
+                    ),
+                  ),
+                ],
+              ),
             ),
-          ),
-        ],
+            Expanded(
+              child: ListView.separated(
+                padding: const EdgeInsets.all(14),
+                itemCount: _menuItems.length,
+                separatorBuilder: (_, __) => const SizedBox(height: 8),
+                itemBuilder: (context, index) {
+                  final item = _menuItems[index];
+                  final isSelected = _selectedMenuIndex == index;
+                  final isLogout = item.title == 'Logout';
+
+                  return InkWell(
+                    onTap: () {
+                      if (isLogout) {
+                        _confirmLogout();
+                      } else {
+                        setState(() {
+                          _selectedMenuIndex = index;
+                        });
+                      }
+                    },
+                    borderRadius: BorderRadius.circular(12),
+                    child: AnimatedContainer(
+                      duration: const Duration(milliseconds: 200),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 14,
+                        vertical: 13,
+                      ),
+                      decoration: BoxDecoration(
+                        color: isSelected
+                            ? AppColors.green.withOpacity(0.07)
+                            : Colors.transparent,
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border(
+                          left: BorderSide(
+                            color: isSelected
+                                ? AppColors.gold
+                                : Colors.transparent,
+                            width: 3,
+                          ),
+                        ),
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(
+                            item.icon,
+                            color: isLogout
+                                ? const Color(0xFFCB392B)
+                                : isSelected
+                                ? AppColors.green
+                                : AppColors.textSub,
+                            size: 20,
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Text(
+                              item.title,
+                              style: TextStyle(
+                                fontSize: 13,
+                                fontWeight: isSelected
+                                    ? FontWeight.w600
+                                    : FontWeight.w400,
+                                color: isLogout
+                                    ? const Color(0xFFCB392B)
+                                    : isSelected
+                                    ? AppColors.green
+                                    : AppColors.textMain,
+                              ),
+                            ),
+                          ),
+                          if (isSelected && !isLogout)
+                            Container(
+                              width: 6,
+                              height: 6,
+                              decoration: const BoxDecoration(
+                                shape: BoxShape.circle,
+                                color: AppColors.gold,
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -675,30 +754,57 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
             itemBuilder: (context, index) {
               final data = docs[index].data();
 
+              final fullName = (data['fullName'] ?? 'No Name').toString();
+              final initial = fullName.isNotEmpty ? fullName[0].toUpperCase() : '?';
+              final role = (data['role'] ?? 'unknown').toString();
+              final roleColor = role == 'admin'
+                  ? const Color(0xFF7E1F14)
+                  : role == 'parent'
+                  ? const Color(0xFF1A4D8F)
+                  : AppColors.green;
+
               return Container(
                 padding: const EdgeInsets.all(16),
                 decoration: BoxDecoration(
-                  color: AppColors.offWhite,
-                  border: Border.all(color: AppColors.border.withOpacity(0.5)),
+                  color: AppColors.white,
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: AppColors.border),
                   boxShadow: const [
                     BoxShadow(
                       color: AppColors.shadow,
-                      blurRadius: 10,
-                      offset: Offset(0, 4),
+                      blurRadius: 12,
+                      offset: Offset(0, 5),
                     ),
                   ],
                 ),
                 child: Row(
                   children: [
+                    // Initials Avatar
                     Container(
                       width: 46,
                       height: 46,
                       decoration: BoxDecoration(
                         shape: BoxShape.circle,
-                        color: AppColors.green.withOpacity(0.08),
-                        border: Border.all(color: AppColors.gold),
+                        color: AppColors.green,
+                        border: Border.all(color: AppColors.gold, width: 1.2),
+                        boxShadow: [
+                          BoxShadow(
+                            color: AppColors.green.withOpacity(0.18),
+                            blurRadius: 10,
+                          ),
+                        ],
                       ),
-                      child: const Icon(Icons.person, color: AppColors.green),
+                      child: Center(
+                        child: Text(
+                          initial,
+                          style: const TextStyle(
+                            fontFamily: 'CormorantGaramond',
+                            fontSize: 20,
+                            color: AppColors.gold,
+                            fontWeight: FontWeight.w300,
+                          ),
+                        ),
+                      ),
                     ),
                     const SizedBox(width: 14),
                     Expanded(
@@ -706,7 +812,7 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            (data['fullName'] ?? 'No Name').toString(),
+                            fullName,
                             style: const TextStyle(
                               fontSize: 15,
                               fontWeight: FontWeight.w600,
@@ -716,22 +822,43 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
                           const SizedBox(height: 8),
                           Wrap(
                             spacing: 8,
-                            runSpacing: 8,
+                            runSpacing: 6,
                             children: [
-                              _MiniTag(
-                                label: 'Role: ${data['role'] ?? 'unknown'}',
+                              // Role badge
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 8,
+                                  vertical: 4,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: roleColor.withOpacity(0.08),
+                                  borderRadius: BorderRadius.circular(6),
+                                  border: Border.all(
+                                    color: roleColor.withOpacity(0.35),
+                                  ),
+                                ),
+                                child: Text(
+                                  role.toUpperCase(),
+                                  style: TextStyle(
+                                    fontSize: 9,
+                                    letterSpacing: 2,
+                                    color: roleColor,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
                               ),
                               _MiniTag(
-                                label: 'Email: ${data['email'] ?? 'No Email'}',
+                                label: data['email'] ?? 'No Email',
                               ),
                             ],
                           ),
-                          const SizedBox(height: 10),
+                          const SizedBox(height: 8),
                           Text(
-                            'Phone: ${data['phoneNumber'] ?? 'No phone number'}',
+                            (data['phoneNumber'] ?? 'No phone number').toString(),
                             style: const TextStyle(
                               fontSize: 12,
-                              color: AppColors.textMain,
+                              color: AppColors.textSub,
+                              letterSpacing: 0.3,
                             ),
                           ),
                         ],
@@ -740,15 +867,23 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
                     // Change Password button
                     Tooltip(
                       message: 'Change Password',
-                      child: IconButton(
-                        icon: const Icon(
-                          Icons.lock_reset_rounded,
-                          color: AppColors.goldDark,
+                      child: Container(
+                        decoration: BoxDecoration(
+                          color: AppColors.offWhite,
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(color: AppColors.border),
                         ),
-                        onPressed: () => _changePasswordDialog(
-                          docs[index].id,
-                          (data['fullName'] ?? 'User').toString(),
-                          (data['email'] ?? '').toString(),
+                        child: IconButton(
+                          icon: const Icon(
+                            Icons.lock_reset_rounded,
+                            color: AppColors.goldDark,
+                            size: 20,
+                          ),
+                          onPressed: () => _changePasswordDialog(
+                            docs[index].id,
+                            fullName,
+                            (data['email'] ?? '').toString(),
+                          ),
                         ),
                       ),
                     ),
@@ -793,11 +928,23 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
             itemBuilder: (context, index) {
               final data = docs[index].data();
 
+              final status = (data['status'] ?? '').toString().toLowerCase();
+              final isOnline = status == 'active' || status == 'online';
+              final deviceName = (data['deviceName'] ?? 'No Name').toString();
+
               return Container(
                 padding: const EdgeInsets.all(16),
                 decoration: BoxDecoration(
-                  color: AppColors.offWhite,
-                  border: Border.all(color: AppColors.border.withOpacity(0.5)),
+                  color: AppColors.white,
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: AppColors.border),
+                  boxShadow: const [
+                    BoxShadow(
+                      color: AppColors.shadow,
+                      blurRadius: 12,
+                      offset: Offset(0, 5),
+                    ),
+                  ],
                 ),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -808,19 +955,23 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
                           width: 42,
                           height: 42,
                           decoration: BoxDecoration(
-                            shape: BoxShape.circle,
-                            color: AppColors.green.withOpacity(0.08),
-                            border: Border.all(color: AppColors.gold),
+                            color: AppColors.green,
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(
+                              color: AppColors.gold,
+                              width: 1,
+                            ),
                           ),
                           child: const Icon(
-                            Icons.memory,
-                            color: AppColors.green,
+                            Icons.memory_rounded,
+                            color: AppColors.gold,
+                            size: 20,
                           ),
                         ),
                         const SizedBox(width: 12),
                         Expanded(
                           child: Text(
-                            data['deviceName'] ?? 'No Name',
+                            deviceName,
                             style: const TextStyle(
                               fontSize: 15,
                               fontWeight: FontWeight.w600,
@@ -828,42 +979,65 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
                             ),
                           ),
                         ),
+                        // Status pill
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 10,
+                            vertical: 5,
+                          ),
+                          decoration: BoxDecoration(
+                            color: isOnline
+                                ? const Color(0xFFEAF7F0)
+                                : AppColors.cream,
+                            borderRadius: BorderRadius.circular(999),
+                            border: Border.all(
+                              color: isOnline
+                                  ? const Color(0xFF60CC8A)
+                                  : AppColors.border,
+                            ),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(
+                                Icons.circle,
+                                size: 6,
+                                color: isOnline
+                                    ? const Color(0xFF2CA86E)
+                                    : AppColors.textSub,
+                              ),
+                              const SizedBox(width: 5),
+                              Text(
+                                isOnline ? 'Online' : 'Offline',
+                                style: TextStyle(
+                                  fontSize: 10,
+                                  letterSpacing: 0.5,
+                                  fontWeight: FontWeight.w600,
+                                  color: isOnline
+                                      ? const Color(0xFF0E5B3C)
+                                      : AppColors.textSub,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
                       ],
                     ),
                     const SizedBox(height: 14),
-                    Text(
-                      'Device ID: ${data['deviceId'] ?? ''}',
-                      style: const TextStyle(
-                        fontSize: 12,
-                        color: AppColors.textMain,
+                    Container(
+                      height: 1,
+                      decoration: const BoxDecoration(
+                        gradient: LinearGradient(
+                          colors: [AppColors.border, Colors.transparent],
+                        ),
                       ),
                     ),
-                    const SizedBox(height: 4),
-                    Text(
-                      'Phone: ${data['phoneNumber'] ?? ''}',
-                      style: const TextStyle(
-                        fontSize: 12,
-                        color: AppColors.textMain,
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      'Location: ${data['location'] ?? ''}',
-                      style: const TextStyle(
-                        fontSize: 12,
-                        color: AppColors.textMain,
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      'Status: ${data['status'] ?? ''}',
-                      style: TextStyle(
-                        fontSize: 12,
-                        color: (data['status'] ?? '') == 'active'
-                            ? Colors.green.shade700
-                            : AppColors.textSub,
-                      ),
-                    ),
+                    const SizedBox(height: 12),
+                    _AdminInfoRow('Device ID', data['deviceId'] ?? '-'),
+                    const SizedBox(height: 6),
+                    _AdminInfoRow('Phone', data['phoneNumber'] ?? '-'),
+                    const SizedBox(height: 6),
+                    _AdminInfoRow('Location', data['location'] ?? '-'),
                   ],
                 ),
               );
@@ -1106,59 +1280,116 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
                       data['timestamp'] as Timestamp?,
                     );
 
+                    final isActive = (data['status'] ?? '').toString().toLowerCase() == 'active';
+                    final senderInitial = sender.isNotEmpty ? sender[0].toUpperCase() : '!';
+
                     return Container(
                       padding: const EdgeInsets.all(16),
                       decoration: BoxDecoration(
-                        color: Colors.red.shade50,
-                        border: Border.all(color: Colors.red.shade200),
+                        color: isActive
+                            ? const Color(0xFFFFEEEC)
+                            : AppColors.white,
+                        borderRadius: BorderRadius.circular(16),
+                        border: Border.all(
+                          color: isActive
+                              ? const Color(0xFFCB392B).withOpacity(0.35)
+                              : AppColors.border,
+                        ),
+                        boxShadow: const [
+                          BoxShadow(
+                            color: AppColors.shadow,
+                            blurRadius: 10,
+                            offset: Offset(0, 4),
+                          ),
+                        ],
                       ),
                       child: Row(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Icon(
-                            Icons.warning_amber_rounded,
-                            color: Colors.red.shade700,
-                            size: 28,
+                          // Sender initials avatar
+                          Container(
+                            width: 46,
+                            height: 46,
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              color: isActive
+                                  ? const Color(0xFFCB392B)
+                                  : AppColors.green,
+                              border: Border.all(
+                                color: isActive
+                                    ? const Color(0xFFCB392B).withOpacity(0.4)
+                                    : AppColors.gold,
+                                width: 1.2,
+                              ),
+                            ),
+                            child: Center(
+                              child: Text(
+                                senderInitial,
+                                style: const TextStyle(
+                                  fontFamily: 'CormorantGaramond',
+                                  fontSize: 20,
+                                  color: AppColors.goldLt,
+                                  fontWeight: FontWeight.w300,
+                                ),
+                              ),
+                            ),
                           ),
                           const SizedBox(width: 14),
                           Expanded(
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                Text(
-                                  (data['message'] ?? 'Emergency Alert')
-                                      .toString(),
-                                  style: TextStyle(
-                                    fontSize: 15,
-                                    fontWeight: FontWeight.w700,
-                                    color: Colors.red.shade700,
-                                  ),
+                                Row(
+                                  children: [
+                                    Expanded(
+                                      child: Text(
+                                        (data['message'] ?? 'Emergency Alert').toString(),
+                                        style: TextStyle(
+                                          fontSize: 14,
+                                          fontWeight: FontWeight.w700,
+                                          color: isActive
+                                              ? const Color(0xFF7E1F14)
+                                              : AppColors.green,
+                                        ),
+                                      ),
+                                    ),
+                                    // Status badge
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 8,
+                                        vertical: 4,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        color: isActive
+                                            ? const Color(0xFFCB392B).withOpacity(0.12)
+                                            : AppColors.cream,
+                                        borderRadius: BorderRadius.circular(6),
+                                        border: Border.all(
+                                          color: isActive
+                                              ? const Color(0xFFCB392B).withOpacity(0.35)
+                                              : AppColors.border,
+                                        ),
+                                      ),
+                                      child: Text(
+                                        status.toUpperCase(),
+                                        style: TextStyle(
+                                          fontSize: 9,
+                                          letterSpacing: 2,
+                                          fontWeight: FontWeight.w600,
+                                          color: isActive
+                                              ? const Color(0xFFCB392B)
+                                              : AppColors.textSub,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
                                 ),
-                                const SizedBox(height: 8),
-                                Text(
-                                  'Sender: $sender',
-                                  style: const TextStyle(
-                                    fontSize: 12,
-                                    color: AppColors.textMain,
-                                    fontWeight: FontWeight.w600,
-                                  ),
-                                ),
+                                const SizedBox(height: 10),
+                                _AdminInfoRow('Sender', sender),
                                 const SizedBox(height: 4),
-                                Text(
-                                  'Location: $locationText',
-                                  style: const TextStyle(
-                                    fontSize: 12,
-                                    color: AppColors.textMain,
-                                  ),
-                                ),
+                                _AdminInfoRow('Location', locationText),
                                 const SizedBox(height: 4),
-                                Text(
-                                  'Status: $status | Time: $timestamp',
-                                  style: const TextStyle(
-                                    fontSize: 12,
-                                    color: AppColors.textMain,
-                                  ),
-                                ),
+                                _AdminInfoRow('Time', timestamp),
                               ],
                             ),
                           ),
@@ -1226,9 +1457,12 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
                     return Container(
                       padding: const EdgeInsets.all(16),
                       decoration: BoxDecoration(
-                        color: AppColors.offWhite,
+                        color: isSuccess ? AppColors.white : const Color(0xFFFFEEEC),
+                        borderRadius: BorderRadius.circular(16),
                         border: Border.all(
-                          color: AppColors.border.withOpacity(0.5),
+                          color: isSuccess
+                              ? AppColors.border
+                              : const Color(0xFFCB392B).withOpacity(0.3),
                         ),
                         boxShadow: const [
                           BoxShadow(
@@ -1246,18 +1480,16 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
                             height: 46,
                             decoration: BoxDecoration(
                               shape: BoxShape.circle,
-                              color: isSuccess
-                                  ? Colors.green.shade50
-                                  : Colors.red.shade50,
+                              color: isSuccess ? AppColors.green : const Color(0xFFCB392B),
                               border: Border.all(
-                                color: isSuccess
-                                    ? Colors.green.shade200
-                                    : Colors.red.shade200,
+                                color: isSuccess ? AppColors.gold : const Color(0xFFCB392B).withOpacity(0.4),
+                                width: 1.2,
                               ),
                             ),
                             child: Icon(
-                              isSuccess ? Icons.check : Icons.close,
-                              color: isSuccess ? Colors.green : Colors.red,
+                              isSuccess ? Icons.check_rounded : Icons.close_rounded,
+                              color: AppColors.goldLt,
+                              size: 22,
                             ),
                           ),
                           const SizedBox(width: 14),
@@ -1265,53 +1497,81 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                Text(
-                                  data['email'] ?? 'No Email',
-                                  style: const TextStyle(
-                                    fontSize: 15,
-                                    fontWeight: FontWeight.w600,
-                                    color: AppColors.green,
-                                  ),
+                                Row(
+                                  children: [
+                                    Expanded(
+                                      child: Text(
+                                        data['email'] ?? 'No Email',
+                                        style: const TextStyle(
+                                          fontSize: 14,
+                                          fontWeight: FontWeight.w600,
+                                          color: AppColors.green,
+                                        ),
+                                      ),
+                                    ),
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 8, vertical: 4,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        color: isSuccess
+                                            ? const Color(0xFFEAF7F0)
+                                            : const Color(0xFFCB392B).withOpacity(0.1),
+                                        borderRadius: BorderRadius.circular(6),
+                                        border: Border.all(
+                                          color: isSuccess
+                                              ? const Color(0xFF2CA86E).withOpacity(0.4)
+                                              : const Color(0xFFCB392B).withOpacity(0.35),
+                                        ),
+                                      ),
+                                      child: Text(
+                                        status.toUpperCase(),
+                                        style: TextStyle(
+                                          fontSize: 9,
+                                          letterSpacing: 2,
+                                          fontWeight: FontWeight.w600,
+                                          color: isSuccess
+                                              ? const Color(0xFF0E5B3C)
+                                              : const Color(0xFFCB392B),
+                                        ),
+                                      ),
+                                    ),
+                                  ],
                                 ),
                                 const SizedBox(height: 8),
                                 Wrap(
                                   spacing: 8,
-                                  runSpacing: 8,
+                                  runSpacing: 6,
                                   children: [
                                     _MiniTag(
-                                      label:
-                                          'Role: ${data['role'] ?? 'unknown'}',
-                                    ),
-                                    _MiniTag(
-                                      label: 'Status: ${data['status'] ?? ''}',
+                                      label: 'Role: ${data['role'] ?? 'unknown'}',
                                     ),
                                   ],
                                 ),
-                                const SizedBox(height: 10),
-                                Text(
-                                  'Location: ${data['location'] ?? 'Unknown'}',
-                                  style: const TextStyle(
-                                    fontSize: 12,
-                                    color: AppColors.textMain,
-                                  ),
-                                ),
+                                const SizedBox(height: 8),
+                                _AdminInfoRow('Location', (data['location'] ?? 'Unknown').toString()),
                                 const SizedBox(height: 4),
-                                Text(
-                                  'Device: ${data['deviceId'] ?? 'Unknown'}',
-                                  style: const TextStyle(
-                                    fontSize: 12,
-                                    color: AppColors.textMain,
-                                  ),
-                                ),
-                                if ((data['error'] ?? '')
-                                    .toString()
-                                    .isNotEmpty) ...[
+                                _AdminInfoRow('Device', (data['deviceId'] ?? 'Unknown').toString()),
+                                if ((data['error'] ?? '').toString().isNotEmpty) ...[
                                   const SizedBox(height: 8),
-                                  Text(
-                                    'Error: ${data['error']}',
-                                    style: TextStyle(
-                                      fontSize: 12,
-                                      color: Colors.red.shade700,
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 10, vertical: 6,
+                                    ),
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFFFFEEEC),
+                                      borderRadius: BorderRadius.circular(8),
+                                      border: Border.all(
+                                        color: const Color(0xFFCB392B).withOpacity(0.3),
+                                      ),
+                                    ),
+                                    child: Text(
+                                      'Error: ${data['error']}',
+                                      style: const TextStyle(
+                                        fontSize: 11,
+                                        color: Color(0xFF7E1F14),
+                                        letterSpacing: 0.3,
+                                      ),
                                     ),
                                   ),
                                 ],
@@ -1395,6 +1655,42 @@ class _AdminMenuItem {
   const _AdminMenuItem(this.title, this.icon);
 }
 
+/// A compact label-value row used inside admin cards.
+class _AdminInfoRow extends StatelessWidget {
+  final String label;
+  final String value;
+
+  const _AdminInfoRow(this.label, this.value, {super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          '$label: ',
+          style: const TextStyle(
+            fontSize: 11,
+            color: AppColors.textSub,
+            fontWeight: FontWeight.w500,
+            letterSpacing: 0.3,
+          ),
+        ),
+        Expanded(
+          child: Text(
+            value,
+            style: const TextStyle(
+              fontSize: 11,
+              color: AppColors.textMain,
+              letterSpacing: 0.3,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
 
 
 class _LuxurySummaryCard extends StatelessWidget {
@@ -1412,9 +1708,9 @@ class _LuxurySummaryCard extends StatelessWidget {
   Widget build(BuildContext context) {
     return Expanded(
       child: Container(
-        padding: const EdgeInsets.all(18),
         decoration: BoxDecoration(
           color: AppColors.white,
+          borderRadius: BorderRadius.circular(16),
           border: Border.all(color: AppColors.border),
           boxShadow: const [
             BoxShadow(
@@ -1432,25 +1728,54 @@ class _LuxurySummaryCard extends StatelessWidget {
             return Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Icon(icon, color: AppColors.green, size: 20),
-                const SizedBox(height: 14),
-                Text(
-                  title,
-                  style: TextStyle(
-                    fontSize: 9,
-                    letterSpacing: 4,
-                    color: AppColors.gold.withOpacity(0.9),
-                    fontWeight: FontWeight.w300,
+                // Gold top accent line
+                Container(
+                  height: 3,
+                  decoration: const BoxDecoration(
+                    borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+                    gradient: LinearGradient(
+                      colors: [AppColors.green, AppColors.gold],
+                    ),
                   ),
                 ),
-                const SizedBox(height: 8),
-                Text(
-                  '$count',
-                  style: const TextStyle(
-                    fontFamily: 'CormorantGaramond',
-                    fontSize: 32,
-                    fontWeight: FontWeight.w300,
-                    color: AppColors.green,
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(18, 16, 18, 18),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Container(
+                        width: 34,
+                        height: 34,
+                        decoration: BoxDecoration(
+                          color: AppColors.green.withOpacity(0.08),
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(
+                            color: AppColors.gold.withOpacity(0.3),
+                          ),
+                        ),
+                        child: Icon(icon, color: AppColors.green, size: 18),
+                      ),
+                      const SizedBox(height: 14),
+                      Text(
+                        title,
+                        style: TextStyle(
+                          fontSize: 9,
+                          letterSpacing: 4,
+                          color: AppColors.gold.withOpacity(0.9),
+                          fontWeight: FontWeight.w300,
+                        ),
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        '$count',
+                        style: const TextStyle(
+                          fontFamily: 'CormorantGaramond',
+                          fontSize: 34,
+                          fontWeight: FontWeight.w300,
+                          color: AppColors.green,
+                        ),
+                      ),
+                    ],
                   ),
                 ),
               ],
@@ -1473,6 +1798,7 @@ class _LuxuryPanel extends StatelessWidget {
     return Container(
       decoration: BoxDecoration(
         color: AppColors.white,
+        borderRadius: BorderRadius.circular(16),
         border: Border.all(color: AppColors.border),
         boxShadow: const [
           BoxShadow(
@@ -1482,28 +1808,46 @@ class _LuxuryPanel extends StatelessWidget {
           ),
         ],
       ),
-      child: Column(
-        children: [
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.all(18),
-            decoration: BoxDecoration(
-              border: Border(
-                bottom: BorderSide(color: AppColors.border.withOpacity(0.5)),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(16),
+        child: Column(
+          children: [
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.fromLTRB(20, 16, 20, 14),
+              decoration: BoxDecoration(
+                border: Border(
+                  bottom: BorderSide(color: AppColors.border.withOpacity(0.5)),
+                ),
+              ),
+              child: Row(
+                children: [
+                  Container(
+                    width: 4,
+                    height: 16,
+                    decoration: BoxDecoration(
+                      color: AppColors.gold,
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      title,
+                      style: TextStyle(
+                        fontSize: 9,
+                        letterSpacing: 4,
+                        color: AppColors.gold.withOpacity(0.9),
+                        fontWeight: FontWeight.w400,
+                      ),
+                    ),
+                  ),
+                ],
               ),
             ),
-            child: Text(
-              title,
-              style: TextStyle(
-                fontSize: 9,
-                letterSpacing: 4,
-                color: AppColors.gold.withOpacity(0.9),
-                fontWeight: FontWeight.w300,
-              ),
-            ),
-          ),
-          Expanded(child: child),
-        ],
+            Expanded(child: child),
+          ],
+        ),
       ),
     );
   }
@@ -1547,14 +1891,19 @@ class _MiniTag extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       decoration: BoxDecoration(
-        color: AppColors.white,
-        border: Border.all(color: AppColors.border.withOpacity(0.6)),
+        color: AppColors.offWhite,
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: AppColors.border),
       ),
       child: Text(
         label,
-        style: const TextStyle(fontSize: 11, color: AppColors.textSub),
+        style: const TextStyle(
+          fontSize: 10,
+          color: AppColors.textSub,
+          letterSpacing: 0.3,
+        ),
       ),
     );
   }
