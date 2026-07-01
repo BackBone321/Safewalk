@@ -66,7 +66,6 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
   bool _isLoadingInvitations = false;
 
   final List<_NavItem> _navItems = const [
-    _NavItem('Home', Icons.home_outlined),
     _NavItem('Map', Icons.map_outlined),
     _NavItem('Device', Icons.smartphone_outlined),
     _NavItem('Alerts', Icons.notifications_none_rounded),
@@ -811,7 +810,7 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
       });
       if (mounted) {
         setState(() {
-          _selectedNavIndex = 1;
+          _selectedNavIndex = 0;
           _nextMapFocusPoint = mapPoint;
           _deviceCoordinates = mapPoint;
           _deviceLocation = locationLabel;
@@ -2730,19 +2729,17 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
 
   Widget _buildCurrentTabContent() {
     switch (_selectedNavIndex) {
-      case 1:
-        return _buildMapTab();
-      case 2:
-        return _buildDeviceTab();
-      case 3:
-        return _buildAlertsTab();
-      case 4:
-        return _buildProfileTab();
-      case 5:
-        return _buildSettingsTab();
       case 0:
+        return _buildMapTab();
+      case 1:
+        return _buildDeviceTab();
+      case 2:
+        return _buildAlertsTab();
+      case 3:
+        return _buildProfileTab();
+      case 4:
       default:
-        return _buildHomeTab();
+        return _buildSettingsTab();
     }
   }
 

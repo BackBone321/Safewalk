@@ -1053,8 +1053,10 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
   ) {
     final sosDocs =
         docs.where((doc) {
-          final type = (doc.data()['type'] ?? '').toString().toLowerCase();
-          return type == 'sos';
+          final data = doc.data();
+          final type = (data['type'] ?? '').toString().toLowerCase();
+          final status = (data['status'] ?? '').toString().toLowerCase();
+          return type == 'sos' && (status == 'active' || status == 'acknowledged');
         }).toList()..sort((a, b) {
           final aTs = a.data()['timestamp'] as Timestamp?;
           final bTs = b.data()['timestamp'] as Timestamp?;
@@ -1390,6 +1392,90 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
                                 _AdminInfoRow('Location', locationText),
                                 const SizedBox(height: 4),
                                 _AdminInfoRow('Time', timestamp),
+                                if (isActive) ...[
+                                  const SizedBox(height: 10),
+                                  Align(
+                                    alignment: Alignment.centerRight,
+                                    child: TextButton.icon(
+                                      onPressed: () async {
+                                        final alertId = docs[index].id;
+                                        await FirebaseFirestore.instance
+                                            .collection('emergency_alerts')
+                                            .doc(alertId)
+                                            .update({
+                                          'status': 'acknowledged',
+                                          'ackAt': FieldValue.serverTimestamp(),
+                                        });
+                                      },
+                                      icon: const Icon(
+                                        Icons.check_circle_outline,
+                                        size: 14,
+                                        color: AppColors.green,
+                                      ),
+                                      label: const Text(
+                                        'ACKNOWLEDGE',
+                                        style: TextStyle(
+                                          fontSize: 10,
+                                          fontWeight: FontWeight.bold,
+                                          color: AppColors.green,
+                                          letterSpacing: 1,
+                                        ),
+                                      ),
+                                      style: TextButton.styleFrom(
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 12,
+                                          vertical: 6,
+                                        ),
+                                        backgroundColor: AppColors.green.withOpacity(0.08),
+                                        shape: RoundedRectangleBorder(
+                                          borderRadius: BorderRadius.circular(6),
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                                if (status.toLowerCase() == 'acknowledged') ...[
+                                  const SizedBox(height: 10),
+                                  Align(
+                                    alignment: Alignment.centerRight,
+                                    child: TextButton.icon(
+                                      onPressed: () async {
+                                        final alertId = docs[index].id;
+                                        await FirebaseFirestore.instance
+                                            .collection('emergency_alerts')
+                                            .doc(alertId)
+                                            .update({
+                                          'status': 'resolved',
+                                          'resolvedAt': FieldValue.serverTimestamp(),
+                                        });
+                                      },
+                                      icon: const Icon(
+                                        Icons.check_circle_outline,
+                                        size: 14,
+                                        color: Color(0xFFCB392B),
+                                      ),
+                                      label: const Text(
+                                        'RESOLVE',
+                                        style: TextStyle(
+                                          fontSize: 10,
+                                          fontWeight: FontWeight.bold,
+                                          color: Color(0xFFCB392B),
+                                          letterSpacing: 1,
+                                        ),
+                                      ),
+                                      style: TextButton.styleFrom(
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 12,
+                                          vertical: 6,
+                                        ),
+                                        backgroundColor: const Color(0xFFCB392B).withOpacity(0.08),
+                                        shape: RoundedRectangleBorder(
+                                          borderRadius: BorderRadius.circular(6),
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ],
                               ],
                             ),
                           ),

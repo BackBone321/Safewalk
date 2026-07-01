@@ -1360,6 +1360,61 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                                       ),
                                     ),
                                   ],
+                                  if (status.toLowerCase() == 'acknowledged') ...[
+                                    const SizedBox(height: 10),
+                                    SizedBox(
+                                      width: double.infinity,
+                                      child: Material(
+                                        color: const Color(0xFFCB392B),
+                                        borderRadius: BorderRadius.circular(8),
+                                        child: InkWell(
+                                          borderRadius: BorderRadius.circular(
+                                            8,
+                                          ),
+                                          onTap: () async {
+                                            await _firestore
+                                                .collection('emergency_alerts')
+                                                .doc(docs[i].id)
+                                                .set({
+                                                  'status': 'resolved',
+                                                  'resolvedBy':
+                                                      FirebaseAuth
+                                                          .instance
+                                                          .currentUser
+                                                          ?.uid ??
+                                                      '',
+                                                  'resolvedAt':
+                                                      FieldValue.serverTimestamp(),
+                                                }, SetOptions(merge: true));
+                                          },
+                                          child: Container(
+                                            padding: const EdgeInsets.symmetric(
+                                              vertical: 10,
+                                            ),
+                                            alignment: Alignment.center,
+                                            decoration: BoxDecoration(
+                                              borderRadius:
+                                                  BorderRadius.circular(8),
+                                              border: Border.all(
+                                                color: AppColors.gold
+                                                    .withValues(alpha: 0.4),
+                                              ),
+                                            ),
+                                            child: Text(
+                                              'RESOLVE',
+                                              style: TextStyle(
+                                                fontFamily: _bf,
+                                                color: AppColors.white,
+                                                letterSpacing: 3,
+                                                fontSize: 10,
+                                                fontWeight: FontWeight.w400,
+                                              ),
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  ],
                                 ],
                               ),
                             );
@@ -2504,9 +2559,11 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
             snapshot.data!.docs.where((doc) {
               final data = doc.data();
               final alertType = (data['type'] ?? '').toString().toLowerCase();
+              final status = (data['status'] ?? '').toString().toLowerCase();
               final alertChildUid =
                   (data['uid'] ?? data['studentUid'] ?? '').toString().trim();
               return alertType == 'sos' &&
+                  (status == 'active' || status == 'acknowledged') &&
                   (_childUid.isNotEmpty
                       ? alertChildUid == _childUid
                       : (linkedUidSet.isEmpty || linkedUidSet.contains(alertChildUid)));
