@@ -2149,6 +2149,45 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
     );
   }
 
+  Future<void> _changeRoleToStudent() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          backgroundColor: AppColors.white,
+          title: const Text('Change Role to Student'),
+          content: const Text(
+            'Are you sure you want to change your account role to Student? This will unlink you from all current student accounts. You will be logged out to apply changes.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('Cancel'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              child: const Text('Yes'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (confirmed != true) return;
+    try {
+      final uid = FirebaseAuth.instance.currentUser?.uid;
+      if (uid != null) {
+        await _firestore.collection('users').doc(uid).update({
+          'role': 'student',
+        });
+        await _firestore.collection('user_settings').doc(uid).delete();
+      }
+      await _logout();
+    } catch (e) {
+      _showActionSnack('Failed to change role: $e', isError: true);
+    }
+  }
+
   // ─── BUILD ─────────────────────────────────────────────────────
 
   @override
@@ -3009,6 +3048,41 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                           color: AppColors.white,
                           fontSize: 11,
                           letterSpacing: 3,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+              SizedBox(
+                width: double.infinity,
+                child: Material(
+                  color: Colors.transparent,
+                  borderRadius: BorderRadius.circular(10),
+                  child: InkWell(
+                    onTap: _changeRoleToStudent,
+                    borderRadius: BorderRadius.circular(10),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 14,
+                      ),
+                      alignment: Alignment.center,
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(
+                          color: const Color(0xFFCB392B).withValues(alpha: 0.5),
+                        ),
+                      ),
+                      child: Text(
+                        'CHANGE ROLE TO STUDENT',
+                        style: TextStyle(
+                          fontFamily: _bf,
+                          color: const Color(0xFFCB392B),
+                          fontSize: 11,
+                          letterSpacing: 2,
                           fontWeight: FontWeight.w600,
                         ),
                       ),
