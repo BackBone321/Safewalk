@@ -200,7 +200,17 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
     final explicit =
         (data['fullName'] ?? data['studentName'] ?? '').toString().trim();
     if (explicit.isNotEmpty) return explicit;
+    
     final uid = (data['uid'] ?? data['studentUid'] ?? '').toString().trim();
+    if (uid.isEmpty) return _childName;
+
+    // Search in _linkedStudents for a child matching uid or deviceId
+    for (final child in _linkedStudents) {
+      if (child.uid == uid || (child.deviceId.isNotEmpty && child.deviceId == uid)) {
+        return child.name;
+      }
+    }
+    
     return linkedNameByUid[uid] ?? _childName;
   }
 
@@ -379,20 +389,22 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
       final studentUid = (data['studentUid'] ?? '').toString().trim();
       if (studentUid.isEmpty) continue;
 
+      final studentDoc = await _firestore
+          .collection('users')
+          .doc(studentUid)
+          .get();
+      
       var studentName = (data['studentName'] ?? '').toString().trim();
       var studentPhone = (data['studentPhone'] ?? '').toString().trim();
-      if (studentName.isEmpty || studentPhone.isEmpty) {
-        final studentDoc = await _firestore
-            .collection('users')
-            .doc(studentUid)
-            .get();
-        if (studentDoc.exists) {
-          studentName = studentName.isEmpty
-              ? (studentDoc.data()?['fullName'] ?? 'Student').toString()
-              : studentName;
-          studentPhone = studentPhone.isEmpty
-              ? (studentDoc.data()?['phoneNumber'] ?? '').toString()
-              : studentPhone;
+      String studentDeviceId = '';
+      
+      if (studentDoc.exists) {
+        studentDeviceId = (studentDoc.data()?['linkedDeviceId'] ?? '').toString().trim();
+        if (studentName.isEmpty) {
+          studentName = (studentDoc.data()?['fullName'] ?? 'Student').toString().trim();
+        }
+        if (studentPhone.isEmpty) {
+          studentPhone = (studentDoc.data()?['phoneNumber'] ?? '').toString().trim();
         }
       }
 
@@ -400,6 +412,7 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
         uid: studentUid,
         name: studentName.isEmpty ? 'Student' : studentName,
         phone: studentPhone,
+        deviceId: studentDeviceId,
       );
     }
 
@@ -479,13 +492,21 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
     final childPhone = (childData['phoneNumber'] ?? '').toString();
     final rawPhone = childPhone.trim();
     final normalizedPhone = _normalizePhoneForLookup(rawPhone);
+    final childDeviceId = (childData['linkedDeviceId'] ?? '').toString().trim();
 
-    var deviceQuery = await _firestore
-        .collection('devices')
-        .where('phoneNumber', isEqualTo: rawPhone)
-        .limit(1)
-        .get();
-    if (deviceQuery.docs.isEmpty && normalizedPhone != rawPhone) {
+    var deviceQuery = childDeviceId.isNotEmpty
+        ? await _firestore
+            .collection('devices')
+            .where('deviceId', isEqualTo: childDeviceId)
+            .limit(1)
+            .get()
+        : await _firestore
+            .collection('devices')
+            .where('phoneNumber', isEqualTo: rawPhone)
+            .limit(1)
+            .get();
+
+    if (deviceQuery.docs.isEmpty && childDeviceId.isEmpty && normalizedPhone != rawPhone) {
       deviceQuery = await _firestore
           .collection('devices')
           .where('phoneNumber', isEqualTo: normalizedPhone)
@@ -528,8 +549,8 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
         _deviceStatus = (device['status'] ?? 'active').toString().toLowerCase();
         _childDeviceCoordinates = _extractDeviceCoordinates(device);
       } else {
-        _deviceId = 'Not linked';
-        _deviceName = 'No linked device';
+        _deviceId = childDeviceId.isNotEmpty ? childDeviceId : 'Not linked';
+        _deviceName = childDeviceId.isNotEmpty ? 'Unknown Tracker' : 'No linked device';
         _deviceLocation = 'Unknown';
         _deviceStatus = 'offline';
         _childDeviceCoordinates = null;
@@ -1010,6 +1031,10 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
         ? FirebaseAuth.instance.currentUser?.uid ?? ''
         : _parentUid;
     final linkedNameByUid = _linkedStudentNamesByUid;
+    final linkedDeviceIds = _linkedStudents
+        .map((s) => s.deviceId.trim())
+        .where((id) => id.isNotEmpty && id != 'Not linked')
+        .toList();
     final linkedUidSet = linkedNameByUid.keys.toSet();
     await showModalBottomSheet<void>(
       context: context,
@@ -1119,14 +1144,25 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                     child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
                       stream: parentUidForAlerts.isEmpty
                           ? null
-                          : _firestore
-                                .collection('emergency_alerts')
-                                .where(
-                                  'parentUid',
-                                  isEqualTo: parentUidForAlerts,
-                                )
-                                .limit(200)
-                                .snapshots(),
+                          : linkedDeviceIds.isEmpty
+                              ? _firestore
+                                    .collection('emergency_alerts')
+                                    .where(
+                                      'parentUid',
+                                      isEqualTo: parentUidForAlerts,
+                                    )
+                                    .limit(200)
+                                    .snapshots()
+                              : _firestore
+                                    .collection('emergency_alerts')
+                                    .where(
+                                      Filter.or(
+                                        Filter('parentUid', isEqualTo: parentUidForAlerts),
+                                        Filter('deviceId', whereIn: linkedDeviceIds),
+                                      ),
+                                    )
+                                    .limit(200)
+                                    .snapshots(),
                       builder: (context, snapshot) {
                         if (snapshot.hasError) {
                           return Center(
@@ -1150,8 +1186,13 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                                   (data['uid'] ?? data['studentUid'] ?? '')
                                       .toString()
                                       .trim();
+                              final linkedDeviceIds = _linkedStudents
+                                  .map((s) => s.deviceId)
+                                  .where((id) => id.isNotEmpty)
+                                  .toSet();
                               return linkedUidSet.isEmpty ||
-                                  linkedUidSet.contains(alertChildUid);
+                                  linkedUidSet.contains(alertChildUid) ||
+                                  linkedDeviceIds.contains(alertChildUid);
                             }).toList()..sort((a, b) {
                               final aTs = a.data()['timestamp'] as Timestamp?;
                               final bTs = b.data()['timestamp'] as Timestamp?;
@@ -2327,6 +2368,10 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
         ? FirebaseAuth.instance.currentUser?.uid ?? ''
         : _parentUid;
     final linkedNameByUid = _linkedStudentNamesByUid;
+    final linkedDeviceIds = _linkedStudents
+        .map((s) => s.deviceId.trim())
+        .where((id) => id.isNotEmpty && id != 'Not linked')
+        .toList();
     final linkedUidSet = linkedNameByUid.keys.toSet();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -2385,11 +2430,22 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
             StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
               stream: parentUidForAlerts.isEmpty
                   ? null
-                  : _firestore
-                        .collection('emergency_alerts')
-                        .where('parentUid', isEqualTo: parentUidForAlerts)
-                        .limit(200)
-                        .snapshots(),
+                  : linkedDeviceIds.isEmpty
+                      ? _firestore
+                            .collection('emergency_alerts')
+                            .where('parentUid', isEqualTo: parentUidForAlerts)
+                            .limit(200)
+                            .snapshots()
+                      : _firestore
+                            .collection('emergency_alerts')
+                            .where(
+                              Filter.or(
+                                Filter('parentUid', isEqualTo: parentUidForAlerts),
+                                Filter('deviceId', whereIn: linkedDeviceIds),
+                              ),
+                            )
+                            .limit(200)
+                            .snapshots(),
               builder: (context, snapshot) {
                 String sosStatus = 'NO SOS YET';
                 String sosTime = '-';
@@ -2410,9 +2466,10 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                             .trim();
                         return alertType == 'sos' &&
                             (_childUid.isNotEmpty
-                                ? alertChildUid == _childUid
+                                ? (alertChildUid == _childUid || (_deviceId != 'Not linked' && alertChildUid == _deviceId))
                                 : (linkedUidSet.isEmpty ||
-                                    linkedUidSet.contains(alertChildUid))) &&
+                                    linkedUidSet.contains(alertChildUid) ||
+                                    _linkedStudents.map((s) => s.deviceId).contains(alertChildUid))) &&
                             (alertParentUid.isEmpty ||
                                 alertParentUid == parentUidForAlerts);
                       }).toList()..sort((a, b) {
@@ -2544,14 +2601,29 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
         : _parentUid;
     final linkedNameByUid = _linkedStudentNamesByUid;
     final linkedUidSet = linkedNameByUid.keys.toSet();
+    final linkedDeviceIds = _linkedStudents
+        .map((s) => s.deviceId.trim())
+        .where((id) => id.isNotEmpty && id != 'Not linked')
+        .toList();
     return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
       stream: parentUidForAlerts.isEmpty
           ? null
-          : _firestore
-                .collection('emergency_alerts')
-                .where('parentUid', isEqualTo: parentUidForAlerts)
-                .limit(200)
-                .snapshots(),
+          : linkedDeviceIds.isEmpty
+              ? _firestore
+                    .collection('emergency_alerts')
+                    .where('parentUid', isEqualTo: parentUidForAlerts)
+                    .limit(200)
+                    .snapshots()
+              : _firestore
+                    .collection('emergency_alerts')
+                    .where(
+                      Filter.or(
+                        Filter('parentUid', isEqualTo: parentUidForAlerts),
+                        Filter('deviceId', whereIn: linkedDeviceIds),
+                      ),
+                    )
+                    .limit(200)
+                    .snapshots(),
       builder: (context, snapshot) {
         final sosDocs = <QueryDocumentSnapshot<Map<String, dynamic>>>[];
         if (snapshot.hasData && snapshot.data!.docs.isNotEmpty) {
@@ -2565,8 +2637,10 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
               return alertType == 'sos' &&
                   (status == 'active' || status == 'acknowledged') &&
                   (_childUid.isNotEmpty
-                      ? alertChildUid == _childUid
-                      : (linkedUidSet.isEmpty || linkedUidSet.contains(alertChildUid)));
+                      ? (alertChildUid == _childUid || (_deviceId != 'Not linked' && alertChildUid == _deviceId))
+                      : (linkedUidSet.isEmpty ||
+                          linkedUidSet.contains(alertChildUid) ||
+                          _linkedStudents.map((s) => s.deviceId).contains(alertChildUid)));
             }),
           );
           sosDocs.sort((a, b) {
@@ -3693,11 +3767,13 @@ class _LinkedStudent {
   final String uid;
   final String name;
   final String phone;
+  final String deviceId;
 
   const _LinkedStudent({
     required this.uid,
     required this.name,
     required this.phone,
+    required this.deviceId,
   });
 }
 

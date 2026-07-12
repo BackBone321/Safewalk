@@ -50,7 +50,7 @@ class _AddDevicePageState extends State<AddDevicePage> {
     setState(() => _isSaving = true);
 
     try {
-      await FirebaseFirestore.instance.collection('devices').add({
+      await FirebaseFirestore.instance.collection('devices').doc(deviceId).set({
         'deviceId': deviceId,
         'deviceName': deviceName,
         'phoneNumber': phone,

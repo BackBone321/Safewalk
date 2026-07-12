@@ -1038,6 +1038,44 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
                     _AdminInfoRow('Phone', data['phoneNumber'] ?? '-'),
                     const SizedBox(height: 6),
                     _AdminInfoRow('Location', data['location'] ?? '-'),
+                    const SizedBox(height: 6),
+                    _AdminInfoRow(
+                      'Assigned Student',
+                      data['studentName'] != null
+                          ? '${data['studentName']} (${data['studentUid']})'
+                          : 'Not assigned',
+                    ),
+                    const SizedBox(height: 12),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.end,
+                      children: [
+                        TextButton.icon(
+                          onPressed: () => _editDeviceDialog(context, docs[index].id, data),
+                          icon: const Icon(Icons.edit, size: 16, color: AppColors.green),
+                          label: const Text(
+                            'Edit',
+                            style: TextStyle(
+                              color: AppColors.green,
+                              fontSize: 13,
+                              fontFamily: 'JosefinSans',
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        TextButton.icon(
+                          onPressed: () => _deleteDeviceConfirm(context, docs[index].id, deviceName),
+                          icon: const Icon(Icons.delete_outline, size: 16, color: Colors.red),
+                          label: const Text(
+                            'Delete',
+                            style: TextStyle(
+                              color: Colors.red,
+                              fontSize: 13,
+                              fontFamily: 'JosefinSans',
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
                   ],
                 ),
               );
@@ -1045,6 +1083,302 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
           );
         },
       ),
+    );
+  }
+
+  void _editDeviceDialog(BuildContext context, String docId, Map<String, dynamic> data) {
+    final deviceIdCtrl = TextEditingController(text: (data['deviceId'] ?? '').toString());
+    final deviceNameCtrl = TextEditingController(text: (data['deviceName'] ?? '').toString());
+    final phoneCtrl = TextEditingController(text: (data['phoneNumber'] ?? '').toString());
+    final locationCtrl = TextEditingController(text: (data['location'] ?? '').toString());
+    final studentUidCtrl = TextEditingController(text: (data['studentUid'] ?? '').toString());
+    bool saving = false;
+
+    showDialog<void>(
+      context: context,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              backgroundColor: AppColors.offWhite,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
+              title: const Text(
+                'Edit Device Details',
+                style: TextStyle(
+                  fontFamily: 'CormorantGaramond',
+                  color: AppColors.green,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    TextField(
+                      controller: deviceIdCtrl,
+                      decoration: const InputDecoration(
+                        labelText: 'Device ID',
+                        labelStyle: TextStyle(color: AppColors.green, fontFamily: 'JosefinSans'),
+                        focusedBorder: UnderlineInputBorder(borderSide: BorderSide(color: AppColors.gold)),
+                      ),
+                      style: const TextStyle(fontFamily: 'JosefinSans'),
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: deviceNameCtrl,
+                      decoration: const InputDecoration(
+                        labelText: 'Device Name',
+                        labelStyle: TextStyle(color: AppColors.green, fontFamily: 'JosefinSans'),
+                        focusedBorder: UnderlineInputBorder(borderSide: BorderSide(color: AppColors.gold)),
+                      ),
+                      style: const TextStyle(fontFamily: 'JosefinSans'),
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: phoneCtrl,
+                      decoration: const InputDecoration(
+                        labelText: 'Phone Number',
+                        labelStyle: TextStyle(color: AppColors.green, fontFamily: 'JosefinSans'),
+                        focusedBorder: UnderlineInputBorder(borderSide: BorderSide(color: AppColors.gold)),
+                      ),
+                      style: const TextStyle(fontFamily: 'JosefinSans'),
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: locationCtrl,
+                      decoration: const InputDecoration(
+                        labelText: 'Location',
+                        labelStyle: TextStyle(color: AppColors.green, fontFamily: 'JosefinSans'),
+                        focusedBorder: UnderlineInputBorder(borderSide: BorderSide(color: AppColors.gold)),
+                      ),
+                      style: const TextStyle(fontFamily: 'JosefinSans'),
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: studentUidCtrl,
+                      decoration: const InputDecoration(
+                        labelText: 'Assigned Student UID (Optional)',
+                        labelStyle: TextStyle(color: AppColors.green, fontFamily: 'JosefinSans'),
+                        focusedBorder: UnderlineInputBorder(borderSide: BorderSide(color: AppColors.gold)),
+                      ),
+                      style: const TextStyle(fontFamily: 'JosefinSans'),
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: saving ? null : () => Navigator.pop(ctx),
+                  child: const Text(
+                    'CANCEL',
+                    style: TextStyle(color: AppColors.textSub, fontFamily: 'JosefinSans'),
+                  ),
+                ),
+                ElevatedButton(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppColors.green,
+                    foregroundColor: AppColors.white,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                  ),
+                  onPressed: saving
+                      ? null
+                      : () async {
+                          final newId = deviceIdCtrl.text.trim();
+                          final newName = deviceNameCtrl.text.trim();
+                          final newPhone = phoneCtrl.text.trim();
+                          final newLoc = locationCtrl.text.trim();
+                          final newStudentUid = studentUidCtrl.text.trim();
+
+                          if (newId.isEmpty || newName.isEmpty) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(content: Text('Device ID and Name cannot be empty.')),
+                            );
+                            return;
+                          }
+
+                          setDialogState(() => saving = true);
+                          try {
+                            String? resolvedStudentName;
+                            String? resolvedParentPhone;
+                            String? resolvedParentUid;
+                            if (newStudentUid.isNotEmpty) {
+                              final studentDoc = await FirebaseFirestore.instance
+                                  .collection('users')
+                                  .doc(newStudentUid)
+                                  .get();
+                              if (!studentDoc.exists) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(content: Text('Student UID not found.')),
+                                );
+                                setDialogState(() => saving = false);
+                                return;
+                              }
+                              final sData = studentDoc.data();
+                              resolvedStudentName = (sData?['fullName'] ?? 'Student').toString();
+                              
+                              final pQuery = await FirebaseFirestore.instance
+                                  .collection('parent_student_links')
+                                  .where('studentUid', isEqualTo: newStudentUid)
+                                  .where('status', isEqualTo: 'accepted')
+                                  .limit(1)
+                                  .get();
+                              if (pQuery.docs.isNotEmpty) {
+                                final pData = pQuery.docs.first.data();
+                                resolvedParentPhone = (pData['parentPhone'] ?? '').toString();
+                                resolvedParentUid = (pData['parentUid'] ?? '').toString();
+                              }
+                            }
+
+                            final oldStudentUid = (data['studentUid'] ?? '').toString().trim();
+                            final updateData = <String, dynamic>{
+                              'deviceId': newId,
+                              'deviceName': newName,
+                              'phoneNumber': newPhone,
+                              'location': newLoc,
+                            };
+
+                            if (newStudentUid.isNotEmpty) {
+                              updateData['studentUid'] = newStudentUid;
+                              updateData['studentName'] = resolvedStudentName;
+                              if (resolvedParentPhone != null && resolvedParentPhone.isNotEmpty) {
+                                updateData['parentPhoneNumber'] = resolvedParentPhone;
+                                updateData['parentUid'] = resolvedParentUid;
+                              }
+                            } else {
+                              updateData['studentUid'] = FieldValue.delete();
+                              updateData['studentName'] = FieldValue.delete();
+                              updateData['parentPhoneNumber'] = FieldValue.delete();
+                              updateData['parentUid'] = FieldValue.delete();
+                            }
+
+                            // 1. Update the device doc
+                            await FirebaseFirestore.instance
+                                .collection('devices')
+                                .doc(docId)
+                                .update(updateData);
+
+                            // 2. Synchronize the student's linkedDeviceId
+                            if (oldStudentUid != newStudentUid) {
+                              if (oldStudentUid.isNotEmpty) {
+                                await FirebaseFirestore.instance
+                                    .collection('users')
+                                    .doc(oldStudentUid)
+                                    .update({'linkedDeviceId': FieldValue.delete()});
+                              }
+                              if (newStudentUid.isNotEmpty) {
+                                await FirebaseFirestore.instance
+                                    .collection('users')
+                                    .doc(newStudentUid)
+                                    .update({'linkedDeviceId': newId});
+                              }
+                            } else if (newStudentUid.isNotEmpty) {
+                              await FirebaseFirestore.instance
+                                  .collection('users')
+                                  .doc(newStudentUid)
+                                  .update({'linkedDeviceId': newId});
+                            }
+
+                            if (ctx.mounted) {
+                              Navigator.pop(ctx);
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(content: Text('Device updated successfully.')),
+                              );
+                            }
+                          } catch (e) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(content: Text('Failed to update: $e')),
+                            );
+                          } finally {
+                            setDialogState(() => saving = false);
+                          }
+                        },
+                  child: saving
+                      ? const SizedBox(
+                          height: 16,
+                          width: 16,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: AppColors.white,
+                          ),
+                        )
+                      : const Text(
+                          'SAVE',
+                          style: TextStyle(
+                            fontFamily: 'JosefinSans',
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  void _deleteDeviceConfirm(BuildContext context, String docId, String deviceName) {
+    showDialog<void>(
+      context: context,
+      builder: (ctx) {
+        return AlertDialog(
+          backgroundColor: AppColors.offWhite,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
+          title: const Text(
+            'Delete Device?',
+            style: TextStyle(
+              fontFamily: 'CormorantGaramond',
+              color: Colors.red,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          content: Text(
+            'Are you sure you want to delete "$deviceName"? This cannot be undone.',
+            style: const TextStyle(fontFamily: 'JosefinSans', color: AppColors.green),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text(
+                'CANCEL',
+                style: TextStyle(color: AppColors.textSub, fontFamily: 'JosefinSans'),
+              ),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.red,
+                foregroundColor: AppColors.white,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+              ),
+              onPressed: () async {
+                try {
+                  await FirebaseFirestore.instance
+                      .collection('devices')
+                      .doc(docId)
+                      .delete();
+                  if (ctx.mounted) {
+                    Navigator.pop(ctx);
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('Device deleted successfully.')),
+                    );
+                  }
+                } catch (e) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('Failed to delete: $e')),
+                  );
+                }
+              },
+              child: const Text(
+                'DELETE',
+                style: TextStyle(
+                  fontFamily: 'JosefinSans',
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+          ],
+        );
+      },
     );
   }
 

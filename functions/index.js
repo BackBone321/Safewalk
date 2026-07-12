@@ -54,3 +54,46 @@ exports.updateUserPassword = functions.https.onCall(async (data, context) => {
     );
   }
 });
+
+// Automatically update device live location when an emergency alert is triggered
+exports.onEmergencyAlertCreated = functions.firestore
+  .document("emergency_alerts/{alertId}")
+  .onCreate(async (snapshot, context) => {
+    const data = snapshot.data();
+    if (!data) return null;
+
+    const deviceId = data.deviceId;
+    if (!deviceId) {
+      console.log("No deviceId specified in emergency alert.");
+      return null;
+    }
+
+    const location = data.location;
+    const coordinates = data.coordinates;
+
+    const updateData = {};
+    if (location) {
+      updateData.location = location;
+    }
+    if (coordinates) {
+      updateData.coordinates = coordinates;
+    }
+
+    if (Object.keys(updateData).length === 0) {
+      console.log("No location or coordinates data to update.");
+      return null;
+    }
+
+    try {
+      await admin
+        .firestore()
+        .collection("devices")
+        .doc(deviceId)
+        .update(updateData);
+      console.log(`Successfully updated location/coordinates for device: ${deviceId}`);
+    } catch (error) {
+      console.error(`Failed to update location/coordinates for device ${deviceId}:`, error);
+    }
+    return null;
+  });
+

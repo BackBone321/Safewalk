@@ -47,6 +47,7 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
   final String _activeRoute = 'Main Campus -> Dorm Block C';
 
   String _deviceId = 'Not linked';
+  String _linkedDeviceId = '';
   String _deviceName = 'No linked device';
   String _deviceLocation = 'Unknown';
   String _deviceStatus = 'offline';
@@ -256,13 +257,17 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
     }
 
     _lastFocusedMapPoint = point;
-    controller
-        .animateCamera(
-          CameraUpdate.newCameraPosition(
-            CameraPosition(target: point, zoom: zoom),
-          ),
-        )
-        .catchError((_) {});
+    try {
+      controller
+          .animateCamera(
+            CameraUpdate.newCameraPosition(
+              CameraPosition(target: point, zoom: zoom),
+            ),
+          )
+          .catchError((_) {});
+    } catch (e) {
+      debugPrint('Google Maps Web view not ready yet. Skipping animation: $e');
+    }
 
     if (_nextMapFocusPoint != null &&
         _isSamePoint(_nextMapFocusPoint!, point)) {
@@ -412,6 +417,7 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
         _fullName = (userDoc.data()?['fullName'] ?? 'Student').toString();
         _email = (userDoc.data()?['email'] ?? '').toString();
         _phoneNumber = (userDoc.data()?['phoneNumber'] ?? '').toString();
+        _linkedDeviceId = (userDoc.data()?['linkedDeviceId'] ?? '').toString();
         _avatarMood = (userDoc.data()?['avatarMood'] ?? 'happy').toString();
         _alertsEnabled =
             (settingsDoc.data()?['alertsEnabled'] as bool?) ?? true;
@@ -431,22 +437,7 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
   }
 
   Future<void> _loadLinkedDevice() async {
-    if (_phoneNumber.trim().isEmpty) return;
-    final rawPhone = _phoneNumber.trim();
-    final normalizedPhone = _normalizePhoneForLookup(rawPhone);
-    var q = await _firestore
-        .collection('devices')
-        .where('phoneNumber', isEqualTo: rawPhone)
-        .limit(1)
-        .get();
-    if (q.docs.isEmpty && normalizedPhone != rawPhone) {
-      q = await _firestore
-          .collection('devices')
-          .where('phoneNumber', isEqualTo: normalizedPhone)
-          .limit(1)
-          .get();
-    }
-    if (q.docs.isEmpty) {
+    if (_linkedDeviceId.trim().isEmpty) {
       if (!mounted) return;
       setState(() {
         _deviceId = 'Not linked';
@@ -457,13 +448,31 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
       });
       return;
     }
+    
+    final targetId = _linkedDeviceId.trim();
+    var q = await _firestore
+        .collection('devices')
+        .where('deviceId', isEqualTo: targetId)
+        .limit(1)
+        .get();
+
+    if (q.docs.isEmpty) {
+      if (!mounted) return;
+      setState(() {
+        _deviceId = targetId;
+        _deviceName = 'Unknown Tracker';
+        _deviceLocation = 'Unknown';
+        _deviceStatus = 'offline';
+        _deviceCoordinates = null;
+      });
+      return;
+    }
+    
     final data = q.docs.first.data();
     final locationField = data['location'];
     if (!mounted) return;
     setState(() {
-      _deviceId = (data['deviceId'] ?? '').toString().isEmpty
-          ? q.docs.first.id
-          : (data['deviceId'] ?? q.docs.first.id).toString();
+      _deviceId = (data['deviceId'] ?? q.docs.first.id).toString();
       _deviceName = (data['deviceName'] ?? 'Emergency Device').toString();
       _deviceLocation = locationField is GeoPoint
           ? '${locationField.latitude.toStringAsFixed(6)}, ${locationField.longitude.toStringAsFixed(6)}'
@@ -667,6 +676,24 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
       }, SetOptions(merge: true));
 
       await batch.commit();
+
+      if (_linkedDeviceId.isNotEmpty) {
+        final dQuery = await _firestore
+            .collection('devices')
+            .where('deviceId', isEqualTo: _linkedDeviceId)
+            .limit(1)
+            .get();
+        if (dQuery.docs.isNotEmpty) {
+          await _firestore
+              .collection('devices')
+              .doc(dQuery.docs.first.id)
+              .update({
+            'parentPhoneNumber': parentPhone,
+            'parentUid': parentUid,
+          });
+        }
+      }
+
       await _loadLinkedParent();
       await _loadPendingInvitations();
       _showActionSnack('Invitation accepted.');
@@ -1381,6 +1408,193 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
     );
   }
 
+  Future<void> _showLinkDeviceDialog() async {
+    final deviceIdCtrl = TextEditingController(text: _linkedDeviceId);
+    final deviceNameCtrl = TextEditingController(text: _deviceName == 'No linked device' ? '' : _deviceName);
+    bool saving = false;
+
+    await showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (context, setSheetState) {
+            return Padding(
+              padding: EdgeInsets.only(
+                bottom: MediaQuery.of(context).viewInsets.bottom,
+              ),
+              child: Container(
+                decoration: const BoxDecoration(
+                  color: AppColors.offWhite,
+                  borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+                ),
+                padding: const EdgeInsets.fromLTRB(24, 20, 24, 28),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Center(
+                      child: Container(
+                        width: 36,
+                        height: 4,
+                        decoration: BoxDecoration(
+                          color: AppColors.border,
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    Text(
+                      'Link Emergency Tracker',
+                      style: const TextStyle(
+                        fontFamily: _hf,
+                        fontSize: 22,
+                        fontWeight: FontWeight.bold,
+                        color: AppColors.green,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      'ENTER YOUR DEVICE ID AND NAME TO PAIR IT',
+                      style: const TextStyle(
+                        fontFamily: _bf,
+                        fontSize: 10,
+                        letterSpacing: 1.5,
+                        fontWeight: FontWeight.w600,
+                        color: AppColors.gold,
+                      ),
+                    ),
+                    const SizedBox(height: 20),
+                    TextField(
+                      controller: deviceIdCtrl,
+                      decoration: const InputDecoration(
+                        labelText: 'Device ID (e.g., safewalk_device_001)',
+                        labelStyle: TextStyle(fontFamily: _bf, color: AppColors.green),
+                        focusedBorder: UnderlineInputBorder(
+                          borderSide: BorderSide(color: AppColors.gold),
+                        ),
+                      ),
+                      style: const TextStyle(fontFamily: _bf),
+                    ),
+                    const SizedBox(height: 16),
+                    TextField(
+                      controller: deviceNameCtrl,
+                      decoration: const InputDecoration(
+                        labelText: 'Device Name (e.g., My LilyGo Board)',
+                        labelStyle: TextStyle(fontFamily: _bf, color: AppColors.green),
+                        focusedBorder: UnderlineInputBorder(
+                          borderSide: BorderSide(color: AppColors.gold),
+                        ),
+                      ),
+                      style: const TextStyle(fontFamily: _bf),
+                    ),
+                    const SizedBox(height: 24),
+                    ElevatedButton(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: AppColors.green,
+                        foregroundColor: AppColors.white,
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                      ),
+                      onPressed: saving
+                          ? null
+                          : () async {
+                              final dId = deviceIdCtrl.text.trim();
+                              final dName = deviceNameCtrl.text.trim();
+                              if (dId.isEmpty || dName.isEmpty) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(
+                                    content: Text('Please complete both fields.'),
+                                  ),
+                                );
+                                return;
+                              }
+                              setSheetState(() => saving = true);
+                              try {
+                                final currentUid = FirebaseAuth.instance.currentUser?.uid;
+                                if (currentUid != null) {
+                                  // 1. Update student profile with linkedDeviceId
+                                  await _firestore
+                                      .collection('users')
+                                      .doc(currentUid)
+                                      .update({'linkedDeviceId': dId});
+                                      
+                                  // 2. Register/update device in 'devices' collection
+                                  final devDocRef = _firestore.collection('devices').doc(dId);
+                                  final devDoc = await devDocRef.get();
+                                       
+                                  if (!devDoc.exists) {
+                                    await devDocRef.set({
+                                      'deviceId': dId,
+                                      'deviceName': dName,
+                                      'phoneNumber': _phoneNumber,
+                                      'location': 'Unknown',
+                                      'status': 'active',
+                                      'studentUid': currentUid,
+                                      'studentName': _fullName,
+                                      'parentPhoneNumber': _linkedParentPhone,
+                                      'parentUid': _linkedParentUid,
+                                      'createdAt': FieldValue.serverTimestamp(),
+                                    });
+                                  } else {
+                                    await devDocRef.update({
+                                      'deviceName': dName,
+                                      'phoneNumber': _phoneNumber,
+                                      'studentUid': currentUid,
+                                      'studentName': _fullName,
+                                      'parentPhoneNumber': _linkedParentPhone,
+                                      'parentUid': _linkedParentUid,
+                                    });
+                                  }
+                                  
+                                  setState(() {
+                                    _linkedDeviceId = dId;
+                                  });
+                                  await _loadLinkedDevice();
+                                  if (mounted) {
+                                    Navigator.pop(ctx);
+                                    _showActionSnack('Device linked successfully.');
+                                  }
+                                }
+                              } catch (e) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(content: Text('Failed to link: $e')),
+                                );
+                              } finally {
+                                setSheetState(() => saving = false);
+                              }
+                            },
+                      child: saving
+                          ? const SizedBox(
+                              height: 20,
+                              width: 20,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                color: AppColors.white,
+                              ),
+                            )
+                          : const Text(
+                              'SAVE & LINK',
+                              style: TextStyle(
+                                fontFamily: _bf,
+                                fontWeight: FontWeight.bold,
+                                letterSpacing: 1.0,
+                              ),
+                            ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
   Future<void> _showLuxuryInfoSheet({
     required String title,
     required String subtitle,
@@ -1696,11 +1910,23 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                   const SizedBox(height: 10),
                   Expanded(
                     child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-                      stream: _firestore
-                          .collection('emergency_alerts')
-                          .where('uid', isEqualTo: uid)
-                          .limit(100)
-                          .snapshots(),
+                      stream: (_linkedDeviceId.isEmpty || _linkedDeviceId == 'Not linked')
+                          ? _firestore
+                                .collection('emergency_alerts')
+                                .where('uid', isEqualTo: uid)
+                                .limit(100)
+                                .snapshots()
+                          : _firestore
+                                .collection('emergency_alerts')
+                                .where(
+                                  Filter.or(
+                                    Filter('uid', isEqualTo: uid),
+                                    Filter('studentUid', isEqualTo: uid),
+                                    Filter('deviceId', isEqualTo: _linkedDeviceId),
+                                  ),
+                                )
+                                .limit(100)
+                                .snapshots(),
                       builder: (context, snapshot) {
                         if (snapshot.hasError) {
                           return Center(
@@ -2759,14 +2985,28 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
   }
 
   Widget _buildMapTab() {
+    final Stream<QuerySnapshot<Map<String, dynamic>>>? mapAlertsStream = _activeStudentUid.isEmpty
+        ? null
+        : (_linkedDeviceId.isEmpty || _linkedDeviceId == 'Not linked')
+            ? _firestore
+                  .collection('emergency_alerts')
+                  .where('uid', isEqualTo: _activeStudentUid)
+                  .limit(60)
+                  .snapshots()
+            : _firestore
+                  .collection('emergency_alerts')
+                  .where(
+                    Filter.or(
+                      Filter('uid', isEqualTo: _activeStudentUid),
+                      Filter('studentUid', isEqualTo: _activeStudentUid),
+                      Filter('deviceId', isEqualTo: _linkedDeviceId),
+                    ),
+                  )
+                  .limit(60)
+                  .snapshots();
+
     return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-      stream: _activeStudentUid.isEmpty
-          ? null
-          : _firestore
-                .collection('emergency_alerts')
-                .where('uid', isEqualTo: _activeStudentUid)
-                .limit(60)
-                .snapshots(),
+      stream: mapAlertsStream,
       builder: (context, snapshot) {
         final docs =
             snapshot.data?.docs ??
@@ -2883,6 +3123,11 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                 _buildPanelAction(
                   label: 'VIEW DETAILS',
                   onTap: _showDeviceDialog,
+                ),
+                _buildPanelAction(
+                  label: _deviceId == 'Not linked' ? 'LINK DEVICE' : 'CHANGE DEVICE',
+                  onTap: _showLinkDeviceDialog,
+                  isPrimary: _deviceId == 'Not linked',
                 ),
                 _buildPanelAction(
                   label: 'REFRESH',
