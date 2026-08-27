@@ -197,20 +197,22 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
     Map<String, dynamic> data, {
     required Map<String, String> linkedNameByUid,
   }) {
-    final explicit =
-        (data['fullName'] ?? data['studentName'] ?? '').toString().trim();
+    final explicit = (data['fullName'] ?? data['studentName'] ?? '')
+        .toString()
+        .trim();
     if (explicit.isNotEmpty) return explicit;
-    
+
     final uid = (data['uid'] ?? data['studentUid'] ?? '').toString().trim();
     if (uid.isEmpty) return _childName;
 
     // Search in _linkedStudents for a child matching uid or deviceId
     for (final child in _linkedStudents) {
-      if (child.uid == uid || (child.deviceId.isNotEmpty && child.deviceId == uid)) {
+      if (child.uid == uid ||
+          (child.deviceId.isNotEmpty && child.deviceId == uid)) {
         return child.name;
       }
     }
-    
+
     return linkedNameByUid[uid] ?? _childName;
   }
 
@@ -393,18 +395,24 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
           .collection('users')
           .doc(studentUid)
           .get();
-      
+
       var studentName = (data['studentName'] ?? '').toString().trim();
       var studentPhone = (data['studentPhone'] ?? '').toString().trim();
       String studentDeviceId = '';
-      
+
       if (studentDoc.exists) {
-        studentDeviceId = (studentDoc.data()?['linkedDeviceId'] ?? '').toString().trim();
+        studentDeviceId = (studentDoc.data()?['linkedDeviceId'] ?? '')
+            .toString()
+            .trim();
         if (studentName.isEmpty) {
-          studentName = (studentDoc.data()?['fullName'] ?? 'Student').toString().trim();
+          studentName = (studentDoc.data()?['fullName'] ?? 'Student')
+              .toString()
+              .trim();
         }
         if (studentPhone.isEmpty) {
-          studentPhone = (studentDoc.data()?['phoneNumber'] ?? '').toString().trim();
+          studentPhone = (studentDoc.data()?['phoneNumber'] ?? '')
+              .toString()
+              .trim();
         }
       }
 
@@ -496,17 +504,19 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
 
     var deviceQuery = childDeviceId.isNotEmpty
         ? await _firestore
-            .collection('devices')
-            .where('deviceId', isEqualTo: childDeviceId)
-            .limit(1)
-            .get()
+              .collection('devices')
+              .where('deviceId', isEqualTo: childDeviceId)
+              .limit(1)
+              .get()
         : await _firestore
-            .collection('devices')
-            .where('phoneNumber', isEqualTo: rawPhone)
-            .limit(1)
-            .get();
+              .collection('devices')
+              .where('phoneNumber', isEqualTo: rawPhone)
+              .limit(1)
+              .get();
 
-    if (deviceQuery.docs.isEmpty && childDeviceId.isEmpty && normalizedPhone != rawPhone) {
+    if (deviceQuery.docs.isEmpty &&
+        childDeviceId.isEmpty &&
+        normalizedPhone != rawPhone) {
       deviceQuery = await _firestore
           .collection('devices')
           .where('phoneNumber', isEqualTo: normalizedPhone)
@@ -550,7 +560,9 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
         _childDeviceCoordinates = _extractDeviceCoordinates(device);
       } else {
         _deviceId = childDeviceId.isNotEmpty ? childDeviceId : 'Not linked';
-        _deviceName = childDeviceId.isNotEmpty ? 'Unknown Tracker' : 'No linked device';
+        _deviceName = childDeviceId.isNotEmpty
+            ? 'Unknown Tracker'
+            : 'No linked device';
         _deviceLocation = 'Unknown';
         _deviceStatus = 'offline';
         _childDeviceCoordinates = null;
@@ -585,7 +597,11 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
 
   // ─── Save Methods ──────────────────────────────────────────────
 
-  Future<void> _saveProfile(String fullName, String phoneNumber, String avatarMood) async {
+  Future<void> _saveProfile(
+    String fullName,
+    String phoneNumber,
+    String avatarMood,
+  ) async {
     final uid = FirebaseAuth.instance.currentUser?.uid;
     if (uid == null) {
       _showActionSnack('Please login again.', isError: true);
@@ -776,8 +792,7 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                       controller: scrollController,
                       padding: const EdgeInsets.fromLTRB(20, 6, 20, 32),
                       itemCount: _linkedStudents.length,
-                      separatorBuilder: (_, __) =>
-                          const SizedBox(height: 10),
+                      separatorBuilder: (_, __) => const SizedBox(height: 10),
                       itemBuilder: (context, i) {
                         final student = _linkedStudents[i];
                         return _StudentStatusCard(
@@ -1145,24 +1160,30 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                       stream: parentUidForAlerts.isEmpty
                           ? null
                           : linkedDeviceIds.isEmpty
-                              ? _firestore
-                                    .collection('emergency_alerts')
-                                    .where(
+                          ? _firestore
+                                .collection('emergency_alerts')
+                                .where(
+                                  'parentUid',
+                                  isEqualTo: parentUidForAlerts,
+                                )
+                                .limit(200)
+                                .snapshots()
+                          : _firestore
+                                .collection('emergency_alerts')
+                                .where(
+                                  Filter.or(
+                                    Filter(
                                       'parentUid',
                                       isEqualTo: parentUidForAlerts,
-                                    )
-                                    .limit(200)
-                                    .snapshots()
-                              : _firestore
-                                    .collection('emergency_alerts')
-                                    .where(
-                                      Filter.or(
-                                        Filter('parentUid', isEqualTo: parentUidForAlerts),
-                                        Filter('deviceId', whereIn: linkedDeviceIds),
-                                      ),
-                                    )
-                                    .limit(200)
-                                    .snapshots(),
+                                    ),
+                                    Filter(
+                                      'deviceId',
+                                      whereIn: linkedDeviceIds,
+                                    ),
+                                  ),
+                                )
+                                .limit(200)
+                                .snapshots(),
                       builder: (context, snapshot) {
                         if (snapshot.hasError) {
                           return Center(
@@ -1241,7 +1262,9 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                               data,
                               linkedNameByUid: linkedNameByUid,
                             );
-                            final alertCoordinate = _extractAlertCoordinates(data);
+                            final alertCoordinate = _extractAlertCoordinates(
+                              data,
+                            );
                             final locationText = alertCoordinate != null
                                 ? _formatCoordinateValue(alertCoordinate)
                                 : (data['location'] ?? '').toString().trim();
@@ -1401,7 +1424,8 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                                       ),
                                     ),
                                   ],
-                                  if (status.toLowerCase() == 'acknowledged') ...[
+                                  if (status.toLowerCase() ==
+                                      'acknowledged') ...[
                                     const SizedBox(height: 10),
                                     SizedBox(
                                       width: double.infinity,
@@ -1570,16 +1594,23 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                               ),
                               const SizedBox(height: 24),
 
-                              Center(child: _RobotAvatar(mood: localMood, size: 84)),
+                              Center(
+                                child: _RobotAvatar(mood: localMood, size: 84),
+                              ),
                               const SizedBox(height: 16),
                               Row(
                                 mainAxisAlignment: MainAxisAlignment.center,
-                                children: ['happy', 'angry', 'heart_eyes'].map((m) {
+                                children: ['happy', 'angry', 'heart_eyes'].map((
+                                  m,
+                                ) {
                                   return IconButton(
-                                    onPressed: () => setSheet(() => localMood = m),
+                                    onPressed: () =>
+                                        setSheet(() => localMood = m),
                                     icon: Icon(
                                       Icons.circle,
-                                      color: localMood == m ? AppColors.gold : AppColors.border,
+                                      color: localMood == m
+                                          ? AppColors.gold
+                                          : AppColors.border,
                                       size: 16,
                                     ),
                                   );
@@ -2203,7 +2234,6 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
     }
   }
 
-
   Future<void> _onBottomNavTap(int index) async {
     setState(() => _selectedNavIndex = index);
   }
@@ -2431,21 +2461,21 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
               stream: parentUidForAlerts.isEmpty
                   ? null
                   : linkedDeviceIds.isEmpty
-                      ? _firestore
-                            .collection('emergency_alerts')
-                            .where('parentUid', isEqualTo: parentUidForAlerts)
-                            .limit(200)
-                            .snapshots()
-                      : _firestore
-                            .collection('emergency_alerts')
-                            .where(
-                              Filter.or(
-                                Filter('parentUid', isEqualTo: parentUidForAlerts),
-                                Filter('deviceId', whereIn: linkedDeviceIds),
-                              ),
-                            )
-                            .limit(200)
-                            .snapshots(),
+                  ? _firestore
+                        .collection('emergency_alerts')
+                        .where('parentUid', isEqualTo: parentUidForAlerts)
+                        .limit(200)
+                        .snapshots()
+                  : _firestore
+                        .collection('emergency_alerts')
+                        .where(
+                          Filter.or(
+                            Filter('parentUid', isEqualTo: parentUidForAlerts),
+                            Filter('deviceId', whereIn: linkedDeviceIds),
+                          ),
+                        )
+                        .limit(200)
+                        .snapshots(),
               builder: (context, snapshot) {
                 String sosStatus = 'NO SOS YET';
                 String sosTime = '-';
@@ -2461,15 +2491,20 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                             .toLowerCase();
                         final alertParentUid = (data['parentUid'] ?? '')
                             .toString();
-                        final alertChildUid = (data['uid'] ?? data['studentUid'] ?? '')
-                            .toString()
-                            .trim();
+                        final alertChildUid =
+                            (data['uid'] ?? data['studentUid'] ?? '')
+                                .toString()
+                                .trim();
                         return alertType == 'sos' &&
                             (_childUid.isNotEmpty
-                                ? (alertChildUid == _childUid || (_deviceId != 'Not linked' && alertChildUid == _deviceId))
+                                ? (alertChildUid == _childUid ||
+                                      (_deviceId != 'Not linked' &&
+                                          alertChildUid == _deviceId))
                                 : (linkedUidSet.isEmpty ||
-                                    linkedUidSet.contains(alertChildUid) ||
-                                    _linkedStudents.map((s) => s.deviceId).contains(alertChildUid))) &&
+                                      linkedUidSet.contains(alertChildUid) ||
+                                      _linkedStudents
+                                          .map((s) => s.deviceId)
+                                          .contains(alertChildUid))) &&
                             (alertParentUid.isEmpty ||
                                 alertParentUid == parentUidForAlerts);
                       }).toList()..sort((a, b) {
@@ -2482,7 +2517,9 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
 
                   if (docs.isNotEmpty) {
                     final latest = docs.first.data();
-                    final latestSosCoordinate = _extractAlertCoordinates(latest);
+                    final latestSosCoordinate = _extractAlertCoordinates(
+                      latest,
+                    );
                     sosSender = _resolveStudentNameFromAlert(
                       latest,
                       linkedNameByUid: linkedNameByUid,
@@ -2494,7 +2531,9 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                         (latest['status'] ?? '').toString().toLowerCase() ==
                         'active';
                     sosStatus = isActive ? 'ACTIVE' : 'RESOLVED';
-                    sosTime = _formatTimestamp(latest['timestamp'] as Timestamp?);
+                    sosTime = _formatTimestamp(
+                      latest['timestamp'] as Timestamp?,
+                    );
                     sosLocation = latestSosCoordinate != null
                         ? _formatCoordinateValue(latestSosCoordinate)
                         : fallbackLocation.isEmpty
@@ -2551,47 +2590,242 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
         const SizedBox(height: 18),
         _buildSectionLabel('ALERTS'),
         const SizedBox(height: 10),
-        _buildDashboardPanel(
-          title: 'Alert Controls',
-          subtitle: 'PARENT NOTIFICATIONS',
-          children: [
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: [
-                _AlertBadge(
-                  label: _alertsEnabled ? 'ALERTS ON' : 'ALERTS OFF',
-                  isActive: _alertsEnabled,
-                ),
-                _AlertBadge(
-                  label: _smsAlertsEnabled ? 'SMS ON' : 'SMS OFF',
-                  isActive: _smsAlertsEnabled,
-                ),
-                _AlertBadge(
-                  label: _emailAlertsEnabled ? 'EMAIL ON' : 'EMAIL OFF',
-                  isActive: _emailAlertsEnabled,
-                ),
-              ],
+        _buildInlineAlertHistory(),
+      ],
+    );
+  }
+
+  Widget _buildInlineAlertHistory() {
+    if (_linkedStudents.isEmpty) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 30),
+          child: Text(
+            'No linked student account found.',
+            style: const TextStyle(fontFamily: _bf),
+          ),
+        ),
+      );
+    }
+    final parentUidForAlerts = _parentUid.isEmpty
+        ? FirebaseAuth.instance.currentUser?.uid ?? ''
+        : _parentUid;
+    final linkedNameByUid = _linkedStudentNamesByUid;
+    final linkedDeviceIds = _linkedStudents
+        .map((s) => s.deviceId.trim())
+        .where((id) => id.isNotEmpty && id != 'Not linked')
+        .toList();
+    final linkedUidSet = linkedNameByUid.keys.toSet();
+
+    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+      stream: parentUidForAlerts.isEmpty
+          ? null
+          : linkedDeviceIds.isEmpty
+          ? _firestore
+                .collection('emergency_alerts')
+                .where('parentUid', isEqualTo: parentUidForAlerts)
+                .limit(200)
+                .snapshots()
+          : _firestore
+                .collection('emergency_alerts')
+                .where(
+                  Filter.or(
+                    Filter('parentUid', isEqualTo: parentUidForAlerts),
+                    Filter('deviceId', whereIn: linkedDeviceIds),
+                  ),
+                )
+                .limit(200)
+                .snapshots(),
+      builder: (context, snapshot) {
+        if (snapshot.hasError) {
+          return Center(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 20),
+              child: Text(
+                'Failed to load alerts: ${snapshot.error}',
+                style: const TextStyle(fontFamily: _bf),
+              ),
             ),
-            const SizedBox(height: 14),
-            _buildDashboardRow('Current Route', _childRoute),
-            const SizedBox(height: 14),
-            SizedBox(
-              width: double.infinity,
-              child: Wrap(
-                spacing: 8,
-                runSpacing: 8,
+          );
+        }
+        if (!snapshot.hasData) {
+          return const Center(
+            child: Padding(
+              padding: EdgeInsets.symmetric(vertical: 20),
+              child: CircularProgressIndicator(color: AppColors.gold),
+            ),
+          );
+        }
+        final docs =
+            snapshot.data!.docs.where((doc) {
+              final data = doc.data();
+              final alertChildUid = (data['uid'] ?? data['studentUid'] ?? '')
+                  .toString()
+                  .trim();
+              final linkedDeviceIds = _linkedStudents
+                  .map((s) => s.deviceId)
+                  .where((id) => id.isNotEmpty)
+                  .toSet();
+              return linkedUidSet.isEmpty ||
+                  linkedUidSet.contains(alertChildUid) ||
+                  linkedDeviceIds.contains(alertChildUid);
+            }).toList()..sort((a, b) {
+              final aTs = a.data()['timestamp'] as Timestamp?;
+              final bTs = b.data()['timestamp'] as Timestamp?;
+              return (bTs?.millisecondsSinceEpoch ?? 0).compareTo(
+                aTs?.millisecondsSinceEpoch ?? 0,
+              );
+            });
+        if (docs.isEmpty) {
+          return Center(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 30),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
                 children: [
-                  _buildPanelAction(
-                    label: 'ALERT HISTORY',
-                    onTap: _showAlertHistorySheet,
+                  Icon(
+                    Icons.check_circle_outline,
+                    size: 48,
+                    color: AppColors.gold.withValues(alpha: 0.4),
+                  ),
+                  const SizedBox(height: 10),
+                  Text(
+                    'No alerts found.',
+                    style: TextStyle(
+                      fontFamily: _bf,
+                      color: AppColors.textSub,
+                      fontSize: 13,
+                      letterSpacing: 2,
+                    ),
                   ),
                 ],
               ),
             ),
-          ],
-        ),
-      ],
+          );
+        }
+        return ListView.separated(
+          shrinkWrap: true,
+          physics: const NeverScrollableScrollPhysics(),
+          padding: const EdgeInsets.fromLTRB(0, 6, 0, 20),
+          itemCount: docs.length,
+          separatorBuilder: (_, __) => const SizedBox(height: 10),
+          itemBuilder: (context, i) {
+            final data = docs[i].data();
+            final status = (data['status'] ?? 'unknown').toString();
+            final message = (data['message'] ?? 'No details').toString();
+            final timestamp = data['timestamp'] as Timestamp?;
+            final isActive = status == 'active';
+            final childName = _resolveStudentNameFromAlert(
+              data,
+              linkedNameByUid: linkedNameByUid,
+            );
+            final alertCoordinate = _extractAlertCoordinates(data);
+            final locationText = alertCoordinate != null
+                ? _formatCoordinateValue(alertCoordinate)
+                : (data['location'] ?? '').toString().trim();
+            return Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: AppColors.white,
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(
+                  color: isActive
+                      ? const Color(0xFFCB392B).withValues(alpha: 0.35)
+                      : AppColors.border,
+                ),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.04),
+                    blurRadius: 8,
+                    offset: const Offset(0, 3),
+                  ),
+                ],
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Container(
+                        width: 32,
+                        height: 32,
+                        decoration: BoxDecoration(
+                          color: isActive
+                              ? const Color(0xFFFFEEEC)
+                              : AppColors.cream,
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: Icon(
+                          Icons.warning_amber_rounded,
+                          size: 17,
+                          color: isActive
+                              ? const Color(0xFFCB392B)
+                              : AppColors.textSub,
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Text(
+                          message,
+                          style: const TextStyle(
+                            fontFamily: _bf,
+                            fontWeight: FontWeight.w600,
+                            fontSize: 13,
+                            color: AppColors.green,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    'Child: $childName',
+                    style: TextStyle(
+                      fontFamily: _bf,
+                      fontSize: 10,
+                      letterSpacing: 1.2,
+                      color: AppColors.textSub,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                  if (locationText.isNotEmpty) ...[
+                    const SizedBox(height: 4),
+                    Text(
+                      'SOS Location: $locationText',
+                      style: TextStyle(
+                        fontFamily: _bf,
+                        fontSize: 10,
+                        letterSpacing: 1.2,
+                        color: AppColors.textSub,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ],
+                  const SizedBox(height: 10),
+                  Row(
+                    children: [
+                      _AlertBadge(
+                        label: status.toUpperCase(),
+                        isActive: isActive,
+                      ),
+                      const Spacer(),
+                      Text(
+                        _formatTimestamp(timestamp),
+                        style: TextStyle(
+                          fontFamily: _bf,
+                          fontSize: 10,
+                          letterSpacing: 1,
+                          color: AppColors.textSub,
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            );
+          },
+        );
+      },
     );
   }
 
@@ -2609,21 +2843,21 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
       stream: parentUidForAlerts.isEmpty
           ? null
           : linkedDeviceIds.isEmpty
-              ? _firestore
-                    .collection('emergency_alerts')
-                    .where('parentUid', isEqualTo: parentUidForAlerts)
-                    .limit(200)
-                    .snapshots()
-              : _firestore
-                    .collection('emergency_alerts')
-                    .where(
-                      Filter.or(
-                        Filter('parentUid', isEqualTo: parentUidForAlerts),
-                        Filter('deviceId', whereIn: linkedDeviceIds),
-                      ),
-                    )
-                    .limit(200)
-                    .snapshots(),
+          ? _firestore
+                .collection('emergency_alerts')
+                .where('parentUid', isEqualTo: parentUidForAlerts)
+                .limit(200)
+                .snapshots()
+          : _firestore
+                .collection('emergency_alerts')
+                .where(
+                  Filter.or(
+                    Filter('parentUid', isEqualTo: parentUidForAlerts),
+                    Filter('deviceId', whereIn: linkedDeviceIds),
+                  ),
+                )
+                .limit(200)
+                .snapshots(),
       builder: (context, snapshot) {
         final sosDocs = <QueryDocumentSnapshot<Map<String, dynamic>>>[];
         if (snapshot.hasData && snapshot.data!.docs.isNotEmpty) {
@@ -2632,15 +2866,20 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
               final data = doc.data();
               final alertType = (data['type'] ?? '').toString().toLowerCase();
               final status = (data['status'] ?? '').toString().toLowerCase();
-              final alertChildUid =
-                  (data['uid'] ?? data['studentUid'] ?? '').toString().trim();
+              final alertChildUid = (data['uid'] ?? data['studentUid'] ?? '')
+                  .toString()
+                  .trim();
               return alertType == 'sos' &&
                   (status == 'active' || status == 'acknowledged') &&
                   (_childUid.isNotEmpty
-                      ? (alertChildUid == _childUid || (_deviceId != 'Not linked' && alertChildUid == _deviceId))
+                      ? (alertChildUid == _childUid ||
+                            (_deviceId != 'Not linked' &&
+                                alertChildUid == _deviceId))
                       : (linkedUidSet.isEmpty ||
-                          linkedUidSet.contains(alertChildUid) ||
-                          _linkedStudents.map((s) => s.deviceId).contains(alertChildUid)));
+                            linkedUidSet.contains(alertChildUid) ||
+                            _linkedStudents
+                                .map((s) => s.deviceId)
+                                .contains(alertChildUid)));
             }),
           );
           sosDocs.sort((a, b) {
@@ -2913,6 +3152,7 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
       },
     );
   }
+
   Widget _buildProfileTab() {
     final linkedPreview = _linkedStudents.isEmpty
         ? 'None'
@@ -2964,11 +3204,16 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
               ),
               const SizedBox(height: 8),
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 5),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 5,
+                ),
                 decoration: BoxDecoration(
                   color: AppColors.gold.withValues(alpha: 0.15),
                   borderRadius: BorderRadius.circular(999),
-                  border: Border.all(color: AppColors.gold.withValues(alpha: 0.4)),
+                  border: Border.all(
+                    color: AppColors.gold.withValues(alpha: 0.4),
+                  ),
                 ),
                 child: Text(
                   'PARENT / GUARDIAN',
@@ -2983,11 +3228,16 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
               ),
               const SizedBox(height: 10),
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 8,
+                ),
                 decoration: BoxDecoration(
                   color: AppColors.gold.withValues(alpha: 0.08),
                   borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: AppColors.gold.withValues(alpha: 0.2)),
+                  border: Border.all(
+                    color: AppColors.gold.withValues(alpha: 0.2),
+                  ),
                 ),
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
@@ -3112,7 +3362,9 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
           decoration: BoxDecoration(
             color: const Color(0xFFFFF8F8),
             borderRadius: BorderRadius.circular(22),
-            border: Border.all(color: const Color(0xFFCB392B).withOpacity(0.25)),
+            border: Border.all(
+              color: const Color(0xFFCB392B).withOpacity(0.25),
+            ),
           ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -3657,7 +3909,6 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
     );
   }
 
-
   Widget _buildBottomNav() {
     return Container(
       decoration: BoxDecoration(
@@ -3716,7 +3967,9 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                                 shape: BoxShape.circle,
                                 border: selected
                                     ? Border.all(
-                                        color: AppColors.gold.withValues(alpha: 0.3),
+                                        color: AppColors.gold.withValues(
+                                          alpha: 0.3,
+                                        ),
                                         width: 0.5,
                                       )
                                     : null,
@@ -4136,18 +4389,23 @@ class _StudentStatusCard extends StatelessWidget {
               .limit(1)
               .snapshots(),
           builder: (context, walkSnapshot) {
-            final hasDevice = deviceSnapshot.hasData &&
-                deviceSnapshot.data!.docs.isNotEmpty;
-            final deviceData = hasDevice ? deviceSnapshot.data!.docs.first.data() : null;
+            final hasDevice =
+                deviceSnapshot.hasData && deviceSnapshot.data!.docs.isNotEmpty;
+            final deviceData = hasDevice
+                ? deviceSnapshot.data!.docs.first.data()
+                : null;
 
-            final hasWalk = walkSnapshot.hasData &&
-                walkSnapshot.data!.docs.isNotEmpty;
-            final walkData = hasWalk ? walkSnapshot.data!.docs.first.data() : null;
+            final hasWalk =
+                walkSnapshot.hasData && walkSnapshot.data!.docs.isNotEmpty;
+            final walkData = hasWalk
+                ? walkSnapshot.data!.docs.first.data()
+                : null;
 
             final deviceStatus = (deviceData?['status'] ?? 'offline')
                 .toString()
                 .toLowerCase();
-            final isOnline = deviceStatus == 'active' || deviceStatus == 'online';
+            final isOnline =
+                deviceStatus == 'active' || deviceStatus == 'online';
 
             final activeRoute = hasWalk
                 ? (walkData?['route'] ?? 'Active Route').toString()
@@ -4176,8 +4434,8 @@ class _StudentStatusCard extends StatelessWidget {
                     color: isSelected
                         ? AppColors.gold
                         : (isOnline
-                            ? AppColors.green.withValues(alpha: 0.35)
-                            : AppColors.border),
+                              ? AppColors.green.withValues(alpha: 0.35)
+                              : AppColors.border),
                     width: isSelected ? 1.5 : 1.0,
                   ),
                   boxShadow: [
@@ -4250,7 +4508,10 @@ class _StudentStatusCard extends StatelessWidget {
                     _buildDetailRow('Location', locationStr),
                     if (hasWalk) ...[
                       const SizedBox(height: 6),
-                      _buildDetailRow('Distance', '${distanceKm.toStringAsFixed(1)} km'),
+                      _buildDetailRow(
+                        'Distance',
+                        '${distanceKm.toStringAsFixed(1)} km',
+                      ),
                     ],
                   ],
                 ),

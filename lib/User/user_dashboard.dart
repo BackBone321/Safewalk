@@ -448,7 +448,7 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
       });
       return;
     }
-    
+
     final targetId = _linkedDeviceId.trim();
     var q = await _firestore
         .collection('devices')
@@ -467,7 +467,7 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
       });
       return;
     }
-    
+
     final data = q.docs.first.data();
     final locationField = data['location'];
     if (!mounted) return;
@@ -688,9 +688,9 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
               .collection('devices')
               .doc(dQuery.docs.first.id)
               .update({
-            'parentPhoneNumber': parentPhone,
-            'parentUid': parentUid,
-          });
+                'parentPhoneNumber': parentPhone,
+                'parentUid': parentUid,
+              });
         }
       }
 
@@ -854,7 +854,11 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
     }
   }
 
-  Future<void> _saveProfile(String fullName, String phoneNumber, String avatarMood) async {
+  Future<void> _saveProfile(
+    String fullName,
+    String phoneNumber,
+    String avatarMood,
+  ) async {
     final uid = FirebaseAuth.instance.currentUser?.uid;
     if (uid == null) {
       _showActionSnack('Please login again.', isError: true);
@@ -1410,7 +1414,9 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
 
   Future<void> _showLinkDeviceDialog() async {
     final deviceIdCtrl = TextEditingController(text: _linkedDeviceId);
-    final deviceNameCtrl = TextEditingController(text: _deviceName == 'No linked device' ? '' : _deviceName);
+    final deviceNameCtrl = TextEditingController(
+      text: _deviceName == 'No linked device' ? '' : _deviceName,
+    );
     bool saving = false;
 
     await showModalBottomSheet<void>(
@@ -1470,7 +1476,10 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                       controller: deviceIdCtrl,
                       decoration: const InputDecoration(
                         labelText: 'Device ID (e.g., safewalk_device_001)',
-                        labelStyle: TextStyle(fontFamily: _bf, color: AppColors.green),
+                        labelStyle: TextStyle(
+                          fontFamily: _bf,
+                          color: AppColors.green,
+                        ),
                         focusedBorder: UnderlineInputBorder(
                           borderSide: BorderSide(color: AppColors.gold),
                         ),
@@ -1482,7 +1491,10 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                       controller: deviceNameCtrl,
                       decoration: const InputDecoration(
                         labelText: 'Device Name (e.g., My LilyGo Board)',
-                        labelStyle: TextStyle(fontFamily: _bf, color: AppColors.green),
+                        labelStyle: TextStyle(
+                          fontFamily: _bf,
+                          color: AppColors.green,
+                        ),
                         focusedBorder: UnderlineInputBorder(
                           borderSide: BorderSide(color: AppColors.gold),
                         ),
@@ -1507,25 +1519,30 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                               if (dId.isEmpty || dName.isEmpty) {
                                 ScaffoldMessenger.of(context).showSnackBar(
                                   const SnackBar(
-                                    content: Text('Please complete both fields.'),
+                                    content: Text(
+                                      'Please complete both fields.',
+                                    ),
                                   ),
                                 );
                                 return;
                               }
                               setSheetState(() => saving = true);
                               try {
-                                final currentUid = FirebaseAuth.instance.currentUser?.uid;
+                                final currentUid =
+                                    FirebaseAuth.instance.currentUser?.uid;
                                 if (currentUid != null) {
                                   // 1. Update student profile with linkedDeviceId
                                   await _firestore
                                       .collection('users')
                                       .doc(currentUid)
                                       .update({'linkedDeviceId': dId});
-                                      
+
                                   // 2. Register/update device in 'devices' collection
-                                  final devDocRef = _firestore.collection('devices').doc(dId);
+                                  final devDocRef = _firestore
+                                      .collection('devices')
+                                      .doc(dId);
                                   final devDoc = await devDocRef.get();
-                                       
+
                                   if (!devDoc.exists) {
                                     await devDocRef.set({
                                       'deviceId': dId,
@@ -1549,14 +1566,16 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                                       'parentUid': _linkedParentUid,
                                     });
                                   }
-                                  
+
                                   setState(() {
                                     _linkedDeviceId = dId;
                                   });
                                   await _loadLinkedDevice();
                                   if (mounted) {
                                     Navigator.pop(ctx);
-                                    _showActionSnack('Device linked successfully.');
+                                    _showActionSnack(
+                                      'Device linked successfully.',
+                                    );
                                   }
                                 }
                               } catch (e) {
@@ -1910,7 +1929,9 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                   const SizedBox(height: 10),
                   Expanded(
                     child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-                      stream: (_linkedDeviceId.isEmpty || _linkedDeviceId == 'Not linked')
+                      stream:
+                          (_linkedDeviceId.isEmpty ||
+                              _linkedDeviceId == 'Not linked')
                           ? _firestore
                                 .collection('emergency_alerts')
                                 .where('uid', isEqualTo: uid)
@@ -1922,7 +1943,10 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                                   Filter.or(
                                     Filter('uid', isEqualTo: uid),
                                     Filter('studentUid', isEqualTo: uid),
-                                    Filter('deviceId', isEqualTo: _linkedDeviceId),
+                                    Filter(
+                                      'deviceId',
+                                      isEqualTo: _linkedDeviceId,
+                                    ),
                                   ),
                                 )
                                 .limit(100)
@@ -2179,16 +2203,23 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                                 ),
                               ),
                               const SizedBox(height: 24),
-                              Center(child: _RobotAvatar(mood: localMood, size: 84)),
+                              Center(
+                                child: _RobotAvatar(mood: localMood, size: 84),
+                              ),
                               const SizedBox(height: 16),
                               Row(
                                 mainAxisAlignment: MainAxisAlignment.center,
-                                children: ['happy', 'angry', 'heart_eyes'].map((m) {
+                                children: ['happy', 'angry', 'heart_eyes'].map((
+                                  m,
+                                ) {
                                   return IconButton(
-                                    onPressed: () => setSheet(() => localMood = m),
+                                    onPressed: () =>
+                                        setSheet(() => localMood = m),
                                     icon: Icon(
                                       Icons.circle,
-                                      color: localMood == m ? AppColors.gold : AppColors.border,
+                                      color: localMood == m
+                                          ? AppColors.gold
+                                          : AppColors.border,
                                       size: 16,
                                     ),
                                   );
@@ -2807,7 +2838,6 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
     );
   }
 
-
   Future<void> _onBottomNavTap(int index) async {
     setState(() => _selectedNavIndex = index);
   }
@@ -2985,25 +3015,26 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
   }
 
   Widget _buildMapTab() {
-    final Stream<QuerySnapshot<Map<String, dynamic>>>? mapAlertsStream = _activeStudentUid.isEmpty
+    final Stream<QuerySnapshot<Map<String, dynamic>>>? mapAlertsStream =
+        _activeStudentUid.isEmpty
         ? null
         : (_linkedDeviceId.isEmpty || _linkedDeviceId == 'Not linked')
-            ? _firestore
-                  .collection('emergency_alerts')
-                  .where('uid', isEqualTo: _activeStudentUid)
-                  .limit(60)
-                  .snapshots()
-            : _firestore
-                  .collection('emergency_alerts')
-                  .where(
-                    Filter.or(
-                      Filter('uid', isEqualTo: _activeStudentUid),
-                      Filter('studentUid', isEqualTo: _activeStudentUid),
-                      Filter('deviceId', isEqualTo: _linkedDeviceId),
-                    ),
-                  )
-                  .limit(60)
-                  .snapshots();
+        ? _firestore
+              .collection('emergency_alerts')
+              .where('uid', isEqualTo: _activeStudentUid)
+              .limit(60)
+              .snapshots()
+        : _firestore
+              .collection('emergency_alerts')
+              .where(
+                Filter.or(
+                  Filter('uid', isEqualTo: _activeStudentUid),
+                  Filter('studentUid', isEqualTo: _activeStudentUid),
+                  Filter('deviceId', isEqualTo: _linkedDeviceId),
+                ),
+              )
+              .limit(60)
+              .snapshots();
 
     return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
       stream: mapAlertsStream,
@@ -3062,27 +3093,6 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                 _buildDeviceRow('Map Focus', mapAreaLabel),
                 const SizedBox(height: 8),
                 _buildDeviceRow('Device', _deviceName),
-                const SizedBox(height: 14),
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
-                  children: [
-                    _buildPanelAction(
-                      label: 'OPEN MAP SHEET',
-                      onTap: () => _showLocationDialog(
-                        mapPoint: mapPoint,
-                        sosIsActive: sosState.isActive,
-                        areaLabel: mapAreaLabel,
-                        sosTimestampLabel: sosState.timestampLabel,
-                      ),
-                    ),
-                    _buildPanelAction(
-                      label: 'REFRESH DEVICE',
-                      onTap: _loadLinkedDevice,
-                      isPrimary: false,
-                    ),
-                  ],
-                ),
               ],
             ),
           ],
@@ -3125,7 +3135,9 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                   onTap: _showDeviceDialog,
                 ),
                 _buildPanelAction(
-                  label: _deviceId == 'Not linked' ? 'LINK DEVICE' : 'CHANGE DEVICE',
+                  label: _deviceId == 'Not linked'
+                      ? 'LINK DEVICE'
+                      : 'CHANGE DEVICE',
                   onTap: _showLinkDeviceDialog,
                   isPrimary: _deviceId == 'Not linked',
                 ),
@@ -3143,6 +3155,7 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
   }
 
   Widget _buildAlertsTab() {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -3150,58 +3163,176 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
         const SizedBox(height: 16),
         _buildSectionLabel('ALERT CENTER'),
         const SizedBox(height: 10),
-        _buildDashboardPanel(
-          title: 'Emergency Actions',
-          subtitle: 'ALERTS & SAFETY',
-          children: [
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: [
-                _AlertBadge(
-                  label: _alertsEnabled ? 'ALERTS ON' : 'ALERTS OFF',
-                  isActive: _alertsEnabled,
-                ),
-                _AlertBadge(
-                  label: _safeModeEnabled ? 'SAFE MODE ON' : 'SAFE MODE OFF',
-                  isActive: _safeModeEnabled,
-                ),
-                _AlertBadge(
-                  label: _locationSharingEnabled ? 'GPS ON' : 'GPS OFF',
-                  isActive: _locationSharingEnabled,
-                ),
-              ],
-            ),
-            const SizedBox(height: 14),
-            _buildDeviceRow('Current Location', _deviceLocation),
-            const SizedBox(height: 8),
-            _buildDeviceRow('Route', _activeRoute),
-            const SizedBox(height: 8),
-            _buildDeviceRow(
-              'Linked Parent Name',
-              _linkedParentName.isEmpty ? 'Not linked' : _linkedParentName,
-            ),
-            const SizedBox(height: 8),
-            _buildDeviceRow(
-              'Linked Parent',
-              _linkedParentPhone.isEmpty ? 'Not linked' : _linkedParentPhone,
-            ),
-            const SizedBox(height: 14),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: [
-                _buildPanelAction(label: 'SEND SOS', onTap: _createSosAlert),
-                _buildPanelAction(
-                  label: 'ALERT HISTORY',
-                  onTap: _showAlertHistorySheet,
-                  isPrimary: false,
-                ),
-              ],
-            ),
-          ],
-        ),
+        if (uid != null) _buildInlineAlertHistory(uid),
       ],
+    );
+  }
+
+  Widget _buildInlineAlertHistory(String uid) {
+    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+      stream: (_linkedDeviceId.isEmpty || _linkedDeviceId == 'Not linked')
+          ? _firestore
+                .collection('emergency_alerts')
+                .where('uid', isEqualTo: uid)
+                .limit(100)
+                .snapshots()
+          : _firestore
+                .collection('emergency_alerts')
+                .where(
+                  Filter.or(
+                    Filter('uid', isEqualTo: uid),
+                    Filter('studentUid', isEqualTo: uid),
+                    Filter('deviceId', isEqualTo: _linkedDeviceId),
+                  ),
+                )
+                .limit(100)
+                .snapshots(),
+      builder: (context, snapshot) {
+        if (snapshot.hasError) {
+          return Center(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 20),
+              child: Text(
+                'Failed to load alerts: ${snapshot.error}',
+                style: const TextStyle(fontFamily: _bf),
+              ),
+            ),
+          );
+        }
+        if (!snapshot.hasData) {
+          return const Center(
+            child: Padding(
+              padding: EdgeInsets.symmetric(vertical: 20),
+              child: CircularProgressIndicator(color: AppColors.gold),
+            ),
+          );
+        }
+        final docs = snapshot.data!.docs.toList()
+          ..sort((a, b) {
+            final aTs = a.data()['timestamp'] as Timestamp?;
+            final bTs = b.data()['timestamp'] as Timestamp?;
+            return (bTs?.millisecondsSinceEpoch ?? 0).compareTo(
+              aTs?.millisecondsSinceEpoch ?? 0,
+            );
+          });
+        if (docs.isEmpty) {
+          return Center(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 30),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    Icons.check_circle_outline,
+                    size: 48,
+                    color: AppColors.gold.withOpacity(0.4),
+                  ),
+                  const SizedBox(height: 10),
+                  Text(
+                    'No alerts found.',
+                    style: TextStyle(
+                      fontFamily: _bf,
+                      color: AppColors.textSub,
+                      fontSize: 13,
+                      letterSpacing: 2,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        }
+        return ListView.separated(
+          shrinkWrap: true,
+          physics: const NeverScrollableScrollPhysics(),
+          padding: const EdgeInsets.fromLTRB(0, 6, 0, 20),
+          itemCount: docs.length,
+          separatorBuilder: (_, __) => const SizedBox(height: 10),
+          itemBuilder: (context, i) {
+            final data = docs[i].data();
+            final status = (data['status'] ?? 'unknown').toString();
+            final message = (data['message'] ?? 'No details').toString();
+            final timestamp = data['timestamp'] as Timestamp?;
+            final isActive = status == 'active';
+            return Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: AppColors.white,
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(
+                  color: isActive
+                      ? const Color(0xFFCB392B).withOpacity(0.35)
+                      : AppColors.border,
+                ),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.04),
+                    blurRadius: 8,
+                    offset: const Offset(0, 3),
+                  ),
+                ],
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Container(
+                        width: 32,
+                        height: 32,
+                        decoration: BoxDecoration(
+                          color: isActive
+                              ? const Color(0xFFFFEEEC)
+                              : AppColors.cream,
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: Icon(
+                          Icons.warning_amber_rounded,
+                          size: 17,
+                          color: isActive
+                              ? const Color(0xFFCB392B)
+                              : AppColors.textSub,
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Text(
+                          message,
+                          style: const TextStyle(
+                            fontFamily: _bf,
+                            fontWeight: FontWeight.w600,
+                            fontSize: 13,
+                            color: AppColors.green,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 10),
+                  Row(
+                    children: [
+                      _AlertBadge(
+                        label: status.toUpperCase(),
+                        isActive: isActive,
+                      ),
+                      const Spacer(),
+                      Text(
+                        _formatTimestamp(timestamp),
+                        style: TextStyle(
+                          fontFamily: _bf,
+                          fontSize: 10,
+                          letterSpacing: 1,
+                          color: AppColors.textSub,
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            );
+          },
+        );
+      },
     );
   }
 
@@ -3249,7 +3380,10 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
               ),
               const SizedBox(height: 8),
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 5),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 5,
+                ),
                 decoration: BoxDecoration(
                   color: AppColors.gold.withOpacity(0.15),
                   borderRadius: BorderRadius.circular(999),
@@ -3387,7 +3521,9 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
           decoration: BoxDecoration(
             color: const Color(0xFFFFF8F8),
             borderRadius: BorderRadius.circular(22),
-            border: Border.all(color: const Color(0xFFCB392B).withOpacity(0.25)),
+            border: Border.all(
+              color: const Color(0xFFCB392B).withOpacity(0.25),
+            ),
           ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -4222,8 +4358,6 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
     );
   }
 
-
-
   Widget _buildBottomNav() {
     return Container(
       decoration: BoxDecoration(
@@ -4668,3 +4802,4 @@ class _DashSettingsTile extends StatelessWidget {
     );
   }
 }
+

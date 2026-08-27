@@ -18,6 +18,7 @@
  */
 
 #include <HardwareSerial.h>
+#include <driver/i2s.h>
 
 // Board Pin Definitions (LILYGO T-A7670 V3)
 #define BOARD_TXD       26  // ESP32 TX (connects to A7670 RXD)
@@ -30,6 +31,13 @@
 
 // Tactile Button Pin
 #define BUTTON_PIN      14
+
+// INMP441 I2S Microphone Pin Definitions
+#define I2S_WS          25  // Word Select / LRCLK
+#define I2S_SD          32  // Serial Data Out (ESP32 Data In)
+#define I2S_SCK         33  // Serial Clock / BCLK
+#define I2S_PORT        I2S_NUM_0
+#define SAMPLE_RATE     8000 // 8kHz Mono for compact 4G LTE transmission
 
 // Serial communication baud rate
 #define SERIAL_BAUD     115200
@@ -72,13 +80,15 @@ HardwareSerial gpsSerial(2);
 // TinyGSM instance (used for GPRS connection only)
 TinyGsm modem(modemSerial);
 
-
-
 // Button variables for debouncing
 int buttonState = HIGH;
 int lastButtonState = HIGH;
 unsigned long lastDebounceTime = 0;
 const unsigned long DEBOUNCE_DELAY = 50; // milliseconds
+
+// Cooldown timer for voice triggers to avoid continuous alerts
+unsigned long lastVoiceTriggerTime = 0;
+const unsigned long VOICE_COOLDOWN_MS = 15000; // 15 seconds cooldown
 
 // Function Prototypes
 void initializeA7670();
@@ -87,13 +97,21 @@ bool setupGPS();
 bool getGPSLocation(double& lat, double& lon); 
 String getField(const String& data, char separator, int index);
 bool setupNetwork();
-bool triggerFirebaseAlert(double lat, double lon);
+bool triggerFirebaseAlert(double lat, double lon, const String& triggerType = "sos", const String& audioBase64 = "");
 bool sendSMSAlert(double lat, double lon);
 void flushModemBuffer();
 bool fetchDeviceConfig();
 String parseJsonStringField(const String& json, const String& fieldName);
 String getNetworkTimeRFC3339();
 String detectAPN();
+
+// INMP441 Audio Prototypes
+bool initI2SMicrophone();
+bool checkVoiceHelpTrigger();
+String recordAndEncodeAudioClip(size_t durationSeconds = 3);
+String encodeBase64(const uint8_t* input, size_t inputLen);
+void createWavHeader(uint8_t* header, uint32_t pcmDataSize, uint32_t sampleRate = 8000, uint16_t numChannels = 1, uint16_t bitsPerSample = 16);
+void triggerEmergencyAlertProcess(const String& triggerSource);
 
 void setup() {
   Serial.begin(SERIAL_BAUD);
@@ -117,11 +135,14 @@ void setup() {
   // Connect to Network/APN
   setupNetwork();
 
-  Serial.println("System Ready. Press button on GPIO 14 to send SOS alert.");
+  // Initialize INMP441 I2S Microphone
+  initI2SMicrophone();
+
+  Serial.println("System Ready. Listening for voice 'Help' or tactile button press on GPIO 14.");
 }
 
 void loop() {
-  // Read state of the tactile button (active LOW)
+  // 1. Read state of the tactile button (active LOW)
   int reading = digitalRead(BUTTON_PIN);
 
   if (reading != lastButtonState) {
@@ -135,47 +156,22 @@ void loop() {
       // Detect button pressed (transition from HIGH to LOW)
       if (buttonState == LOW) {
         Serial.println("\n[ALERT] Tactile Button Pressed! Triggering SOS Alert...");
-        
-        double lat = 0.0;
-        double lon = 0.0;
-        bool hasGPS = getGPSLocation(lat, lon);
-
-        if (!hasGPS) {
-          Serial.println("[WARNING] No GPS signal yet. Sending alert with default placeholder coordinates.");
-          // Default to Manila coordinates if GPS is not locked for demo/fallback
-          lat = 14.5995;
-          lon = 120.9842;
-        }
-
-        Serial.printf("[INFO] Location Coordinates: Lat: %.6f, Lon: %.6f\n", lat, lon);
-
-        // 1. Send SMS fallback alert
-        bool smsSent = sendSMSAlert(lat, lon);
-        if (smsSent) {
-          Serial.println("[SUCCESS] Backup SMS alert sent to parent.");
-        } else {
-          Serial.println("[ERROR] Failed to send backup SMS.");
-        }
-
-        // Give modem 3 seconds to finish SMS processing, then flush all
-        // leftover bytes so they don't contaminate the AT+HTTPINIT response
-        delay(3000);
-        flushModemBuffer();
-
-        // 2. Trigger Firebase alert using cellular data
-        bool firebaseSent = triggerFirebaseAlert(lat, lon);
-        if (firebaseSent) {
-          Serial.println("[SUCCESS] Live alert stored in Firebase Firestore.");
-        } else {
-          Serial.println("[ERROR] Failed to upload alert to Firestore.");
-        }
+        triggerEmergencyAlertProcess("sos");
       }
     }
   }
 
   lastButtonState = reading;
 
-  // Periodically read any incoming serial data from the modem to keep buffers clear
+  // 2. Check INMP441 audio for voice 'Help' distress trigger
+  bool voiceTriggerDetected = checkVoiceHelpTrigger();
+  if (voiceTriggerDetected && (millis() - lastVoiceTriggerTime > VOICE_COOLDOWN_MS)) {
+    lastVoiceTriggerTime = millis();
+    Serial.println("\n[ALERT] Voice 'HELP' / Distress sound detected by INMP441 Mic!");
+    triggerEmergencyAlertProcess("voice_help");
+  }
+
+  // Periodically read any incoming serial data from the modem to keep buffersz clear
   while (modemSerial.available()) {
     Serial.write(modemSerial.read());
   }
@@ -499,7 +495,7 @@ bool setupNetwork() {
 
 // Sends the SOS alert metadata directly to Firestore via HTTPS REST API
 // Uses the SIMCom A7670 native AT+HTTP stack (correct command set for this modem)
-bool triggerFirebaseAlert(double lat, double lon) {
+bool triggerFirebaseAlert(double lat, double lon, const String& triggerType, const String& audioBase64) {
   // Refresh configuration dynamically before sending alert to use the latest linking details
   fetchDeviceConfig();
 
@@ -512,6 +508,8 @@ bool triggerFirebaseAlert(double lat, double lon) {
   // Get timestamp from cellular network
   String rfcTimestamp = getNetworkTimeRFC3339();
 
+  String alertMsg = (triggerType == "voice_help") ? "EMERGENCY: Voice distress HELP call detected by INMP441 mic!" : "EMERGENCY: SOS tactile button triggered by tracker.";
+
   // Construct JSON body
   String jsonBody = "{\"fields\":{";
   jsonBody += "\"deviceId\":{\"stringValue\":\"" + String(DEVICE_ID) + "\"},";
@@ -521,10 +519,13 @@ bool triggerFirebaseAlert(double lat, double lon) {
   jsonBody += "\"phoneNumber\":{\"stringValue\":\"" + (devicePhoneNumber.length() > 0 ? devicePhoneNumber : String(DEVICE_PHONE)) + "\"},";
   jsonBody += "\"parentUid\":{\"stringValue\":\"" + (dynamicParentUid.length() > 0 ? dynamicParentUid : String(PARENT_UID)) + "\"},";
   jsonBody += "\"parentPhoneNumber\":{\"stringValue\":\"" + (dynamicParentPhone.length() > 0 ? dynamicParentPhone : String(PARENT_PHONE)) + "\"},";
-  jsonBody += "\"type\":{\"stringValue\":\"sos\"},";
+  jsonBody += "\"type\":{\"stringValue\":\"" + triggerType + "\"},";
   jsonBody += "\"severity\":{\"stringValue\":\"high\"},";
   jsonBody += "\"status\":{\"stringValue\":\"active\"},";
-  jsonBody += "\"message\":{\"stringValue\":\"EMERGENCY: SOS tactile button triggered by tracker.\"},";
+  jsonBody += "\"message\":{\"stringValue\":\"" + alertMsg + "\"},";
+  if (audioBase64.length() > 0) {
+    jsonBody += "\"audioClip\":{\"stringValue\":\"data:audio/wav;base64," + audioBase64 + "\"},";
+  }
   jsonBody += "\"location\":{\"stringValue\":\"" + String(lat, 6) + ", " + String(lon, 6) + "\"},";
   jsonBody += "\"coordinates\":{\"geoPointValue\":{";
   jsonBody += "\"latitude\":" + String(lat, 6) + ",";
@@ -973,4 +974,246 @@ String detectAPN() {
   }
   Serial.println("[NETWORK] SIM detection failed or foreign SIM. Falling back to default APN: http.globe.com.ph");
   return "http.globe.com.ph";
+}
+
+// ============================================================================
+// INMP441 I2S Microphone Driver & Voice Trigger Helper Routines
+// ============================================================================
+
+// Initializes ESP32 I2S Peripheral for INMP441 Microphone
+bool initI2SMicrophone() {
+  Serial.println("[I2S] Initializing INMP441 digital microphone...");
+
+  i2s_config_t i2s_config = {
+    .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX),
+    .sample_rate = SAMPLE_RATE,
+    .bits_per_sample = I2S_BITS_PER_SAMPLE_32BIT, // INMP441 REQUIRES 32-bit slot width
+    .channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT, // Read both channels to capture audio regardless of L/R pin state
+#if defined(I2S_COMM_FORMAT_STAND_I2S)
+    .communication_format = I2S_COMM_FORMAT_STAND_I2S,
+#else
+    .communication_format = (i2s_comm_format_t)(I2S_COMM_FORMAT_I2S),
+#endif
+    .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
+    .dma_buf_count = 8,
+    .dma_buf_len = 64,
+    .use_apll = false,
+    .tx_desc_auto_clear = false,
+    .fixed_mclk = 0
+  };
+
+  i2s_pin_config_t pin_config = {
+    .bck_io_num = I2S_SCK,
+    .ws_io_num = I2S_WS,
+    .data_out_num = I2S_PIN_NO_CHANGE,
+    .data_in_num = I2S_SD
+  };
+
+  esp_err_t err = i2s_driver_install(I2S_PORT, &i2s_config, 0, NULL);
+  if (err != ESP_OK) {
+    Serial.printf("[I2S] ERROR: Driver install failed (code: %d)\n", err);
+    return false;
+  }
+
+  err = i2s_set_pin(I2S_PORT, &pin_config);
+  if (err != ESP_OK) {
+    Serial.printf("[I2S] ERROR: Set pin failed (code: %d)\n", err);
+    return false;
+  }
+
+  i2s_zero_dma_buffer(I2S_PORT);
+  Serial.println("[I2S] INMP441 Microphone initialized successfully (Dual-Channel 32-bit I2S).");
+  return true;
+}
+
+// Samples INMP441 audio to detect voice distress / 'HELP' volume peak
+bool checkVoiceHelpTrigger() {
+  static unsigned long lastCheck = 0;
+  if (millis() - lastCheck < 80) return false;
+  lastCheck = millis();
+
+  int32_t i2sBuffer[64];
+  size_t bytesRead = 0;
+  esp_err_t err = i2s_read(I2S_PORT, i2sBuffer, sizeof(i2sBuffer), &bytesRead, pdMS_TO_TICKS(10));
+  if (err != ESP_OK || bytesRead == 0) return false;
+
+  int samplesCount = bytesRead / sizeof(int32_t);
+  int32_t peakAmplitude = 0;
+
+  for (int i = 0; i < samplesCount; i++) {
+    // INMP441 outputs 24-bit data inside 32-bit word -> shift right by 14 to convert to 16-bit PCM scale
+    int32_t rawSample = i2sBuffer[i] >> 14;
+    int32_t val = abs(rawSample);
+    if (val > peakAmplitude) {
+      peakAmplitude = val;
+    }
+  }
+
+  // High threshold for voice distress / call for help peak
+  const int32_t VOICE_HELP_THRESHOLD = 8000;
+  static int consecutivePeaks = 0;
+
+  // Print live audio peak every 1 second so you can see microphone input continuously
+  static unsigned long lastDebugPrint = 0;
+  if (millis() - lastDebugPrint > 1000) {
+    lastDebugPrint = millis();
+    Serial.printf("[INMP441 AUDIO DEBUG] Peak: %d | Raw[0]: 0x%08X Raw[1]: 0x%08X (Bytes: %u)\n", peakAmplitude, (unsigned int)i2sBuffer[0], (unsigned int)i2sBuffer[1], (unsigned int)bytesRead);
+  }
+
+  if (peakAmplitude > VOICE_HELP_THRESHOLD) {
+    consecutivePeaks++;
+    Serial.printf("[INMP441] Loud audio peak: %d (Count: %d/3)\n", peakAmplitude, consecutivePeaks);
+    if (consecutivePeaks >= 3) {
+      consecutivePeaks = 0;
+      return true;
+    }
+  } else {
+    consecutivePeaks = 0;
+  }
+
+  return false;
+}
+
+// Constructs standard 44-byte PCM WAV Header
+void createWavHeader(uint8_t* header, uint32_t pcmDataSize, uint32_t sampleRate, uint16_t numChannels, uint16_t bitsPerSample) {
+  uint32_t totalFileSize = pcmDataSize + 36;
+  uint32_t byteRate = sampleRate * numChannels * (bitsPerSample / 8);
+  uint16_t blockAlign = numChannels * (bitsPerSample / 8);
+
+  header[0] = 'R'; header[1] = 'I'; header[2] = 'F'; header[3] = 'F';
+  header[4] = (uint8_t)(totalFileSize & 0xFF);
+  header[5] = (uint8_t)((totalFileSize >> 8) & 0xFF);
+  header[6] = (uint8_t)((totalFileSize >> 16) & 0xFF);
+  header[7] = (uint8_t)((totalFileSize >> 24) & 0xFF);
+  header[8] = 'W'; header[9] = 'A'; header[10] = 'V'; header[11] = 'E';
+
+  header[12] = 'f'; header[13] = 'm'; header[14] = 't'; header[15] = ' ';
+  header[16] = 16; header[17] = 0; header[18] = 0; header[19] = 0;
+  header[20] = 1; header[21] = 0;
+  header[22] = (uint8_t)numChannels; header[23] = 0;
+  header[24] = (uint8_t)(sampleRate & 0xFF);
+  header[25] = (uint8_t)((sampleRate >> 8) & 0xFF);
+  header[26] = (uint8_t)((sampleRate >> 16) & 0xFF);
+  header[27] = (uint8_t)((sampleRate >> 24) & 0xFF);
+  header[28] = (uint8_t)(byteRate & 0xFF);
+  header[29] = (uint8_t)((byteRate >> 8) & 0xFF);
+  header[30] = (uint8_t)((byteRate >> 16) & 0xFF);
+  header[31] = (uint8_t)((byteRate >> 24) & 0xFF);
+  header[32] = (uint8_t)blockAlign; header[33] = 0;
+  header[34] = (uint8_t)bitsPerSample; header[35] = 0;
+
+  header[36] = 'd'; header[37] = 'a'; header[38] = 't'; header[39] = 'a';
+  header[40] = (uint8_t)(pcmDataSize & 0xFF);
+  header[41] = (uint8_t)((pcmDataSize >> 8) & 0xFF);
+  header[42] = (uint8_t)((pcmDataSize >> 16) & 0xFF);
+  header[43] = (uint8_t)((pcmDataSize >> 24) & 0xFF);
+}
+
+// Encodes raw byte buffer into Base64 String
+String encodeBase64(const uint8_t* input, size_t inputLen) {
+  static const char b64_table[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  String output = "";
+  output.reserve(((inputLen + 2) / 3) * 4);
+
+  for (size_t i = 0; i < inputLen; i += 3) {
+    uint32_t b0 = input[i];
+    uint32_t b1 = (i + 1 < inputLen) ? input[i + 1] : 0;
+    uint32_t b2 = (i + 2 < inputLen) ? input[i + 2] : 0;
+    uint32_t triple = (b0 << 16) | (b1 << 8) | b2;
+
+    output += b64_table[(triple >> 18) & 0x3F];
+    output += b64_table[(triple >> 12) & 0x3F];
+    output += (i + 1 < inputLen) ? b64_table[(triple >> 6) & 0x3F] : '=';
+    output += (i + 2 < inputLen) ? b64_table[triple & 0x3F] : '=';
+  }
+  return output;
+}
+
+// Records an audio clip from INMP441 and returns Base64 WAV string
+String recordAndEncodeAudioClip(size_t durationSeconds) {
+  Serial.printf("[INMP441] Recording %d-second audio clip...\n", durationSeconds);
+
+  size_t pcmDataSize = SAMPLE_RATE * sizeof(int16_t) * durationSeconds;
+  size_t totalWavSize = 44 + pcmDataSize;
+
+  uint8_t* wavBuffer = (uint8_t*) malloc(totalWavSize);
+  if (!wavBuffer) {
+    Serial.println("[INMP441] ERROR: Out of memory for audio clip buffer!");
+    return "";
+  }
+
+  // Write WAV header
+  createWavHeader(wavBuffer, pcmDataSize, SAMPLE_RATE, 1, 16);
+
+  // Read PCM audio data from I2S
+  uint8_t* pcmPtr = wavBuffer + 44;
+  size_t bytesReadTotal = 0;
+  unsigned long startRec = millis();
+
+  i2s_zero_dma_buffer(I2S_PORT);
+
+  while (bytesReadTotal < pcmDataSize && (millis() - startRec < (durationSeconds * 1000 + 1000))) {
+    int32_t i2sChunk[64];
+    size_t bytesReadThisChunk = 0;
+    i2s_read(I2S_PORT, i2sChunk, sizeof(i2sChunk), &bytesReadThisChunk, pdMS_TO_TICKS(50));
+    size_t samplesRead = bytesReadThisChunk / sizeof(int32_t);
+
+    int16_t* pcmTarget = (int16_t*)(pcmPtr + bytesReadTotal);
+    for (size_t s = 0; s < samplesRead; s++) {
+      if (bytesReadTotal + (s * sizeof(int16_t)) <= pcmDataSize) {
+        pcmTarget[s] = (int16_t)(i2sChunk[s] >> 14);
+      }
+    }
+    bytesReadTotal += (samplesRead * sizeof(int16_t));
+  }
+
+  Serial.printf("[INMP441] Recorded %d bytes of audio data.\n", bytesReadTotal);
+
+  // Encode to Base64
+  String base64Wav = encodeBase64(wavBuffer, 44 + bytesReadTotal);
+  free(wavBuffer);
+
+  Serial.printf("[INMP441] Audio clip encoded to Base64 (%d chars).\n", base64Wav.length());
+  return base64Wav;
+}
+
+// Main Emergency Dispatcher Routine (Button Press or Voice 'HELP')
+void triggerEmergencyAlertProcess(const String& triggerSource) {
+  Serial.printf("\n=========================================\n");
+  Serial.printf("[ALERT DISPATCHER] Triggered by: %s\n", triggerSource.c_str());
+  Serial.printf("=========================================\n");
+
+  // 1. Record 3-second WAV Audio Clip from INMP441 Mic
+  String audioBase64 = recordAndEncodeAudioClip(3);
+
+  // 2. Obtain GPS Location
+  double lat = 0.0;
+  double lon = 0.0;
+  bool hasGPS = getGPSLocation(lat, lon);
+
+  if (!hasGPS) {
+    Serial.println("[WARNING] GPS lock pending. Using default fallback coordinates (Manila).");
+    lat = 14.5995;
+    lon = 120.9842;
+  }
+  Serial.printf("[INFO] Coordinates: Lat: %.6f, Lon: %.6f\n", lat, lon);
+
+  // 3. Send Backup SMS to Parent
+  bool smsSent = sendSMSAlert(lat, lon);
+  if (smsSent) {
+    Serial.println("[SUCCESS] Backup SMS alert sent to parent.");
+  } else {
+    Serial.println("[ERROR] Failed to send backup SMS.");
+  }
+
+  delay(3000);
+  flushModemBuffer();
+
+  // 4. Trigger HTTPS alert upload with audio payload to Firebase Firestore
+  bool firebaseSent = triggerFirebaseAlert(lat, lon, triggerSource, audioBase64);
+  if (firebaseSent) {
+    Serial.println("[SUCCESS] Emergency alert with audio clip successfully uploaded to Firebase!");
+  } else {
+    Serial.println("[ERROR] Failed to upload emergency alert to Firebase.");
+  }
 }
