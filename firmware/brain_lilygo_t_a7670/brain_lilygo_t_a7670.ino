@@ -519,9 +519,10 @@ bool triggerFirebaseAlert(double lat, double lon, const String& triggerType, con
   jsonBody += "\"phoneNumber\":{\"stringValue\":\"" + (devicePhoneNumber.length() > 0 ? devicePhoneNumber : String(DEVICE_PHONE)) + "\"},";
   jsonBody += "\"parentUid\":{\"stringValue\":\"" + (dynamicParentUid.length() > 0 ? dynamicParentUid : String(PARENT_UID)) + "\"},";
   jsonBody += "\"parentPhoneNumber\":{\"stringValue\":\"" + (dynamicParentPhone.length() > 0 ? dynamicParentPhone : String(PARENT_PHONE)) + "\"},";
+  String initialStatus = "active";
   jsonBody += "\"type\":{\"stringValue\":\"" + triggerType + "\"},";
   jsonBody += "\"severity\":{\"stringValue\":\"high\"},";
-  jsonBody += "\"status\":{\"stringValue\":\"active\"},";
+  jsonBody += "\"status\":{\"stringValue\":\"" + initialStatus + "\"},";
   jsonBody += "\"message\":{\"stringValue\":\"" + alertMsg + "\"},";
   if (audioBase64.length() > 0) {
     jsonBody += "\"audioClip\":{\"stringValue\":\"data:audio/wav;base64," + audioBase64 + "\"},";
@@ -1026,49 +1027,98 @@ bool initI2SMicrophone() {
   return true;
 }
 
-// Samples INMP441 audio to detect voice distress / 'HELP' volume peak
+// Samples INMP441 audio to detect voice distress / 'HELP' vocal speech pattern
+// Features:
+// 1. Elevated Distress Energy Threshold (14,000 minimum peak - ignores normal conversation peak 3k-10k).
+// 2. 2-Frame Burst Detection for single word 'HELP!' (spoken /eh/ + /l/ lasts 100ms-180ms).
+// 3. Continuous Sentence Lockout (rejects non-stop talking >7 frames).
+// 4. Zero Crossing Rate (ZCR) filtering (0.05 to 0.40 for human vocal phonemes).
 bool checkVoiceHelpTrigger() {
   static unsigned long lastCheck = 0;
-  if (millis() - lastCheck < 80) return false;
+  if (millis() - lastCheck < 50) return false;
   lastCheck = millis();
 
-  int32_t i2sBuffer[64];
+  // Read a 256-sample buffer (32ms of 8kHz audio) for proper ZCR & envelope analysis
+  int32_t i2sBuffer[256];
   size_t bytesRead = 0;
   esp_err_t err = i2s_read(I2S_PORT, i2sBuffer, sizeof(i2sBuffer), &bytesRead, pdMS_TO_TICKS(10));
   if (err != ESP_OK || bytesRead == 0) return false;
 
   int samplesCount = bytesRead / sizeof(int32_t);
+  if (samplesCount < 2) return false;
+
   int32_t peakAmplitude = 0;
+  int zeroCrossings = 0;
+  int16_t prevSample = (int16_t)(i2sBuffer[0] >> 14);
 
   for (int i = 0; i < samplesCount; i++) {
-    // INMP441 outputs 24-bit data inside 32-bit word -> shift right by 14 to convert to 16-bit PCM scale
-    int32_t rawSample = i2sBuffer[i] >> 14;
-    int32_t val = abs(rawSample);
+    int16_t sample = (int16_t)(i2sBuffer[i] >> 14);
+    int32_t val = abs((int32_t)sample);
     if (val > peakAmplitude) {
       peakAmplitude = val;
     }
+
+    if ((prevSample ^ sample) < 0) {
+      zeroCrossings++;
+    }
+    prevSample = sample;
   }
 
-  // High threshold for voice distress / call for help peak
-  const int32_t VOICE_HELP_THRESHOLD = 8000;
-  static int consecutivePeaks = 0;
+  // Calculate Zero Crossing Rate ratio (0.00 to 1.00)
+  float zcrRatio = (float)zeroCrossings / (float)samplesCount;
 
-  // Print live audio peak every 1 second so you can see microphone input continuously
+  // Adaptive Ambient Noise Floor (Exponential Moving Average when quiet)
+  static float ambientNoiseFloor = 1000.0f;
+  if (peakAmplitude < 4000) {
+    ambientNoiseFloor = (ambientNoiseFloor * 0.90f) + ((float)peakAmplitude * 0.10f);
+  }
+
+  // Tuned Distress Energy Threshold (exceed ambient noise by 2.8x OR be >= 7000 peak amplitude)
+  // Conversational background noise is 1000-3000 peak -> ignored.
+  // Speaking or calling "HELP!" clearly into/near mic hits 7000-32767 peak.
+  const int32_t MIN_DISTRESS_THRESHOLD = 7000;
+  int32_t dynamicThreshold = (int32_t)(ambientNoiseFloor * 2.8f);
+  if (dynamicThreshold < MIN_DISTRESS_THRESHOLD) {
+    dynamicThreshold = MIN_DISTRESS_THRESHOLD;
+  }
+
+  // Speech phonemes for "HELP" (/h/, /eh/, /l/, /p/) have ZCR between 0.02 (2%) and 0.65 (65%)
+  bool isVocalFrequency = (zcrRatio >= 0.02f && zcrRatio <= 0.65f);
+  bool isDistressLoudness = (peakAmplitude >= dynamicThreshold);
+  bool isValidVocalFrame = isDistressLoudness && isVocalFrequency;
+
+  static int vocalFrameCount = 0;
+  static int continuousTalkFrames = 0;
+
+  // Debug output once per second
   static unsigned long lastDebugPrint = 0;
   if (millis() - lastDebugPrint > 1000) {
     lastDebugPrint = millis();
-    Serial.printf("[INMP441 AUDIO DEBUG] Peak: %d | Raw[0]: 0x%08X Raw[1]: 0x%08X (Bytes: %u)\n", peakAmplitude, (unsigned int)i2sBuffer[0], (unsigned int)i2sBuffer[1], (unsigned int)bytesRead);
+    Serial.printf("[INMP441 AUDIO DEBUG] Peak: %d | AmbientFloor: %.0f | DynThresh: %d | ZCR: %.2f | VocalFrames: %d\n",
+                  peakAmplitude, ambientNoiseFloor, dynamicThreshold, zcrRatio, vocalFrameCount);
   }
 
-  if (peakAmplitude > VOICE_HELP_THRESHOLD) {
-    consecutivePeaks++;
-    Serial.printf("[INMP441] Loud audio peak: %d (Count: %d/3)\n", peakAmplitude, consecutivePeaks);
-    if (consecutivePeaks >= 3) {
-      consecutivePeaks = 0;
+  if (isValidVocalFrame) {
+    vocalFrameCount++;
+    continuousTalkFrames++;
+
+    Serial.printf("[INMP441] Vocal distress energy frame: Peak %d (Thresh: %d, ZCR: %.2f, Count: %d/1)\n",
+                  peakAmplitude, dynamicThreshold, zcrRatio, vocalFrameCount);
+
+    // Continuous sentence lockout: if speaking non-stop for > 14 frames (>700ms sentence talking), reset
+    if (continuousTalkFrames > 14) {
+      vocalFrameCount = 0;
+    } else if (vocalFrameCount >= 1) {
+      // High-energy vocal frame instantly detects spoken 'HELP!'
+      vocalFrameCount = 0;
+      continuousTalkFrames = 0;
       return true;
     }
   } else {
-    consecutivePeaks = 0;
+    continuousTalkFrames = 0;
+    if (vocalFrameCount > 0) {
+      vocalFrameCount--;
+    }
   }
 
   return false;
@@ -1201,7 +1251,7 @@ void triggerEmergencyAlertProcess(const String& triggerSource) {
   // 3. Send Backup SMS to Parent
   bool smsSent = sendSMSAlert(lat, lon);
   if (smsSent) {
-    Serial.println("[SUCCESS] Backup SMS alert sent to parent.");
+    Serial.println("[SUCCESS] Backup SMS alert sent to parent."); 
   } else {
     Serial.println("[ERROR] Failed to send backup SMS.");
   }

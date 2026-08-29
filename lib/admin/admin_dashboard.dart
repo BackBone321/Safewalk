@@ -1390,7 +1390,13 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
           final data = doc.data();
           final type = (data['type'] ?? '').toString().toLowerCase();
           final status = (data['status'] ?? '').toString().toLowerCase();
-          return type == 'sos' && (status == 'active' || status == 'acknowledged');
+          final isEmergency =
+              type == 'sos' || type == 'voice_help' || type == 'emergency';
+          final isActiveOrAck =
+              status == 'active' ||
+              status == 'acknowledged' ||
+              status == 'verifying_speech';
+          return isEmergency && isActiveOrAck;
         }).toList()..sort((a, b) {
           final aTs = a.data()['timestamp'] as Timestamp?;
           final bTs = b.data()['timestamp'] as Timestamp?;

@@ -1257,7 +1257,8 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                             final message = (data['message'] ?? 'No details')
                                 .toString();
                             final timestamp = data['timestamp'] as Timestamp?;
-                            final isActive = status == 'active';
+                            final isActive = status == 'active' ||
+                                status == 'verifying_speech';
                             final childName = _resolveStudentNameFromAlert(
                               data,
                               linkedNameByUid: linkedNameByUid,
@@ -2495,7 +2496,11 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                             (data['uid'] ?? data['studentUid'] ?? '')
                                 .toString()
                                 .trim();
-                        return alertType == 'sos' &&
+                        final isEmergency =
+                            alertType == 'sos' ||
+                            alertType == 'voice_help' ||
+                            alertType == 'emergency';
+                        return isEmergency &&
                             (_childUid.isNotEmpty
                                 ? (alertChildUid == _childUid ||
                                       (_deviceId != 'Not linked' &&
@@ -2527,9 +2532,12 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                     final fallbackLocation = (latest['location'] ?? '')
                         .toString()
                         .trim();
+                    final latestStatus = (latest['status'] ?? '')
+                        .toString()
+                        .toLowerCase();
                     final isActive =
-                        (latest['status'] ?? '').toString().toLowerCase() ==
-                        'active';
+                        latestStatus == 'active' ||
+                        latestStatus == 'verifying_speech';
                     sosStatus = isActive ? 'ACTIVE' : 'RESOLVED';
                     sosTime = _formatTimestamp(
                       latest['timestamp'] as Timestamp?,
@@ -2714,7 +2722,8 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
             final status = (data['status'] ?? 'unknown').toString();
             final message = (data['message'] ?? 'No details').toString();
             final timestamp = data['timestamp'] as Timestamp?;
-            final isActive = status == 'active';
+            final isActive = status == 'active' ||
+                status == 'verifying_speech';
             final childName = _resolveStudentNameFromAlert(
               data,
               linkedNameByUid: linkedNameByUid,
@@ -2869,8 +2878,16 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
               final alertChildUid = (data['uid'] ?? data['studentUid'] ?? '')
                   .toString()
                   .trim();
-              return alertType == 'sos' &&
-                  (status == 'active' || status == 'acknowledged') &&
+              final isEmergency =
+                  alertType == 'sos' ||
+                  alertType == 'voice_help' ||
+                  alertType == 'emergency';
+              final isActiveOrAck =
+                  status == 'active' ||
+                  status == 'acknowledged' ||
+                  status == 'verifying_speech';
+              return isEmergency &&
+                  isActiveOrAck &&
                   (_childUid.isNotEmpty
                       ? (alertChildUid == _childUid ||
                             (_deviceId != 'Not linked' &&
@@ -2904,10 +2921,13 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
         final latestSosLabel = latestSosData == null
             ? ''
             : _formatTimestamp(latestSosData['timestamp'] as Timestamp?);
+        final latestSosStatus = (latestSosData?['status'] ?? '')
+            .toString()
+            .toLowerCase();
         final latestSosIsActive = latestSosData == null
             ? false
-            : (latestSosData['status'] ?? '').toString().toLowerCase() ==
-                  'active';
+            : (latestSosStatus == 'active' ||
+                  latestSosStatus == 'verifying_speech');
         final latestSosLocationText = latestSosPoint != null
             ? _formatCoordinateValue(latestSosPoint)
             : (latestSosData?['location'] ?? '').toString().trim().isEmpty
@@ -2938,8 +2958,9 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
             data,
             linkedNameByUid: linkedNameByUid,
           );
+          final alertStatus = (data['status'] ?? '').toString().toLowerCase();
           final isActive =
-              (data['status'] ?? '').toString().toLowerCase() == 'active';
+              alertStatus == 'active' || alertStatus == 'verifying_speech';
           final pointLabel = _formatCoordinateValue(point);
           final colorHue = isActive
               ? BitmapDescriptor.hueRed

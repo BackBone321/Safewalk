@@ -193,7 +193,7 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
         docs.where((doc) {
           final data = doc.data();
           final type = (data['type'] ?? '').toString().toLowerCase();
-          return type == 'sos';
+          return type == 'sos' || type == 'voice_help' || type == 'emergency';
         }).toList()..sort((a, b) {
           final aTs = a.data()['timestamp'] as Timestamp?;
           final bTs = b.data()['timestamp'] as Timestamp?;
@@ -218,7 +218,7 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
     final locationText = (latest['location'] ?? '').toString().trim();
     return _SosMapState(
       coordinate: coordinate,
-      isActive: status == 'active',
+      isActive: status == 'active' || status == 'verifying_speech',
       timestampLabel: _formatTimestamp(latest['timestamp'] as Timestamp?),
       areaLabel: locationText.isEmpty
           ? _formatCoordinateLabel(coordinate)
