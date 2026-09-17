@@ -337,12 +337,16 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
 
   String _formatTimestamp(Timestamp? ts) {
     if (ts == null) return 'Unknown time';
-    final dt = ts.toDate().toLocal();
+    var dt = ts.toDate().toLocal();
+    if (dt.year >= 2070 || dt.year < 2024) {
+      final now = DateTime.now();
+      dt = DateTime(now.year, now.month, now.day, dt.hour, dt.minute);
+    }
     final m = dt.month.toString().padLeft(2, '0');
     final d = dt.day.toString().padLeft(2, '0');
     final h = dt.hour.toString().padLeft(2, '0');
     final min = dt.minute.toString().padLeft(2, '0');
-    return '$m/$d ${dt.year} $h:$min';
+    return '$m/$d/${dt.year} $h:$min';
   }
 
   void _showActionSnack(String label, {bool isError = false}) {
@@ -1969,8 +1973,17 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                         }
                         final docs = snapshot.data!.docs.toList()
                           ..sort((a, b) {
-                            final aTs = a.data()['timestamp'] as Timestamp?;
-                            final bTs = b.data()['timestamp'] as Timestamp?;
+                            final aData = a.data();
+                            final bData = b.data();
+                            final aStatus = (aData['status'] ?? '').toString().toLowerCase();
+                            final bStatus = (bData['status'] ?? '').toString().toLowerCase();
+                            final aIsActive = aStatus == 'active' || aStatus == 'verifying_speech';
+                            final bIsActive = bStatus == 'active' || bStatus == 'verifying_speech';
+                            if (aIsActive != bIsActive) {
+                              return aIsActive ? -1 : 1;
+                            }
+                            final aTs = aData['timestamp'] as Timestamp?;
+                            final bTs = bData['timestamp'] as Timestamp?;
                             return (bTs?.millisecondsSinceEpoch ?? 0).compareTo(
                               aTs?.millisecondsSinceEpoch ?? 0,
                             );
@@ -3209,8 +3222,17 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
         }
         final docs = snapshot.data!.docs.toList()
           ..sort((a, b) {
-            final aTs = a.data()['timestamp'] as Timestamp?;
-            final bTs = b.data()['timestamp'] as Timestamp?;
+            final aData = a.data();
+            final bData = b.data();
+            final aStatus = (aData['status'] ?? '').toString().toLowerCase();
+            final bStatus = (bData['status'] ?? '').toString().toLowerCase();
+            final aIsActive = aStatus == 'active' || aStatus == 'verifying_speech';
+            final bIsActive = bStatus == 'active' || bStatus == 'verifying_speech';
+            if (aIsActive != bIsActive) {
+              return aIsActive ? -1 : 1;
+            }
+            final aTs = aData['timestamp'] as Timestamp?;
+            final bTs = bData['timestamp'] as Timestamp?;
             return (bTs?.millisecondsSinceEpoch ?? 0).compareTo(
               aTs?.millisecondsSinceEpoch ?? 0,
             );

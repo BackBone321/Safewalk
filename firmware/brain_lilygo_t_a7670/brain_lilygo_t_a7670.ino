@@ -483,6 +483,11 @@ bool setupNetwork() {
     Serial.printf("[NETWORK] CNACT status: %s\n", response.c_str());
     sendATCommand("AT+NETOPEN?", response, 2000);
     Serial.printf("[NETWORK] NETOPEN status: %s\n", response.c_str());
+
+    // Auto-sync real network time via NITZ and NTP (UTC+8 Philippine Time = +32 quarter-hours)
+    sendATCommand("AT+CTZU=1", response, 2000);
+    sendATCommand("AT+CNTP=\"time.google.com\",32", response, 3000);
+    sendATCommand("AT+CNTP", response, 5000);
   } else {
     Serial.println("[NETWORK] WARNING: Failed to activate App Network interface!");
   }
@@ -778,8 +783,12 @@ String getNetworkTimeRFC3339() {
         String min = cclk.substring(12, 14);
         String ss = cclk.substring(15, 17);
         
+        // Check for invalid/un-synced year (like "70" un-synced 1970 epoch or out of 2024-2030 range)
+        int yVal = yy.toInt();
+        String fullYear = (yVal >= 24 && yVal <= 30) ? ("20" + yy) : "2026";
+        
         // Build ISO 8601 string: 20yy-mm-ddThh:mm:ss
-        String iso = "20" + yy + "-" + mm + "-" + dd + "T" + hh + ":" + min + ":" + ss;
+        String iso = fullYear + "-" + mm + "-" + dd + "T" + hh + ":" + min + ":" + ss;
         
         // Check if there is offset (e.g. +32 or -04)
         if (cclk.length() > 17) {
@@ -793,16 +802,16 @@ String getNetworkTimeRFC3339() {
             snprintf(tzBuf, sizeof(tzBuf), "%c%02d:%02d", tzSign, hours, mins);
             iso += String(tzBuf);
           } else {
-            iso += "Z";
+            iso += "+08:00";
           }
         } else {
-          iso += "Z";
+          iso += "+08:00";
         }
         return iso;
       }
     }
   }
-  return "2026-07-08T12:00:00Z"; // Fallback to current conversation date
+  return "2026-09-17T09:00:00+08:00"; // Fallback to current Philippine timestamp
 }
 
 // Dynamically queries Firestore to fetch the student/parent linking config associated with this deviceId
@@ -1068,22 +1077,22 @@ bool checkVoiceHelpTrigger() {
   float zcrRatio = (float)zeroCrossings / (float)samplesCount;
 
   // Adaptive Ambient Noise Floor (Exponential Moving Average when quiet)
-  static float ambientNoiseFloor = 1000.0f;
+  static float ambientNoiseFloor = 1500.0f;
   if (peakAmplitude < 4000) {
-    ambientNoiseFloor = (ambientNoiseFloor * 0.90f) + ((float)peakAmplitude * 0.10f);
+    ambientNoiseFloor = (ambientNoiseFloor * 0.92f) + ((float)peakAmplitude * 0.08f);
   }
 
-  // Tuned Distress Energy Threshold (exceed ambient noise by 2.8x OR be >= 7000 peak amplitude)
-  // Conversational background noise is 1000-3000 peak -> ignored.
-  // Speaking or calling "HELP!" clearly into/near mic hits 7000-32767 peak.
-  const int32_t MIN_DISTRESS_THRESHOLD = 7000;
-  int32_t dynamicThreshold = (int32_t)(ambientNoiseFloor * 2.8f);
+  // HYBRID STAGE 1: Elevated Distress Energy Threshold
+  // Casual speaking / "hello" / ambient talking: 2,000 - 6,000 peak -> IGNORED.
+  // Urgent distress shout / call "HELP!": 11,000 - 32,767 peak.
+  const int32_t MIN_DISTRESS_THRESHOLD = 11000;
+  int32_t dynamicThreshold = (int32_t)(ambientNoiseFloor * 3.8f);
   if (dynamicThreshold < MIN_DISTRESS_THRESHOLD) {
     dynamicThreshold = MIN_DISTRESS_THRESHOLD;
   }
 
-  // Speech phonemes for "HELP" (/h/, /eh/, /l/, /p/) have ZCR between 0.02 (2%) and 0.65 (65%)
-  bool isVocalFrequency = (zcrRatio >= 0.02f && zcrRatio <= 0.65f);
+  // Phonetic vocal frequency for human distress call "HELP"
+  bool isVocalFrequency = (zcrRatio >= 0.06f && zcrRatio <= 0.42f);
   bool isDistressLoudness = (peakAmplitude >= dynamicThreshold);
   bool isValidVocalFrame = isDistressLoudness && isVocalFrequency;
 
@@ -1102,14 +1111,14 @@ bool checkVoiceHelpTrigger() {
     vocalFrameCount++;
     continuousTalkFrames++;
 
-    Serial.printf("[INMP441] Vocal distress energy frame: Peak %d (Thresh: %d, ZCR: %.2f, Count: %d/1)\n",
+    Serial.printf("[INMP441] Vocal distress energy frame: Peak %d (Thresh: %d, ZCR: %.2f, Count: %d/2)\n",
                   peakAmplitude, dynamicThreshold, zcrRatio, vocalFrameCount);
 
-    // Continuous sentence lockout: if speaking non-stop for > 14 frames (>700ms sentence talking), reset
-    if (continuousTalkFrames > 14) {
+    // Continuous sentence lockout: if speaking non-stop for > 8 frames (>400ms sentence talking), reset
+    if (continuousTalkFrames > 8) {
       vocalFrameCount = 0;
-    } else if (vocalFrameCount >= 1) {
-      // High-energy vocal frame instantly detects spoken 'HELP!'
+    } else if (vocalFrameCount >= 2) {
+      // 2 consecutive confirmed distress bursts trigger the emergency process
       vocalFrameCount = 0;
       continuousTalkFrames = 0;
       return true;
