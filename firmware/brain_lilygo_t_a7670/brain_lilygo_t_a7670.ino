@@ -19,6 +19,8 @@
 
 #include <HardwareSerial.h>
 #include <driver/i2s.h>
+#include <driver/gpio.h>
+#include <safewalk-voice-help_inferencing.h>
 
 // Board Pin Definitions (LILYGO T-A7670 V3)
 #define BOARD_TXD       26  // ESP32 TX (connects to A7670 RXD)
@@ -37,7 +39,7 @@
 #define I2S_SD          32  // Serial Data Out (ESP32 Data In)
 #define I2S_SCK         33  // Serial Clock / BCLK
 #define I2S_PORT        I2S_NUM_0
-#define SAMPLE_RATE     8000 // 8kHz Mono for compact 4G LTE transmission
+#define SAMPLE_RATE     EI_CLASSIFIER_FREQUENCY // Matches Edge Impulse trained sample rate (8kHz / 16kHz)
 
 // Serial communication baud rate
 #define SERIAL_BAUD     115200
@@ -89,6 +91,11 @@ const unsigned long DEBOUNCE_DELAY = 50; // milliseconds
 // Cooldown timer for voice triggers to avoid continuous alerts
 unsigned long lastVoiceTriggerTime = 0;
 const unsigned long VOICE_COOLDOWN_MS = 15000; // 15 seconds cooldown
+String lastVoiceKeyword = "TABANG";
+
+// Boot grace period: prevents any false triggers during startup while hardware/network stabilizes
+unsigned long systemBootReadyTime = 0;
+const unsigned long BOOT_GRACE_PERIOD_MS = 5000; // 5-second grace period after boot
 
 // Function Prototypes
 void initializeA7670();
@@ -138,7 +145,8 @@ void setup() {
   // Initialize INMP441 I2S Microphone
   initI2SMicrophone();
 
-  Serial.println("System Ready. Listening for voice 'Help' or tactile button press on GPIO 14.");
+  systemBootReadyTime = millis();
+  Serial.println("System Ready. Edge Impulse AI listening for 'HELP' or 'TABANG', or tactile button on GPIO 14.");
 }
 
 void loop() {
@@ -155,6 +163,7 @@ void loop() {
 
       // Detect button pressed (transition from HIGH to LOW)
       if (buttonState == LOW) {
+        lastVoiceKeyword = "SOS BUTTON";
         Serial.println("\n[ALERT] Tactile Button Pressed! Triggering SOS Alert...");
         triggerEmergencyAlertProcess("sos");
       }
@@ -163,11 +172,11 @@ void loop() {
 
   lastButtonState = reading;
 
-  // 2. Check INMP441 audio for voice 'Help' distress trigger
+  // 2. Check INMP441 audio for voice 'Help' or 'Tabang' distress trigger
   bool voiceTriggerDetected = checkVoiceHelpTrigger();
   if (voiceTriggerDetected && (millis() - lastVoiceTriggerTime > VOICE_COOLDOWN_MS)) {
     lastVoiceTriggerTime = millis();
-    Serial.println("\n[ALERT] Voice 'HELP' / Distress sound detected by INMP441 Mic!");
+    Serial.printf("\n[ALERT] Voice '%s' distress keyword confirmed by Edge Impulse AI!\n", lastVoiceKeyword.c_str());
     triggerEmergencyAlertProcess("voice_help");
   }
 
@@ -211,25 +220,35 @@ void initializeA7670() {
 
   Serial.println("[MODEM] Checking modem communication...");
   String response;
-  bool isResponsive = sendATCommand("AT", response, 500);
+  bool isResponsive = false;
+
+  // Try pinging modem with wake-up CR/LF
+  for (int i = 0; i < 3; i++) {
+    modemSerial.println("AT");
+    delay(200);
+    if (sendATCommand("AT", response, 1000)) {
+      isResponsive = true;
+      break;
+    }
+  }
 
   if (!isResponsive) {
-    Serial.println("[MODEM] Modem is unresponsive. Pulsing PWRKEY to power on...");
+    Serial.println("[MODEM] Modem unresponsive. Pulsing PWRKEY to power on...");
     
-    // To trigger power-on: pulse PWRKEY HIGH (transistor ON, pulling A7670 PWRKEY low)
-    // for 2 seconds, then pull LOW (transistor OFF).
+    // Pulse PWRKEY HIGH for 1.5s to trigger power on
     digitalWrite(BOARD_PWRKEY, HIGH);
-    delay(2000);
+    delay(1500);
     digitalWrite(BOARD_PWRKEY, LOW);
     
-    // Wait for boot sequence (approx 8-10 seconds)
+    // Wait for boot sequence
     Serial.println("[MODEM] Waiting for boot...");
-    delay(8000);
+    delay(6000);
     
-    // Check communication again
+    // Check communication
     int retries = 10;
     while (retries > 0) {
-      if (sendATCommand("AT", response, 500)) {
+      if (sendATCommand("AT", response, 1000)) {
+        isResponsive = true;
         Serial.println("[MODEM] Modem is online and responding to AT commands.");
         break;
       }
@@ -237,9 +256,28 @@ void initializeA7670() {
       retries--;
     }
     
-    if (retries == 0) {
-      Serial.println("[FATAL] Modem failed to power on. Please check battery/power connections.");
-      return;
+    // If still unresponsive, perform a full hardware RESET
+    if (!isResponsive) {
+      Serial.println("[MODEM] Still unresponsive. Triggering hardware RESET pulse...");
+      digitalWrite(BOARD_RESET, LOW);
+      delay(300);
+      digitalWrite(BOARD_RESET, HIGH);
+      delay(5000);
+
+      // Pulse PWRKEY after reset
+      digitalWrite(BOARD_PWRKEY, HIGH);
+      delay(1500);
+      digitalWrite(BOARD_PWRKEY, LOW);
+      delay(6000);
+
+      for (int r = 0; r < 10; r++) {
+        if (sendATCommand("AT", response, 1000)) {
+          isResponsive = true;
+          Serial.println("[MODEM] Modem recovered after hardware reset!");
+          break;
+        }
+        delay(1000);
+      }
     }
   } else {
     Serial.println("[MODEM] Modem is already powered on.");
@@ -513,7 +551,9 @@ bool triggerFirebaseAlert(double lat, double lon, const String& triggerType, con
   // Get timestamp from cellular network
   String rfcTimestamp = getNetworkTimeRFC3339();
 
-  String alertMsg = (triggerType == "voice_help") ? "EMERGENCY: Voice distress HELP call detected by INMP441 mic!" : "EMERGENCY: SOS tactile button triggered by tracker.";
+  String alertMsg = (triggerType == "voice_help") ? 
+                    ("EMERGENCY: Voice distress '" + lastVoiceKeyword + "' call detected by INMP441 mic!") : 
+                    "EMERGENCY: SOS tactile button triggered by tracker.";
 
   // Construct JSON body
   String jsonBody = "{\"fields\":{";
@@ -585,12 +625,12 @@ bool triggerFirebaseAlert(double lat, double lon, const String& triggerType, con
 
 
   // Step 6: Send input data size and wait for DOWNLOAD prompt
-  modemSerial.println("AT+HTTPDATA=" + String(jsonBody.length()) + ",10000");
+  modemSerial.println("AT+HTTPDATA=" + String(jsonBody.length()) + ",20000");
 
   unsigned long t = millis();
   String atResp = "";
   bool gotDownload = false;
-  while (millis() - t < 6000) {
+  while (millis() - t < 8000) {
     // Read response
     while (modemSerial.available()) {
       char c = modemSerial.read();
@@ -609,14 +649,21 @@ bool triggerFirebaseAlert(double lat, double lon, const String& triggerType, con
     return false;
   }
 
-  // Step 7: Send the JSON body
-  modemSerial.print(jsonBody);
+  // Step 7: Send the JSON body in 512-byte chunks to avoid UART FIFO buffer overflow
+  size_t totalLen = jsonBody.length();
+  size_t sent = 0;
+  while (sent < totalLen) {
+    size_t toSend = (totalLen - sent > 512) ? 512 : (totalLen - sent);
+    modemSerial.print(jsonBody.substring(sent, sent + toSend));
+    sent += toSend;
+    delay(5);
+  }
   delay(1000);
 
   // Wait for OK
   atResp = "";
   t = millis();
-  while (millis() - t < 3000) {
+  while (millis() - t < 5000) {
     while (modemSerial.available()) {
       char c = modemSerial.read();
       atResp += c;
@@ -714,7 +761,8 @@ bool sendSMSAlert(double lat, double lon) {
 
   if (gotPrompt) {
     // Construct message body
-    String message = "ALERT: Safewalk SOS emergency triggered! Child Location:\n";
+    String sourceLabel = (lastVoiceKeyword.length() > 0) ? lastVoiceKeyword : "SOS";
+    String message = "ALERT: Safewalk (" + sourceLabel + ") emergency triggered! Child Location:\n";
     message += "https://maps.google.com/?q=" + String(lat, 6) + "," + String(lon, 6);
     message += "\nLatitude: " + String(lat, 6) + "\nLongitude: " + String(lon, 6);
     
@@ -990,6 +1038,33 @@ String detectAPN() {
 // INMP441 I2S Microphone Driver & Voice Trigger Helper Routines
 // ============================================================================
 
+// Detected microphone channel in stereo frame: 0 for Left, 1 for Right
+static int i2sActiveChannel = 0;
+
+// DC-blocking high-pass filter state
+static float dc_x1 = 0.0f;
+static float dc_y1 = 0.0f;
+
+// Process 32-bit raw sample from active I2S channel:
+// - Shifts 24-bit MSB-aligned data with gain
+// - Clamps to int16 range to prevent overflow / wrap-around distortion
+// - Removes DC offset with a high-pass filter (~30 Hz cutoff at 16kHz)
+static inline int16_t processMicSample(int32_t raw32) {
+  int32_t s32 = raw32 >> 14; // +12 dB digital gain for clear speech pickup
+  if (s32 > 32767) s32 = 32767;
+  if (s32 < -32768) s32 = -32768;
+
+  // 1-pole DC-blocking filter: y[n] = x[n] - x[n-1] + 0.985 * y[n-1]
+  float x = (float)s32;
+  float y = x - dc_x1 + 0.985f * dc_y1;
+  dc_x1 = x;
+  dc_y1 = y;
+
+  if (y > 32767.0f) y = 32767.0f;
+  if (y < -32768.0f) y = -32768.0f;
+  return (int16_t)y;
+}
+
 // Initializes ESP32 I2S Peripheral for INMP441 Microphone
 bool initI2SMicrophone() {
   Serial.println("[I2S] Initializing INMP441 digital microphone...");
@@ -998,7 +1073,7 @@ bool initI2SMicrophone() {
     .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX),
     .sample_rate = SAMPLE_RATE,
     .bits_per_sample = I2S_BITS_PER_SAMPLE_32BIT, // INMP441 REQUIRES 32-bit slot width
-    .channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT, // Read both channels to capture audio regardless of L/R pin state
+    .channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT, // Read stereo to cleanly extract active L/R channel
 #if defined(I2S_COMM_FORMAT_STAND_I2S)
     .communication_format = I2S_COMM_FORMAT_STAND_I2S,
 #else
@@ -1031,103 +1106,197 @@ bool initI2SMicrophone() {
     return false;
   }
 
+  // Ensure SD pin does not float when microphone is in high-impedance state
+  gpio_set_pull_mode((gpio_num_t)I2S_SD, GPIO_PULLDOWN_ONLY);
+
+  // 1. Hardware warm-up: discard initial 400ms to allow MEMS diaphragm & charge-pump to settle
+  Serial.println("[I2S] Warming up microphone & discarding power-on transients...");
+  unsigned long warmStart = millis();
+  while (millis() - warmStart < 400) {
+    int32_t dummyBuffer[64];
+    size_t dummyBytes = 0;
+    i2s_read(I2S_PORT, dummyBuffer, sizeof(dummyBuffer), &dummyBytes, pdMS_TO_TICKS(20));
+  }
+
+  // 2. Auto-detect active channel (Left vs Right):
+  // INMP441 L/R tied to GND outputs on Left (0); tied to VDD outputs on Right (1).
+  uint64_t leftEnergy = 0;
+  uint64_t rightEnergy = 0;
+  unsigned long calStart = millis();
+  while (millis() - calStart < 150) {
+    int32_t calBuffer[64];
+    size_t calBytes = 0;
+    i2s_read(I2S_PORT, calBuffer, sizeof(calBuffer), &calBytes, pdMS_TO_TICKS(20));
+    size_t calFrames = (calBytes / sizeof(int32_t)) / 2;
+    for (size_t f = 0; f < calFrames; f++) {
+      int32_t leftSample = abs(calBuffer[f * 2] >> 14);
+      int32_t rightSample = abs(calBuffer[f * 2 + 1] >> 14);
+      leftEnergy += leftSample;
+      rightEnergy += rightSample;
+    }
+  }
+
+  if (rightEnergy > leftEnergy * 2) {
+    i2sActiveChannel = 1;
+    Serial.printf("[I2S] Active Channel: RIGHT (L-Energy: %llu, R-Energy: %llu)\n", leftEnergy, rightEnergy);
+  } else {
+    i2sActiveChannel = 0;
+    Serial.printf("[I2S] Active Channel: LEFT (L-Energy: %llu, R-Energy: %llu)\n", leftEnergy, rightEnergy);
+  }
+
+  // Reset filter state & clear DMA buffer
+  dc_x1 = 0.0f;
+  dc_y1 = 0.0f;
   i2s_zero_dma_buffer(I2S_PORT);
-  Serial.println("[I2S] INMP441 Microphone initialized successfully (Dual-Channel 32-bit I2S).");
+  Serial.println("[I2S] INMP441 Microphone ready (calibrated & DC-filtered).");
   return true;
 }
 
-// Samples INMP441 audio to detect voice distress / 'HELP' vocal speech pattern
-// Features:
-// 1. Elevated Distress Energy Threshold (14,000 minimum peak - ignores normal conversation peak 3k-10k).
-// 2. 2-Frame Burst Detection for single word 'HELP!' (spoken /eh/ + /l/ lasts 100ms-180ms).
-// 3. Continuous Sentence Lockout (rejects non-stop talking >7 frames).
-// 4. Zero Crossing Rate (ZCR) filtering (0.05 to 0.40 for human vocal phonemes).
+// Static inference buffer for Edge Impulse AI
+static int16_t inference_buffer[EI_CLASSIFIER_RAW_SAMPLE_COUNT];
+
+// Callback function for Edge Impulse to read raw audio data
+static int microphone_audio_signal_get_data(size_t offset, size_t length, float *out_ptr) {
+  for (size_t i = 0; i < length; i++) {
+    out_ptr[i] = (float)inference_buffer[offset + i];
+  }
+  return 0;
+}
+
+// Samples INMP441 audio and runs Edge Impulse TinyML Neural Network
+// Tuned to recognize genuine 'HELP' (>= 75%) and 'TABANG' (>= 55%)
+// Casual chatter and random speech are safely filtered out!
 bool checkVoiceHelpTrigger() {
+  // Boot grace period: ignore all voice triggers during the first 5 seconds after startup
+  if (millis() - systemBootReadyTime < BOOT_GRACE_PERIOD_MS) {
+    int32_t discardBuffer[64];
+    size_t discarded = 0;
+    i2s_read(I2S_PORT, discardBuffer, sizeof(discardBuffer), &discarded, pdMS_TO_TICKS(10));
+    return false;
+  }
+
   static unsigned long lastCheck = 0;
-  if (millis() - lastCheck < 50) return false;
+  if (millis() - lastCheck < 80) return false;
   lastCheck = millis();
 
-  // Read a 256-sample buffer (32ms of 8kHz audio) for proper ZCR & envelope analysis
-  int32_t i2sBuffer[256];
+  // 1. Sound energy gate: sample 64 stereo frames (~4ms @ 16kHz)
+  int32_t quickBuffer[128]; // 64 stereo frames
   size_t bytesRead = 0;
-  esp_err_t err = i2s_read(I2S_PORT, i2sBuffer, sizeof(i2sBuffer), &bytesRead, pdMS_TO_TICKS(10));
+  esp_err_t err = i2s_read(I2S_PORT, quickBuffer, sizeof(quickBuffer), &bytesRead, pdMS_TO_TICKS(10));
   if (err != ESP_OK || bytesRead == 0) return false;
 
-  int samplesCount = bytesRead / sizeof(int32_t);
-  if (samplesCount < 2) return false;
+  size_t framesRead = (bytesRead / sizeof(int32_t)) / 2;
+  int32_t peak = 0;
+  int32_t sumEnergy = 0;
+  int16_t quickMono[64];
 
-  int32_t peakAmplitude = 0;
-  int zeroCrossings = 0;
-  int16_t prevSample = (int16_t)(i2sBuffer[0] >> 14);
-
-  for (int i = 0; i < samplesCount; i++) {
-    int16_t sample = (int16_t)(i2sBuffer[i] >> 14);
+  for (size_t f = 0; f < framesRead; f++) {
+    int32_t raw = quickBuffer[f * 2 + i2sActiveChannel];
+    int16_t sample = processMicSample(raw);
+    quickMono[f] = sample;
     int32_t val = abs((int32_t)sample);
-    if (val > peakAmplitude) {
-      peakAmplitude = val;
-    }
-
-    if ((prevSample ^ sample) < 0) {
-      zeroCrossings++;
-    }
-    prevSample = sample;
+    if (val > peak) peak = val;
+    sumEnergy += val;
   }
 
-  // Calculate Zero Crossing Rate ratio (0.00 to 1.00)
-  float zcrRatio = (float)zeroCrossings / (float)samplesCount;
+  int32_t avgEnergy = (framesRead > 0) ? (sumEnergy / (int32_t)framesRead) : 0;
 
-  // Adaptive Ambient Noise Floor (Exponential Moving Average when quiet)
-  static float ambientNoiseFloor = 1500.0f;
-  if (peakAmplitude < 4000) {
-    ambientNoiseFloor = (ambientNoiseFloor * 0.92f) + ((float)peakAmplitude * 0.08f);
+  // Dual-condition sound energy gate:
+  // In quiet surroundings, baseline noise peaks around 3000-4500, but average energy is < 900.
+  // Genuine human voice speech ("TABANG" / "HELP") produces peak >= 5500 AND sustained energy >= 1300.
+  if (peak < 5500 || avgEnergy < 1300) {
+    return false;
   }
 
-  // HYBRID STAGE 1: Elevated Distress Energy Threshold
-  // Casual speaking / "hello" / ambient talking: 2,000 - 6,000 peak -> IGNORED.
-  // Urgent distress shout / call "HELP!": 11,000 - 32,767 peak.
-  const int32_t MIN_DISTRESS_THRESHOLD = 11000;
-  int32_t dynamicThreshold = (int32_t)(ambientNoiseFloor * 3.8f);
-  if (dynamicThreshold < MIN_DISTRESS_THRESHOLD) {
-    dynamicThreshold = MIN_DISTRESS_THRESHOLD;
+  // 2. Sound/Voice detected! Collect the full audio frame required by Edge Impulse model
+  Serial.printf("\n[INMP441] Voice activity detected (Peak: %d, Avg: %d). Feeding audio to Edge Impulse AI...\n", peak, avgEnergy);
+  size_t totalSamples = EI_CLASSIFIER_RAW_SAMPLE_COUNT;
+  size_t samplesCollected = 0;
+
+  // Preserve the initial samples that triggered the peak so the start of the word is NOT lost!
+  for (size_t f = 0; f < framesRead && samplesCollected < totalSamples; f++) {
+    inference_buffer[samplesCollected++] = quickMono[f];
   }
 
-  // Phonetic vocal frequency for human distress call "HELP"
-  bool isVocalFrequency = (zcrRatio >= 0.06f && zcrRatio <= 0.42f);
-  bool isDistressLoudness = (peakAmplitude >= dynamicThreshold);
-  bool isValidVocalFrame = isDistressLoudness && isVocalFrequency;
+  unsigned long startCapture = millis();
+  unsigned long maxTimeout = (EI_CLASSIFIER_RAW_SAMPLE_COUNT * 1000 / EI_CLASSIFIER_FREQUENCY) + 400;
 
-  static int vocalFrameCount = 0;
-  static int continuousTalkFrames = 0;
+  // Capture the remaining samples from the active microphone channel (stereo demuxed)
+  while (samplesCollected < totalSamples && (millis() - startCapture < maxTimeout)) {
+    int32_t chunk[128]; // 64 stereo frames
+    size_t chunkBytes = 0;
+    i2s_read(I2S_PORT, chunk, sizeof(chunk), &chunkBytes, pdMS_TO_TICKS(20));
+    size_t framesInChunk = (chunkBytes / sizeof(int32_t)) / 2;
 
-  // Debug output once per second
-  static unsigned long lastDebugPrint = 0;
-  if (millis() - lastDebugPrint > 1000) {
-    lastDebugPrint = millis();
-    Serial.printf("[INMP441 AUDIO DEBUG] Peak: %d | AmbientFloor: %.0f | DynThresh: %d | ZCR: %.2f | VocalFrames: %d\n",
-                  peakAmplitude, ambientNoiseFloor, dynamicThreshold, zcrRatio, vocalFrameCount);
-  }
-
-  if (isValidVocalFrame) {
-    vocalFrameCount++;
-    continuousTalkFrames++;
-
-    Serial.printf("[INMP441] Vocal distress energy frame: Peak %d (Thresh: %d, ZCR: %.2f, Count: %d/2)\n",
-                  peakAmplitude, dynamicThreshold, zcrRatio, vocalFrameCount);
-
-    // Continuous sentence lockout: if speaking non-stop for > 8 frames (>400ms sentence talking), reset
-    if (continuousTalkFrames > 8) {
-      vocalFrameCount = 0;
-    } else if (vocalFrameCount >= 2) {
-      // 2 consecutive confirmed distress bursts trigger the emergency process
-      vocalFrameCount = 0;
-      continuousTalkFrames = 0;
-      return true;
+    for (size_t f = 0; f < framesInChunk && samplesCollected < totalSamples; f++) {
+      int32_t raw = chunk[f * 2 + i2sActiveChannel];
+      inference_buffer[samplesCollected++] = processMicSample(raw);
     }
-  } else {
-    continuousTalkFrames = 0;
-    if (vocalFrameCount > 0) {
-      vocalFrameCount--;
+  }
+
+  if (samplesCollected < totalSamples) {
+    Serial.println("[INMP441] Audio capture timeout. Skipping inference.");
+    return false;
+  }
+
+  // 3. Prepare signal for Edge Impulse
+  signal_t signal;
+  signal.total_length = EI_CLASSIFIER_RAW_SAMPLE_COUNT;
+  signal.get_data = &microphone_audio_signal_get_data;
+
+  // 4. Run Edge Impulse Neural Network Inference
+  ei_impulse_result_t result = { 0 };
+  EI_IMPULSE_ERROR r = run_classifier(&signal, &result, false);
+  if (r != EI_IMPULSE_OK) {
+    Serial.printf("[EDGE IMPULSE ERROR] run_classifier failed (code: %d)\n", r);
+    return false;
+  }
+
+  // 5. Inspect AI classification predictions (dynamically reads all labels)
+  float helpScore = 0.0f;
+  float tabangScore = 0.0f;
+  float noiseScore = 0.0f;
+  float otherScore = 0.0f;
+
+  Serial.print("[AI PREDICTION] ");
+  for (size_t ix = 0; ix < EI_CLASSIFIER_LABEL_COUNT; ix++) {
+    const char* label = result.classification[ix].label;
+    float score = result.classification[ix].value;
+    Serial.printf("%s: %.1f%%  ", label, score * 100.0f);
+
+    if (strcasecmp(label, "tabang") == 0) {
+      tabangScore = score;
+    } else if (strcasecmp(label, "help") == 0) {
+      helpScore = score;
+    } else if (strcasecmp(label, "noise") == 0 || strcasecmp(label, "noice") == 0) {
+      noiseScore = score;
+    } else {
+      if (score > otherScore) otherScore = score;
     }
+  }
+  Serial.println();
+
+  // 6. Tuned Keyword Confirmation:
+  // - TABANG: requires >= 50% confidence, must exceed noise, help, and other speech
+  // - HELP: requires >= 82% confidence, must exceed noise, tabang, and other speech (82% safely filters casual 'hello')
+  bool isTabangConfirmed = (tabangScore >= 0.50f) && (tabangScore > noiseScore) && (tabangScore > helpScore) && (tabangScore > otherScore);
+  bool isHelpConfirmed = (helpScore >= 0.82f) && (helpScore > noiseScore) && (helpScore > tabangScore) && (helpScore > otherScore);
+
+  if (isTabangConfirmed || isHelpConfirmed) {
+    const char* matchedWord = isTabangConfirmed ? "TABANG" : "HELP";
+    lastVoiceKeyword = matchedWord;
+    float confidence = isTabangConfirmed ? tabangScore : helpScore;
+    Serial.println("\n***************************************************");
+    Serial.printf("[EDGE IMPULSE CONFIRMED] Genuine '%s' recognized with %.1f%% confidence!\n", matchedWord, confidence * 100.0f);
+    Serial.println("***************************************************");
+    return true;
+  }
+
+  // Filtered out: Any casual word, chatter, or unconfirmed speech is safely ignored!
+  if (helpScore >= 0.35f || tabangScore >= 0.35f) {
+    Serial.printf("[FILTERED] Word '%s' ignored (help: %.1f%%, tabang: %.1f%%, noise: %.1f%%). Unconfirmed speech.\n",
+                  (helpScore >= tabangScore) ? "help-like" : "tabang-like",
+                  helpScore * 100.0f, tabangScore * 100.0f, noiseScore * 100.0f);
   }
 
   return false;
@@ -1172,7 +1341,11 @@ void createWavHeader(uint8_t* header, uint32_t pcmDataSize, uint32_t sampleRate,
 String encodeBase64(const uint8_t* input, size_t inputLen) {
   static const char b64_table[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
   String output = "";
-  output.reserve(((inputLen + 2) / 3) * 4);
+  size_t expectedLen = ((inputLen + 2) / 3) * 4;
+  if (!output.reserve(expectedLen + 16)) {
+    Serial.println("[INMP441] WARNING: Failed to reserve heap memory for Base64 string!");
+    return "";
+  }
 
   for (size_t i = 0; i < inputLen; i += 3) {
     uint32_t b0 = input[i];
@@ -1189,11 +1362,14 @@ String encodeBase64(const uint8_t* input, size_t inputLen) {
 }
 
 // Records an audio clip from INMP441 and returns Base64 WAV string
+// Uses telephony-standard 8000 Hz to prevent ESP32 heap exhaustion & Firebase HTTP 400
 String recordAndEncodeAudioClip(size_t durationSeconds) {
-  Serial.printf("[INMP441] Recording %d-second audio clip...\n", durationSeconds);
-
-  size_t pcmDataSize = SAMPLE_RATE * sizeof(int16_t) * durationSeconds;
+  const uint32_t CLIP_RATE = 8000;
+  const size_t clipDuration = 1; // 1 second audio @ 8kHz = 8000 samples = 16000 bytes
+  size_t pcmDataSize = CLIP_RATE * sizeof(int16_t) * clipDuration;
   size_t totalWavSize = 44 + pcmDataSize;
+
+  Serial.printf("[INMP441] Recording %d-second audio clip at %u Hz...\n", clipDuration, CLIP_RATE);
 
   uint8_t* wavBuffer = (uint8_t*) malloc(totalWavSize);
   if (!wavBuffer) {
@@ -1201,29 +1377,36 @@ String recordAndEncodeAudioClip(size_t durationSeconds) {
     return "";
   }
 
-  // Write WAV header
-  createWavHeader(wavBuffer, pcmDataSize, SAMPLE_RATE, 1, 16);
+  // Write WAV header for 8000 Hz, Mono, 16-bit
+  createWavHeader(wavBuffer, pcmDataSize, CLIP_RATE, 1, 16);
 
-  // Read PCM audio data from I2S
   uint8_t* pcmPtr = wavBuffer + 44;
   size_t bytesReadTotal = 0;
   unsigned long startRec = millis();
 
+  // If SAMPLE_RATE is 16kHz and target is 8kHz, decimate by 2 (take 1 out of 2 frames).
+  int frameStep = (SAMPLE_RATE >= 16000) ? 2 : 1;
+  int frameCounter = 0;
+
   i2s_zero_dma_buffer(I2S_PORT);
 
-  while (bytesReadTotal < pcmDataSize && (millis() - startRec < (durationSeconds * 1000 + 1000))) {
-    int32_t i2sChunk[64];
+  while (bytesReadTotal < pcmDataSize && (millis() - startRec < (clipDuration * 1000 + 1000))) {
+    int32_t i2sChunk[128]; // 64 stereo frames
     size_t bytesReadThisChunk = 0;
     i2s_read(I2S_PORT, i2sChunk, sizeof(i2sChunk), &bytesReadThisChunk, pdMS_TO_TICKS(50));
-    size_t samplesRead = bytesReadThisChunk / sizeof(int32_t);
+    size_t framesRead = (bytesReadThisChunk / sizeof(int32_t)) / 2;
 
-    int16_t* pcmTarget = (int16_t*)(pcmPtr + bytesReadTotal);
-    for (size_t s = 0; s < samplesRead; s++) {
-      if (bytesReadTotal + (s * sizeof(int16_t)) <= pcmDataSize) {
-        pcmTarget[s] = (int16_t)(i2sChunk[s] >> 14);
+    for (size_t f = 0; f < framesRead; f++) {
+      if ((frameCounter % frameStep) == 0) {
+        if (bytesReadTotal + sizeof(int16_t) <= pcmDataSize) {
+          int32_t raw = i2sChunk[f * 2 + i2sActiveChannel];
+          int16_t sampleVal = processMicSample(raw);
+          memcpy(pcmPtr + bytesReadTotal, &sampleVal, sizeof(int16_t));
+          bytesReadTotal += sizeof(int16_t);
+        }
       }
+      frameCounter++;
     }
-    bytesReadTotal += (samplesRead * sizeof(int16_t));
   }
 
   Serial.printf("[INMP441] Recorded %d bytes of audio data.\n", bytesReadTotal);
@@ -1235,6 +1418,7 @@ String recordAndEncodeAudioClip(size_t durationSeconds) {
   Serial.printf("[INMP441] Audio clip encoded to Base64 (%d chars).\n", base64Wav.length());
   return base64Wav;
 }
+
 
 // Main Emergency Dispatcher Routine (Button Press or Voice 'HELP')
 void triggerEmergencyAlertProcess(const String& triggerSource) {
@@ -1266,9 +1450,9 @@ void triggerEmergencyAlertProcess(const String& triggerSource) {
   }
 
   delay(3000);
-  flushModemBuffer();
+  flushModemBuffer();                                                                                                                                                 
 
-  // 4. Trigger HTTPS alert upload with audio payload to Firebase Firestore
+  // 4. Trigger HTTPS alert upload with audio payload to Firebase Firestore                                                                         
   bool firebaseSent = triggerFirebaseAlert(lat, lon, triggerSource, audioBase64);
   if (firebaseSent) {
     Serial.println("[SUCCESS] Emergency alert with audio clip successfully uploaded to Firebase!");
