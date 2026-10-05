@@ -1,8 +1,10 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:cloud_functions/cloud_functions.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'add_device_page.dart';
 import '../auth/auth_service.dart';
@@ -59,6 +61,64 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
     );
   }
 
+  Future<void> _handleAlertAction(String alertId, String currentStatus) async {
+    final status = currentStatus.toLowerCase().trim();
+    if (status == 'resolved') {
+      _showMessage("The issue is already been fixed.");
+      return;
+    }
+    if (status == 'false_alarm') {
+      _showMessage("Student reported this alert as a false alarm (miss-clicked device).");
+      return;
+    }
+    if (status == 'acknowledged') {
+      try {
+        await FirebaseFirestore.instance
+            .collection('emergency_alerts')
+            .doc(alertId)
+            .set({
+          'status': 'resolved',
+          'resolvedAt': FieldValue.serverTimestamp(),
+          'resolvedBy': FirebaseAuth.instance.currentUser?.uid ?? 'admin',
+          'locationCleared': true,
+          'location': 'Location removed',
+          'coordinates': FieldValue.delete(),
+          'latitude': FieldValue.delete(),
+          'longitude': FieldValue.delete(),
+          'lat': FieldValue.delete(),
+          'lng': FieldValue.delete(),
+          'lon': FieldValue.delete(),
+        }, SetOptions(merge: true));
+        _showMessage("The issue is already been fixed. Location removed.");
+      } catch (e) {
+        _showMessage('Failed to resolve alert: $e', isError: true);
+      }
+      return;
+    }
+
+    try {
+      await FirebaseFirestore.instance
+          .collection('emergency_alerts')
+          .doc(alertId)
+          .set({
+        'status': 'acknowledged',
+        'ackAt': FieldValue.serverTimestamp(),
+        'ackBy': FirebaseAuth.instance.currentUser?.uid ?? 'admin',
+        'locationCleared': true,
+        'location': 'Location removed',
+        'coordinates': FieldValue.delete(),
+        'latitude': FieldValue.delete(),
+        'longitude': FieldValue.delete(),
+        'lat': FieldValue.delete(),
+        'lng': FieldValue.delete(),
+        'lon': FieldValue.delete(),
+      }, SetOptions(merge: true));
+      _showMessage('Alert acknowledged. SOS location removed from map.');
+    } catch (e) {
+      _showMessage('Failed to acknowledge alert: $e', isError: true);
+    }
+  }
+
   double? _toDouble(dynamic value) {
     if (value is num) return value.toDouble();
     if (value is String) return double.tryParse(value.trim());
@@ -66,6 +126,7 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
   }
 
   bool _isValidLatLng(double lat, double lng) {
+    if (lat.abs() < 0.0001 && lng.abs() < 0.0001) return false;
     return lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180;
   }
 
@@ -90,9 +151,20 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
   }
 
   LatLng? _extractAlertCoordinates(Map<String, dynamic> data) {
+    if (data['locationCleared'] == true ||
+        data['falseAlarm'] == true ||
+        (data['status'] ?? '').toString().toLowerCase() == 'false_alarm' ||
+        (data['status'] ?? '').toString().toLowerCase() == 'cancelled_false_trigger' ||
+        (data['status'] ?? '').toString().toLowerCase() == 'resolved' ||
+        (data['status'] ?? '').toString().toLowerCase() == 'acknowledged') {
+      return null;
+    }
+
     final coordinates = data['coordinates'];
     if (coordinates is GeoPoint) {
-      return LatLng(coordinates.latitude, coordinates.longitude);
+      if (_isValidLatLng(coordinates.latitude, coordinates.longitude)) {
+        return LatLng(coordinates.latitude, coordinates.longitude);
+      }
     }
     if (coordinates is Map) {
       final nested = _coordinatesFromValues(
@@ -110,10 +182,13 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
 
     final location = data['location'];
     if (location is String) {
-      return _coordinatesFromText(location);
+      final fromTxt = _coordinatesFromText(location);
+      if (fromTxt != null) return fromTxt;
     }
     if (location is GeoPoint) {
-      return LatLng(location.latitude, location.longitude);
+      if (_isValidLatLng(location.latitude, location.longitude)) {
+        return LatLng(location.latitude, location.longitude);
+      }
     }
     return null;
   }
@@ -1097,6 +1172,7 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
     final locationCtrl = TextEditingController(text: (data['location'] ?? '').toString());
     final studentUidCtrl = TextEditingController(text: (data['studentUid'] ?? '').toString());
     bool saving = false;
+    bool detectingLocation = false;
 
     showDialog<void>(
       context: context,
@@ -1150,10 +1226,44 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
                     const SizedBox(height: 12),
                     TextField(
                       controller: locationCtrl,
-                      decoration: const InputDecoration(
-                        labelText: 'Location',
-                        labelStyle: TextStyle(color: AppColors.green, fontFamily: 'JosefinSans'),
-                        focusedBorder: UnderlineInputBorder(borderSide: BorderSide(color: AppColors.gold)),
+                      decoration: InputDecoration(
+                        labelText: 'Location (Coordinates or Address)',
+                        labelStyle: const TextStyle(color: AppColors.green, fontFamily: 'JosefinSans'),
+                        focusedBorder: const UnderlineInputBorder(borderSide: BorderSide(color: AppColors.gold)),
+                        suffixIcon: IconButton(
+                          icon: detectingLocation
+                              ? const SizedBox(
+                                  width: 16,
+                                  height: 16,
+                                  child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.green),
+                                )
+                              : const Icon(Icons.my_location_rounded, color: AppColors.green, size: 20),
+                          tooltip: 'Detect Exact Device Location',
+                          onPressed: detectingLocation
+                              ? null
+                              : () async {
+                                  setDialogState(() => detectingLocation = true);
+                                  try {
+                                    LocationPermission perm = await Geolocator.checkPermission();
+                                    if (perm == LocationPermission.denied) {
+                                      perm = await Geolocator.requestPermission();
+                                    }
+                                    if (perm != LocationPermission.denied &&
+                                        perm != LocationPermission.deniedForever) {
+                                      final pos = await Geolocator.getCurrentPosition(
+                                        desiredAccuracy: LocationAccuracy.high,
+                                        timeLimit: const Duration(seconds: 12),
+                                      );
+                                      locationCtrl.text =
+                                          '${pos.latitude.toStringAsFixed(6)}, ${pos.longitude.toStringAsFixed(6)}';
+                                    }
+                                  } catch (e) {
+                                    debugPrint('Detect location error: $e');
+                                  } finally {
+                                    setDialogState(() => detectingLocation = false);
+                                  }
+                                },
+                        ),
                       ),
                       style: const TextStyle(fontFamily: 'JosefinSans'),
                     ),
@@ -1233,6 +1343,14 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
                               }
                             }
 
+                            final parts = newLoc.split(',');
+                            double? lat;
+                            double? lng;
+                            if (parts.length == 2) {
+                              lat = double.tryParse(parts[0].trim());
+                              lng = double.tryParse(parts[1].trim());
+                            }
+
                             final oldStudentUid = (data['studentUid'] ?? '').toString().trim();
                             final updateData = <String, dynamic>{
                               'deviceId': newId,
@@ -1240,6 +1358,11 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
                               'phoneNumber': newPhone,
                               'location': newLoc,
                             };
+                            if (lat != null && lng != null) {
+                              updateData['latitude'] = lat;
+                              updateData['longitude'] = lng;
+                              updateData['coordinates'] = GeoPoint(lat, lng);
+                            }
 
                             if (newStudentUid.isNotEmpty) {
                               updateData['studentUid'] = newStudentUid;
@@ -1396,11 +1519,10 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
           final status = (data['status'] ?? '').toString().toLowerCase();
           final isEmergency =
               type == 'sos' || type == 'voice_help' || type == 'emergency';
-          final isActiveOrAck =
-              status == 'active' ||
-              status == 'acknowledged' ||
-              status == 'verifying_speech';
-          return isEmergency && isActiveOrAck;
+          final isActiveEmergency =
+              (status == 'active' || status == 'verifying_speech') &&
+              data['locationCleared'] != true;
+          return isEmergency && isActiveEmergency;
         }).toList()..sort((a, b) {
           final aData = a.data();
           final bData = b.data();
@@ -1446,7 +1568,11 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
           icon: BitmapDescriptor.defaultMarkerWithHue(
             isActive ? BitmapDescriptor.hueRed : BitmapDescriptor.hueOrange,
           ),
-          infoWindow: InfoWindow(title: '$sender - SOS', snippet: pointLabel),
+          infoWindow: InfoWindow(
+            title: '$sender - SOS',
+            snippet: 'Tap to Acknowledge & Remove Location',
+            onTap: () => _handleAlertAction(entry.value.id, data['status'] ?? 'active'),
+          ),
         ),
       );
       circles.add(
@@ -1542,6 +1668,63 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
               ),
             ),
           ),
+          if (markerCount > 0 && sosDocs.isNotEmpty)
+            Positioned(
+              top: 14,
+              right: 14,
+              child: Material(
+                color: Colors.transparent,
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(999),
+                  onTap: () {
+                    final firstDoc = sosDocs.first;
+                    final status = (firstDoc.data()['status'] ?? '').toString();
+                    _handleAlertAction(firstDoc.id, status);
+                  },
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 13,
+                      vertical: 6,
+                    ),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFCB392B),
+                      borderRadius: BorderRadius.circular(999),
+                      border: Border.all(
+                        color: Colors.white.withOpacity(0.6),
+                        width: 1,
+                      ),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withOpacity(0.35),
+                          blurRadius: 8,
+                          offset: const Offset(0, 2),
+                        ),
+                      ],
+                    ),
+                    child: const Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          Icons.check_circle_outline,
+                          color: Colors.white,
+                          size: 14,
+                        ),
+                        SizedBox(width: 5),
+                        Text(
+                          'ACKNOWLEDGE',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 10,
+                            letterSpacing: 1.2,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
           Positioned(
             left: 0,
             right: 0,
@@ -1733,22 +1916,28 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
                                       decoration: BoxDecoration(
                                         color: isActive
                                             ? const Color(0xFFCB392B).withOpacity(0.12)
+                                            : status.toLowerCase() == 'false_alarm'
+                                            ? const Color(0xFFFEF3C7)
                                             : AppColors.cream,
                                         borderRadius: BorderRadius.circular(6),
                                         border: Border.all(
                                           color: isActive
                                               ? const Color(0xFFCB392B).withOpacity(0.35)
+                                              : status.toLowerCase() == 'false_alarm'
+                                              ? const Color(0xFFF59E0B).withOpacity(0.5)
                                               : AppColors.border,
                                         ),
                                       ),
                                       child: Text(
-                                        status.toUpperCase(),
+                                        status.toUpperCase().replaceAll('_', ' '),
                                         style: TextStyle(
                                           fontSize: 9,
                                           letterSpacing: 2,
                                           fontWeight: FontWeight.w600,
                                           color: isActive
                                               ? const Color(0xFFCB392B)
+                                              : status.toLowerCase() == 'false_alarm'
+                                              ? const Color(0xFFB45309)
                                               : AppColors.textSub,
                                         ),
                                       ),
@@ -1758,7 +1947,12 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
                                 const SizedBox(height: 10),
                                 _AdminInfoRow('Sender', sender),
                                 const SizedBox(height: 4),
-                                _AdminInfoRow('Location', locationText),
+                                _AdminInfoRow(
+                                  'Location',
+                                  status.toLowerCase() == 'resolved'
+                                      ? 'Removed'
+                                      : locationText,
+                                ),
                                 const SizedBox(height: 4),
                                 _AdminInfoRow('Time', timestamp),
                                 if (isActive) ...[
@@ -1766,16 +1960,10 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
                                   Align(
                                     alignment: Alignment.centerRight,
                                     child: TextButton.icon(
-                                      onPressed: () async {
-                                        final alertId = docs[index].id;
-                                        await FirebaseFirestore.instance
-                                            .collection('emergency_alerts')
-                                            .doc(alertId)
-                                            .update({
-                                          'status': 'acknowledged',
-                                          'ackAt': FieldValue.serverTimestamp(),
-                                        });
-                                      },
+                                      onPressed: () => _handleAlertAction(
+                                        docs[index].id,
+                                        data['status']?.toString() ?? 'active',
+                                      ),
                                       icon: const Icon(
                                         Icons.check_circle_outline,
                                         size: 14,
@@ -1808,23 +1996,17 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
                                   Align(
                                     alignment: Alignment.centerRight,
                                     child: TextButton.icon(
-                                      onPressed: () async {
-                                        final alertId = docs[index].id;
-                                        await FirebaseFirestore.instance
-                                            .collection('emergency_alerts')
-                                            .doc(alertId)
-                                            .update({
-                                          'status': 'resolved',
-                                          'resolvedAt': FieldValue.serverTimestamp(),
-                                        });
-                                      },
+                                      onPressed: () => _handleAlertAction(
+                                        docs[index].id,
+                                        data['status']?.toString() ?? 'acknowledged',
+                                      ),
                                       icon: const Icon(
                                         Icons.check_circle_outline,
                                         size: 14,
                                         color: Color(0xFFCB392B),
                                       ),
                                       label: const Text(
-                                        'RESOLVE',
+                                        'DONE',
                                         style: TextStyle(
                                           fontSize: 10,
                                           fontWeight: FontWeight.bold,
@@ -1838,6 +2020,83 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
                                           vertical: 6,
                                         ),
                                         backgroundColor: const Color(0xFFCB392B).withOpacity(0.08),
+                                        shape: RoundedRectangleBorder(
+                                          borderRadius: BorderRadius.circular(6),
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                                if (status.toLowerCase() == 'false_alarm') ...[
+                                  const SizedBox(height: 10),
+                                  Align(
+                                    alignment: Alignment.centerRight,
+                                    child: TextButton.icon(
+                                      onPressed: () {
+                                        _showMessage(
+                                          "Student reported this alert as a false alarm (miss-clicked device).",
+                                        );
+                                      },
+                                      icon: const Icon(
+                                        Icons.check_circle_outline,
+                                        size: 14,
+                                        color: Color(0xFFB45309),
+                                      ),
+                                      label: const Text(
+                                        'FALSE ALARM (STUDENT SAFE)',
+                                        style: TextStyle(
+                                          fontSize: 10,
+                                          fontWeight: FontWeight.bold,
+                                          color: Color(0xFFB45309),
+                                          letterSpacing: 1,
+                                        ),
+                                      ),
+                                      style: TextButton.styleFrom(
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 12,
+                                          vertical: 6,
+                                        ),
+                                        backgroundColor: const Color(0xFFFEF3C7),
+                                        shape: RoundedRectangleBorder(
+                                          borderRadius:
+                                              BorderRadius.circular(6),
+                                          side: BorderSide(
+                                            color: const Color(0xFFF59E0B)
+                                                .withOpacity(0.5),
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                                if (status.toLowerCase() == 'resolved') ...[
+                                  const SizedBox(height: 10),
+                                  Align(
+                                    alignment: Alignment.centerRight,
+                                    child: TextButton.icon(
+                                      onPressed: () {
+                                        _showMessage("The issue is already been fixed.");
+                                      },
+                                      icon: const Icon(
+                                        Icons.check_circle,
+                                        size: 14,
+                                        color: AppColors.green,
+                                      ),
+                                      label: const Text(
+                                        'DONE (FIXED)',
+                                        style: TextStyle(
+                                          fontSize: 10,
+                                          fontWeight: FontWeight.bold,
+                                          color: AppColors.green,
+                                          letterSpacing: 1,
+                                        ),
+                                      ),
+                                      style: TextButton.styleFrom(
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 12,
+                                          vertical: 6,
+                                        ),
+                                        backgroundColor: AppColors.green.withOpacity(0.08),
                                         shape: RoundedRectangleBorder(
                                           borderRadius: BorderRadius.circular(6),
                                         ),

@@ -1,5 +1,6 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
+import 'package:geolocator/geolocator.dart';
 import '../login_dashboard/login_page.dart';
 
 class AddDevicePage extends StatefulWidget {
@@ -16,10 +17,62 @@ class _AddDevicePageState extends State<AddDevicePage> {
   final _locationCtrl = TextEditingController();
 
   bool _isSaving = false;
+  bool _isDetectingLocation = false;
 
   bool _isValidPhilippineMobile(String value) {
     final regex = RegExp(r'^(09\d{9}|\+639\d{9})$');
     return regex.hasMatch(value);
+  }
+
+  Future<void> _detectCurrentLocation() async {
+    setState(() => _isDetectingLocation = true);
+    try {
+      LocationPermission permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+      }
+      if (permission == LocationPermission.denied ||
+          permission == LocationPermission.deniedForever) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Location permission denied. Please allow location access in your browser or device settings.',
+            ),
+          ),
+        );
+        return;
+      }
+
+      Position position;
+      try {
+        position = await Geolocator.getCurrentPosition(
+          desiredAccuracy: LocationAccuracy.high,
+          timeLimit: const Duration(seconds: 15),
+        );
+      } catch (_) {
+        position = await Geolocator.getCurrentPosition(
+          desiredAccuracy: LocationAccuracy.medium,
+          timeLimit: const Duration(seconds: 10),
+        );
+      }
+
+      final label =
+          '${position.latitude.toStringAsFixed(6)}, ${position.longitude.toStringAsFixed(6)}';
+      _locationCtrl.text = label;
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Exact location detected: $label')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to detect location: $e')),
+      );
+    } finally {
+      if (mounted) setState(() => _isDetectingLocation = false);
+    }
   }
 
   Future<void> _saveDevice() async {
@@ -50,14 +103,29 @@ class _AddDevicePageState extends State<AddDevicePage> {
     setState(() => _isSaving = true);
 
     try {
-      await FirebaseFirestore.instance.collection('devices').doc(deviceId).set({
+      final parts = location.split(',');
+      double? lat;
+      double? lng;
+      if (parts.length == 2) {
+        lat = double.tryParse(parts[0].trim());
+        lng = double.tryParse(parts[1].trim());
+      }
+
+      final deviceData = <String, dynamic>{
         'deviceId': deviceId,
         'deviceName': deviceName,
         'phoneNumber': phone,
         'location': location,
         'status': 'active',
         'createdAt': FieldValue.serverTimestamp(),
-      });
+      };
+      if (lat != null && lng != null) {
+        deviceData['latitude'] = lat;
+        deviceData['longitude'] = lng;
+        deviceData['coordinates'] = GeoPoint(lat, lng);
+      }
+
+      await FirebaseFirestore.instance.collection('devices').doc(deviceId).set(deviceData);
 
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -157,11 +225,49 @@ class _AddDevicePageState extends State<AddDevicePage> {
                 ),
                 const SizedBox(height: 20),
                 _AdminTextField(
-                  label: 'LOCATION',
-                  hint: 'Gate 1',
+                  label: 'LOCATION (COORDINATES OR ADDRESS)',
+                  hint: 'e.g. 14.599512, 120.984210',
                   controller: _locationCtrl,
+                  suffix: IconButton(
+                    icon: _isDetectingLocation
+                        ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: AppColors.green,
+                            ),
+                          )
+                        : const Icon(
+                            Icons.my_location_rounded,
+                            color: AppColors.green,
+                            size: 20,
+                          ),
+                    tooltip: 'Detect Exact Device Location',
+                    onPressed: _isDetectingLocation ? null : _detectCurrentLocation,
+                  ),
                 ),
-                const SizedBox(height: 28),
+                const SizedBox(height: 4),
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: TextButton.icon(
+                    onPressed: _isDetectingLocation ? null : _detectCurrentLocation,
+                    icon: const Icon(
+                      Icons.my_location,
+                      size: 14,
+                      color: AppColors.green,
+                    ),
+                    label: const Text(
+                      'Detect Current Location',
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: AppColors.green,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 20),
                 SizedBox(
                   width: double.infinity,
                   height: 50,
@@ -197,12 +303,14 @@ class _AdminTextField extends StatelessWidget {
   final String hint;
   final TextEditingController controller;
   final TextInputType keyboardType;
+  final Widget? suffix;
 
   const _AdminTextField({
     required this.label,
     required this.hint,
     required this.controller,
     this.keyboardType = TextInputType.text,
+    this.suffix,
   });
 
   @override
@@ -225,6 +333,7 @@ class _AdminTextField extends StatelessWidget {
           keyboardType: keyboardType,
           decoration: InputDecoration(
             hintText: hint,
+            suffixIcon: suffix,
             filled: true,
             fillColor: AppColors.offWhite,
             border: OutlineInputBorder(

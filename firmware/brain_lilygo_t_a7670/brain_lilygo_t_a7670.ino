@@ -79,6 +79,13 @@ HardwareSerial modemSerial(1);
 #define BOARD_GPS_RX_PIN    22
 HardwareSerial gpsSerial(2);
 
+// Real-time continuous GPS tracking state
+double globalCurrentLat = 0.0;
+double globalCurrentLon = 0.0;
+bool globalHasGPSFix = false;
+unsigned long globalLastFixTime = 0;
+String gpsNmeaLineBuffer = "";
+
 // TinyGSM instance (used for GPRS connection only)
 TinyGsm modem(modemSerial);
 
@@ -101,6 +108,12 @@ const unsigned long BOOT_GRACE_PERIOD_MS = 5000; // 5-second grace period after 
 void initializeA7670();
 bool sendATCommand(const String& cmd, String& response, unsigned long timeout = 1000);
 bool setupGPS();
+void processGPSStream();
+void parseNMEASentence(const String& sentence);
+bool queryA7670InternalGNSS(double& lat, double& lon);
+bool queryA7670CGPSINFO(double& lat, double& lon);
+bool queryA7670CellularLBS(double& lat, double& lon);
+bool syncDeviceCoordinatesToFirestore(double lat, double lon);
 bool getGPSLocation(double& lat, double& lon); 
 String getField(const String& data, char separator, int index);
 bool setupNetwork();
@@ -108,7 +121,9 @@ bool triggerFirebaseAlert(double lat, double lon, const String& triggerType = "s
 bool sendSMSAlert(double lat, double lon);
 void flushModemBuffer();
 bool fetchDeviceConfig();
+bool autoRegisterDeviceInFirestore();
 String parseJsonStringField(const String& json, const String& fieldName);
+double parseJsonDoubleField(const String& json, const String& fieldName);
 String getNetworkTimeRFC3339();
 String detectAPN();
 
@@ -180,7 +195,27 @@ void loop() {
     triggerEmergencyAlertProcess("voice_help");
   }
 
-  // Periodically read any incoming serial data from the modem to keep buffersz clear
+  // 3. Process continuous GPS serial stream to maintain exact real-time coordinates
+  processGPSStream();
+
+  // 4. Periodic background telemetry: every 60s, query onboard GNSS and sync exact coordinates to Firestore
+  static unsigned long lastLocationSyncTime = 0;
+  if (millis() - lastLocationSyncTime > 60000) {
+    lastLocationSyncTime = millis();
+    double currentLat = 0.0;
+    double currentLon = 0.0;
+    if (queryA7670InternalGNSS(currentLat, currentLon) ||
+        queryA7670CGPSINFO(currentLat, currentLon) ||
+        (globalHasGPSFix && (millis() - globalLastFixTime < 120000))) {
+      if (currentLat == 0.0) {
+        currentLat = globalCurrentLat;
+        currentLon = globalCurrentLon;
+      }
+      syncDeviceCoordinatesToFirestore(currentLat, currentLon);
+    }
+  }
+
+  // Periodically read any incoming serial data from the modem to keep buffers clear
   while (modemSerial.available()) {
     Serial.write(modemSerial.read());
   }
@@ -368,78 +403,403 @@ String getField(const String& data, char separator, int index) {
   return found > index ? data.substring(strIndex[0], strIndex[1]) : "";
 }
 
-// Configures and starts GPS session for external Quectel L76K GPS
+// Configures and starts GPS session for external Quectel L76K GPS and internal SIMCom GNSS
 bool setupGPS() {
-  Serial.println("[GPS] Initializing external GPS (Quectel L76K) on Serial2...");
-  
-  // Note: The BOARD_POWER_ON pin (GPIO 12) is already set HIGH in initializeA7670(), 
-  // which provides power to the onboard LDO and powers the L76K GPS module.
-  
-  // Initialize Serial2 for the GPS module (Baud: 9600, RX: GPIO 22, TX: GPIO 21)
+  Serial.println("[GPS] Initializing GPS systems...");
+
+  // 1. Initialize Serial2 for external GPS module (Quectel L76K) on RX: GPIO 22, TX: GPIO 21
   gpsSerial.begin(9600, SERIAL_8N1, BOARD_GPS_RX_PIN, BOARD_GPS_TX_PIN);
-  
-  // Give it a moment to boot
-  delay(500);
-  
-  Serial.println("[GPS] External GPS service started successfully at 9600 baud.");
-  Serial.println("[GPS] NOTE: First outdoor satellite fix may take 30-60 seconds.");
+
+  // 2. Power on internal GNSS on the SIMCom A7670 module itself
+  String resp;
+  Serial.println("[GPS] Powering on SIMCom A7670 onboard GNSS (AT+CGNSSPWR=1)...");
+  sendATCommand("AT+CGNSSPWR=1", resp, 3000);
+  Serial.println("[GPS] AT+CGNSSPWR response: " + resp);
+  sendATCommand("AT+CGPS=1", resp, 2000);
+  sendATCommand("AT+CGNSSMODE=1", resp, 2000);
+  sendATCommand("AT+CGNSSPORTSWITCH=1,1", resp, 2000);
+
+  Serial.println("[GPS] External & Onboard GPS services initiated.");
   return true;
 }
 
-// Obtains the current GPS location by reading NMEA sentences from the external module
-bool getGPSLocation(double& lat, double& lon) {
-  Serial.println("[GPS] Querying external GPS coordinates...");
-  
-  unsigned long start = millis();
-  String buffer = "";
-  
-  // Try reading serial data from GPS for up to 3 seconds
-  while (millis() - start < 3000) {
-    while (gpsSerial.available()) {
-      char c = gpsSerial.read();
-      if (c == '\n') {
-        buffer.trim();
-        
-        // Look for GGA sentence ($GNGGA or $GPGGA) which contains the 3D position fix info
-        if (buffer.startsWith("$GNGGA") || buffer.startsWith("$GPGGA")) {
-          // Serial.printf("[GPS DEBUG] NMEA: %s\n", buffer.c_str()); // Optional debug line
-          
-          // Field 6 is the Position Fix Indicator (0 = no fix, 1 = GPS fix, 2 = DGPS fix)
-          String fixStr = getField(buffer, ',', 6);
-          int fix = fixStr.toInt();
-          
-          if (fix > 0) {
-            String latStr = getField(buffer, ',', 2);
-            String latNS  = getField(buffer, ',', 3);
-            String lonStr = getField(buffer, ',', 4);
-            String lonEW  = getField(buffer, ',', 5);
-            
-            if (latStr.length() > 0 && lonStr.length() > 0) {
-              // Convert Latitude: DDMM.MMMMM to decimal degrees
-              double rawLat = latStr.toDouble();
-              int latDeg = (int)(rawLat / 100);
-              double latMin = rawLat - (latDeg * 100);
-              lat = latDeg + (latMin / 60.0);
-              if (latNS == "S") lat = -lat;
-              
-              // Convert Longitude: DDDMM.MMMMM to decimal degrees
-              double rawLon = lonStr.toDouble();
-              int lonDeg = (int)(rawLon / 100);
-              double lonMin = rawLon - (lonDeg * 100);
-              lon = lonDeg + (lonMin / 60.0);
-              if (lonEW == "W") lon = -lon;
-              
-              return true;
-            }
-          }
+// Parses standard NMEA sentences ($GNGGA, $GPGGA, $GNRMC, $GPRMC) to extract exact lat/lon
+void parseNMEASentence(const String& sentence) {
+  // 1. Check GGA sentence for 3D fix
+  if (sentence.startsWith("$GNGGA") || sentence.startsWith("$GPGGA")) {
+    String fixStr = getField(sentence, ',', 6);
+    int fix = fixStr.toInt();
+    if (fix > 0) {
+      String latStr = getField(sentence, ',', 2);
+      String latNS  = getField(sentence, ',', 3);
+      String lonStr = getField(sentence, ',', 4);
+      String lonEW  = getField(sentence, ',', 5);
+
+      if (latStr.length() > 0 && lonStr.length() > 0) {
+        double rawLat = latStr.toDouble();
+        int latDeg = (int)(rawLat / 100);
+        double latMin = rawLat - (latDeg * 100);
+        double calcLat = latDeg + (latMin / 60.0);
+        if (latNS == "S") calcLat = -calcLat;
+
+        double rawLon = lonStr.toDouble();
+        int lonDeg = (int)(rawLon / 100);
+        double lonMin = rawLon - (lonDeg * 100);
+        double calcLon = lonDeg + (lonMin / 60.0);
+        if (lonEW == "W") calcLon = -calcLon;
+
+        if (calcLat != 0.0 && calcLon != 0.0) {
+          globalCurrentLat = calcLat;
+          globalCurrentLon = calcLon;
+          globalHasGPSFix = true;
+          globalLastFixTime = millis();
         }
-        buffer = ""; // Clear buffer for next line
-      } else if (c != '\r') {
-        buffer += c;
       }
     }
   }
-  
+  // 2. Check RMC sentence for navigation fix
+  else if (sentence.startsWith("$GNRMC") || sentence.startsWith("$GPRMC")) {
+    String status = getField(sentence, ',', 2);
+    if (status == "A") { // 'A' = Active / Valid fix
+      String latStr = getField(sentence, ',', 3);
+      String latNS  = getField(sentence, ',', 4);
+      String lonStr = getField(sentence, ',', 5);
+      String lonEW  = getField(sentence, ',', 6);
+
+      if (latStr.length() > 0 && lonStr.length() > 0) {
+        double rawLat = latStr.toDouble();
+        int latDeg = (int)(rawLat / 100);
+        double latMin = rawLat - (latDeg * 100);
+        double calcLat = latDeg + (latMin / 60.0);
+        if (latNS == "S") calcLat = -calcLat;
+
+        double rawLon = lonStr.toDouble();
+        int lonDeg = (int)(rawLon / 100);
+        double lonMin = rawLon - (lonDeg * 100);
+        double calcLon = lonDeg + (lonMin / 60.0);
+        if (lonEW == "W") calcLon = -calcLon;
+
+        if (calcLat != 0.0 && calcLon != 0.0) {
+          globalCurrentLat = calcLat;
+          globalCurrentLon = calcLon;
+          globalHasGPSFix = true;
+          globalLastFixTime = millis();
+        }
+      }
+    }
+  }
+}
+
+// Continuously reads and buffers NMEA data from the GPS UART
+void processGPSStream() {
+  while (gpsSerial.available()) {
+    char c = gpsSerial.read();
+    if (c == '\n') {
+      gpsNmeaLineBuffer.trim();
+      if (gpsNmeaLineBuffer.length() > 0) {
+        if (gpsNmeaLineBuffer.startsWith("$GNGGA") || gpsNmeaLineBuffer.startsWith("$GPGGA") ||
+            gpsNmeaLineBuffer.startsWith("$GNRMC") || gpsNmeaLineBuffer.startsWith("$GPRMC")) {
+          parseNMEASentence(gpsNmeaLineBuffer);
+        }
+      }
+      gpsNmeaLineBuffer = "";
+    } else if (c != '\r') {
+      if (gpsNmeaLineBuffer.length() < 128) {
+        gpsNmeaLineBuffer += c;
+      }
+    }
+  }
+}
+
+// Queries A7670 internal GNSS engine via AT+CGNSSINFO
+bool queryA7670InternalGNSS(double& lat, double& lon) {
+  String resp;
+  if (!sendATCommand("AT+CGNSSINFO", resp, 2000)) {
+    return false;
+  }
+  int idx = resp.indexOf("+CGNSSINFO:");
+  if (idx == -1) return false;
+  String line = resp.substring(idx);
+  int endL = line.indexOf("\n");
+  if (endL != -1) line = line.substring(0, endL);
+  line.trim();
+
+  // If response has empty fields like "+CGNSSINFO: ,,,,,,,,", no satellite 3D fix yet
+  if (line.indexOf(",,,,") != -1) {
+    String sats = getField(line, ',', 14);
+    if (sats.length() > 0 && sats != "0") {
+      Serial.printf("[GNSS] Satellites in view: %s (Acquiring lock... move outdoors if indoors)\n", sats.c_str());
+    }
+    return false;
+  }
+
+  Serial.println("[GNSS] Live AT+CGNSSINFO line: " + line);
+
+  for (int offset = 1; offset <= 4; offset++) {
+    String pLat = getField(line, ',', offset);
+    String pNS  = getField(line, ',', offset + 1);
+    String pLon = getField(line, ',', offset + 2);
+    String pEW  = getField(line, ',', offset + 3);
+
+    if ((pNS == "N" || pNS == "S") && (pEW == "E" || pEW == "W") && pLat.length() >= 4 && pLon.length() >= 4) {
+      double rawLat = pLat.toDouble();
+      int latDeg = (int)(rawLat / 100);
+      double latMin = rawLat - (latDeg * 100);
+      lat = latDeg + (latMin / 60.0);
+      if (pNS == "S") lat = -lat;
+
+      double rawLon = pLon.toDouble();
+      int lonDeg = (int)(rawLon / 100);
+      double lonMin = rawLon - (lonDeg * 100);
+      lon = lonDeg + (lonMin / 60.0);
+      if (pEW == "W") lon = -lon;
+
+      if (lat != 0.0 && lon != 0.0) {
+        globalCurrentLat = lat;
+        globalCurrentLon = lon;
+        globalHasGPSFix = true;
+        globalLastFixTime = millis();
+        Serial.printf("[GNSS] A7670 Internal GNSS exact satellite fix: Lat: %.6f, Lon: %.6f\n", lat, lon);
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+// Queries A7670 GPS engine via AT+CGPSINFO
+bool queryA7670CGPSINFO(double& lat, double& lon) {
+  String resp;
+  if (!sendATCommand("AT+CGPSINFO", resp, 2000)) {
+    return false;
+  }
+  int idx = resp.indexOf("+CGPSINFO:");
+  if (idx == -1) return false;
+  String line = resp.substring(idx);
+  int endL = line.indexOf("\n");
+  if (endL != -1) line = line.substring(0, endL);
+  line.trim();
+
+  String latStr = getField(line, ',', 1);
+  String latNS  = getField(line, ',', 2);
+  String lonStr = getField(line, ',', 3);
+  String lonEW  = getField(line, ',', 4);
+
+  if ((latNS == "N" || latNS == "S") && (lonEW == "E" || lonEW == "W") && latStr.length() >= 4 && lonStr.length() >= 4) {
+    double rawLat = latStr.toDouble();
+    int latDeg = (int)(rawLat / 100);
+    double latMin = rawLat - (latDeg * 100);
+    lat = latDeg + (latMin / 60.0);
+    if (latNS == "S") lat = -lat;
+
+    double rawLon = lonStr.toDouble();
+    int lonDeg = (int)(rawLon / 100);
+    double lonMin = rawLon - (lonDeg * 100);
+    lon = lonDeg + (lonMin / 60.0);
+    if (lonEW == "W") lon = -lon;
+
+    if (lat != 0.0 && lon != 0.0) {
+      globalCurrentLat = lat;
+      globalCurrentLon = lon;
+      globalHasGPSFix = true;
+      globalLastFixTime = millis();
+      Serial.printf("[CGPS] A7670 CGPSINFO exact fix: Lat: %.6f, Lon: %.6f\n", lat, lon);
+      return true;
+    }
+  }
+  return false;
+}
+
+// Queries A7670 cellular base station location (works indoors when satellites are blocked)
+bool queryA7670CellularLBS(double& lat, double& lon) {
+  Serial.println("[LBS] Querying A7670 cellular base station location (AT+CLBS=1,1)...");
+
+  // Clear pending characters from serial buffer
+  while (modemSerial.available()) modemSerial.read();
+
+  // Send AT+CLBS=1,1 to query location from network
+  modemSerial.println("AT+CLBS=1,1");
+
+  unsigned long start = millis();
+  String lbsResponse = "";
+  // Wait up to 10 seconds specifically for +CLBS: to arrive from cellular network
+  while (millis() - start < 10000) {
+    while (modemSerial.available()) {
+      char c = modemSerial.read();
+      lbsResponse += c;
+    }
+    // Check if +CLBS: result line arrived
+    if (lbsResponse.indexOf("+CLBS:") != -1 && lbsResponse.indexOf("\n", lbsResponse.indexOf("+CLBS:")) != -1) {
+      break;
+    }
+    if (lbsResponse.indexOf("ERROR") != -1 && lbsResponse.indexOf("+CLBS:") == -1) {
+      break;
+    }
+    delay(50);
+  }
+
+  Serial.println("[LBS] Raw modem response: " + lbsResponse);
+
+  // If AT+CLBS=1,1 was rejected or didn't return coordinates, try fallback AT+CLBS=1
+  if (lbsResponse.indexOf("+CLBS: 0") == -1) {
+    while (modemSerial.available()) modemSerial.read();
+    Serial.println("[LBS] Trying AT+CLBS=1 fallback...");
+    modemSerial.println("AT+CLBS=1");
+    start = millis();
+    lbsResponse = "";
+    while (millis() - start < 8000) {
+      while (modemSerial.available()) {
+        char c = modemSerial.read();
+        lbsResponse += c;
+      }
+      if (lbsResponse.indexOf("+CLBS:") != -1 && lbsResponse.indexOf("\n", lbsResponse.indexOf("+CLBS:")) != -1) {
+        break;
+      }
+      delay(50);
+    }
+    Serial.println("[LBS] Fallback response: " + lbsResponse);
+  }
+
+  int idx = lbsResponse.indexOf("+CLBS: 0");
+  if (idx != -1) {
+    String line = lbsResponse.substring(idx);
+    int endL = line.indexOf("\n");
+    if (endL != -1) line = line.substring(0, endL);
+    line.trim();
+
+    String f1 = getField(line, ',', 1);
+    String f2 = getField(line, ',', 2);
+    double val1 = f1.toDouble();
+    double val2 = f2.toDouble();
+
+    double cLat = 0.0, cLon = 0.0;
+    // Auto-detect which is lat and lon based on geographic bounds of Philippines (Lat 4-22, Lon 115-130)
+    if (val1 >= 4.0 && val1 <= 22.0 && val2 >= 115.0 && val2 <= 130.0) {
+      cLat = val1;
+      cLon = val2;
+    } else if (val2 >= 4.0 && val2 <= 22.0 && val1 >= 115.0 && val1 <= 130.0) {
+      cLat = val2;
+      cLon = val1;
+    } else if (val1 != 0.0 && val2 != 0.0) {
+      cLat = val1;
+      cLon = val2;
+    }
+
+    if (cLat != 0.0 && cLon != 0.0) {
+      lat = cLat;
+      lon = cLon;
+      globalCurrentLat = cLat;
+      globalCurrentLon = cLon;
+      globalHasGPSFix = true;
+      globalLastFixTime = millis();
+      Serial.printf("[LBS] SUCCESS! Cellular tower location acquired: Lat: %.6f, Lon: %.6f\n", lat, lon);
+      return true;
+    }
+  } else {
+    int errIdx = lbsResponse.indexOf("+CLBS:");
+    if (errIdx != -1) {
+      Serial.printf("[LBS] Cellular location service returned error: %s\n", lbsResponse.substring(errIdx).c_str());
+    }
+  }
+  return false;
+}
+
+// Syncs real coordinates directly to Firestore devices/safewalk_device_001 document
+bool syncDeviceCoordinatesToFirestore(double lat, double lon) {
+  if (lat == 0.0 || lon == 0.0) return false;
+  // If it's Manila (14.5995, 120.9842), do NOT sync Manila!
+  if (abs(lat - 14.5995) < 0.005 && abs(lon - 120.9842) < 0.005) return false;
+
+  Serial.printf("[DEVICE SYNC] Updating live coordinates in Firestore: Lat: %.6f, Lon: %.6f\n", lat, lon);
+  String response;
+  flushModemBuffer();
+
+  String rfcTimestamp = getNetworkTimeRFC3339();
+  String jsonBody = "{\"fields\":{";
+  jsonBody += "\"location\":{\"stringValue\":\"" + String(lat, 6) + ", " + String(lon, 6) + "\"},";
+  jsonBody += "\"coordinates\":{\"geoPointValue\":{\"latitude\":" + String(lat, 6) + ",\"longitude\":" + String(lon, 6) + "}},";
+  jsonBody += "\"status\":{\"stringValue\":\"active\"},";
+  jsonBody += "\"lastSeen\":{\"timestampValue\":\"" + rfcTimestamp + "\"}";
+  jsonBody += "}}";
+
+  String url = "https://firestore.googleapis.com/v1/projects/";
+  url += FIREBASE_PROJECT_ID;
+  url += "/databases/(default)/documents/devices/";
+  url += DEVICE_ID;
+  url += "?updateMask.fieldPaths=location&updateMask.fieldPaths=coordinates&updateMask.fieldPaths=status&updateMask.fieldPaths=lastSeen&key=";
+  url += FIREBASE_API_KEY;
+
+  sendATCommand("AT+HTTPTERM", response, 2000);
+  delay(300);
+  sendATCommand("AT+CSSLCFG=\"authmode\",0,0", response, 2000);
+  sendATCommand("AT+CSSLCFG=\"sslversion\",0,4", response, 2000);
+  sendATCommand("AT+CSSLCFG=\"ignorelocaltime\",0,1", response, 2000);
+  sendATCommand("AT+CSSLCFG=\"enableSNI\",0,1", response, 2000);
+
+  if (!sendATCommand("AT+HTTPINIT", response, 4000)) return false;
+  sendATCommand("AT+HTTPSSL=1", response, 2000);
+  sendATCommand("AT+HTTPPARA=\"CID\",1", response, 2000);
+  sendATCommand("AT+HTTPPARA=\"SSLCFG\",0", response, 2000);
+  sendATCommand("AT+HTTPPARA=\"URL\",\"" + url + "\"", response, 2000);
+  sendATCommand("AT+HTTPPARA=\"CONTENT\",\"application/json\"", response, 2000);
+
+  modemSerial.println("AT+HTTPDATA=" + String(jsonBody.length()) + ",10000");
+  delay(200);
+  modemSerial.print(jsonBody);
+  delay(500);
+
+  // Send PATCH (HTTP method 2 in A7670)
+  modemSerial.println("AT+HTTPACTION=2");
+  delay(1500);
+  sendATCommand("AT+HTTPTERM", response, 2000);
+  return true;
+}
+
+// Obtains the current GPS location with high reliability (continuous background fix, active wait, last-known, and LBS fallback)
+bool getGPSLocation(double& lat, double& lon) {
+  Serial.println("[GPS] Querying exact GPS coordinates...");
+
+  // 1. If we already have a recent background fix (< 60 seconds old), use it immediately!
+  if (globalHasGPSFix && (millis() - globalLastFixTime < 60000)) {
+    lat = globalCurrentLat;
+    lon = globalCurrentLon;
+    Serial.printf("[GPS] Immediate exact fix acquired: Lat: %.6f, Lon: %.6f (age: %lu ms)\n",
+                  lat, lon, millis() - globalLastFixTime);
+    return true;
+  }
+
+  // 2. Active listening window: read serial data from GPS and modem for up to 10 seconds
+  unsigned long start = millis();
+  while (millis() - start < 10000) {
+    processGPSStream();
+    if (globalHasGPSFix && (millis() - globalLastFixTime < 5000)) {
+      lat = globalCurrentLat;
+      lon = globalCurrentLon;
+      Serial.printf("[GPS] Live exact satellite lock established: Lat: %.6f, Lon: %.6f\n", lat, lon);
+      return true;
+    }
+
+    if (queryA7670InternalGNSS(lat, lon) || queryA7670CGPSINFO(lat, lon)) {
+      return true;
+    }
+
+    delay(200);
+  }
+
+  // 3. Try cellular tower LBS (Location Based Service) query via A7670 modem (works indoors!)
+  if (queryA7670CellularLBS(lat, lon)) {
+    return true;
+  }
+
+  // 4. If recent active lock failed but we have a valid historical fix, use last known exact position
+  if (globalCurrentLat != 0.0 && globalCurrentLon != 0.0) {
+    lat = globalCurrentLat;
+    lon = globalCurrentLon;
+    Serial.printf("[GPS] Using last known exact coordinates: Lat: %.6f, Lon: %.6f (age: %lu ms)\n",
+                  lat, lon, millis() - globalLastFixTime);
+    return true;
+  }
+
   return false;
 }
 
@@ -814,6 +1174,95 @@ String parseJsonStringField(const String& json, const String& fieldName) {
   return json.substring(openQuoteIndex + 1, closeQuoteIndex);
 }
 
+// Parses a numeric double field from a Firestore JSON response
+double parseJsonDoubleField(const String& json, const String& fieldName) {
+  int fieldIndex = json.indexOf("\"" + fieldName + "\"");
+  if (fieldIndex == -1) return 0.0;
+
+  // Search for doubleValue or integerValue
+  int valIdx = json.indexOf("Value\":", fieldIndex);
+  if (valIdx != -1 && valIdx - fieldIndex < 50) {
+    int start = valIdx + 7;
+    while (start < json.length() && (json.charAt(start) == ' ' || json.charAt(start) == '\"')) {
+      start++;
+    }
+    int end = start;
+    while (end < json.length() && (isDigit(json.charAt(end)) || json.charAt(end) == '.' || json.charAt(end) == '-')) {
+      end++;
+    }
+    if (end > start) {
+      return json.substring(start, end).toDouble();
+    }
+  }
+
+  // Also check plain "fieldName": 12.34
+  int colon = json.indexOf(":", fieldIndex);
+  if (colon != -1 && colon - fieldIndex < 30) {
+    int start = colon + 1;
+    while (start < json.length() && (json.charAt(start) == ' ' || json.charAt(start) == '\"')) {
+      start++;
+    }
+    int end = start;
+    while (end < json.length() && (isDigit(json.charAt(end)) || json.charAt(end) == '.' || json.charAt(end) == '-')) {
+      end++;
+    }
+    if (end > start) {
+      return json.substring(start, end).toDouble();
+    }
+  }
+  return 0.0;
+}
+
+// Automatically creates/registers devices/safewalk_device_001 if it doesn't exist in Firestore (404 fix)
+bool autoRegisterDeviceInFirestore() {
+  Serial.println("[CONFIG] Auto-registering safewalk_device_001 in Firestore...");
+  String response;
+  flushModemBuffer();
+
+  String rfcTimestamp = getNetworkTimeRFC3339();
+  String jsonBody = "{\"fields\":{";
+  jsonBody += "\"deviceId\":{\"stringValue\":\"" + String(DEVICE_ID) + "\"},";
+  jsonBody += "\"deviceName\":{\"stringValue\":\"" + String(DEVICE_NAME) + "\"},";
+  jsonBody += "\"phoneNumber\":{\"stringValue\":\"" + String(DEVICE_PHONE) + "\"},";
+  jsonBody += "\"parentPhoneNumber\":{\"stringValue\":\"" + String(PARENT_PHONE) + "\"},";
+  jsonBody += "\"parentUid\":{\"stringValue\":\"" + String(PARENT_UID) + "\"},";
+  jsonBody += "\"status\":{\"stringValue\":\"online\"},";
+  jsonBody += "\"updatedAt\":{\"timestampValue\":\"" + rfcTimestamp + "\"}";
+  jsonBody += "}}";
+
+  String url = "https://firestore.googleapis.com/v1/projects/";
+  url += FIREBASE_PROJECT_ID;
+  url += "/databases/(default)/documents/devices/";
+  url += DEVICE_ID;
+  url += "?key=";
+  url += FIREBASE_API_KEY;
+
+  sendATCommand("AT+HTTPTERM", response, 2000);
+  sendATCommand("AT+CSSLCFG=\"authmode\",0,0", response, 2000);
+  sendATCommand("AT+CSSLCFG=\"sslversion\",0,4", response, 2000);
+  sendATCommand("AT+CSSLCFG=\"ignorelocaltime\",0,1", response, 2000);
+  sendATCommand("AT+CSSLCFG=\"enableSNI\",0,1", response, 2000);
+
+  if (!sendATCommand("AT+HTTPINIT", response, 3000)) return false;
+  sendATCommand("AT+HTTPSSL=1", response, 2000);
+  sendATCommand("AT+HTTPPARA=\"CID\",1", response, 2000);
+  sendATCommand("AT+HTTPPARA=\"SSLCFG\",0", response, 2000);
+  sendATCommand("AT+HTTPPARA=\"URL\",\"" + url + "\"", response, 2000);
+  sendATCommand("AT+HTTPPARA=\"CONTENT\",\"application/json\"", response, 2000);
+
+  modemSerial.println("AT+HTTPDATA=" + String(jsonBody.length()) + ",10000");
+  delay(200);
+  modemSerial.print(jsonBody);
+  delay(500);
+
+  // Send PATCH (method 2)
+  modemSerial.println("AT+HTTPACTION=2");
+  delay(2000);
+  sendATCommand("AT+HTTPTERM", response, 2000);
+  Serial.println("[CONFIG] Auto-registration uploaded to Firestore.");
+  return true;
+}
+
 // Queries cellular network time (AT+CCLK?) and formats it as an ISO 8601/RFC 3339 timestamp
 String getNetworkTimeRFC3339() {
   String response;
@@ -939,6 +1388,10 @@ bool fetchDeviceConfig() {
   if (!gotAction || responseCode != 200 || dataSize <= 0) {
     Serial.printf("[CONFIG] HTTP GET failed. Code: %d, Size: %d. Falling back to default settings.\n", responseCode, dataSize);
     sendATCommand("AT+HTTPTERM", response, 3000);
+    // If document is missing in Firestore (404), automatically initialize it so it can be linked
+    if (responseCode == 404) {
+      autoRegisterDeviceInFirestore();
+    }
     return false;
   }
 
@@ -980,6 +1433,20 @@ bool fetchDeviceConfig() {
   String parsedPhone = parseJsonStringField(httpData, "phoneNumber");
   if (parsedPhone.length() > 0) {
     devicePhoneNumber = parsedPhone;
+  }
+
+  // Check if student/device coordinates were stored in Firestore
+  double storedLat = parseJsonDoubleField(httpData, "latitude");
+  double storedLon = parseJsonDoubleField(httpData, "longitude");
+  if (storedLat != 0.0 && storedLon != 0.0) {
+    if (!((abs(storedLat - 14.5995) < 0.005) && (abs(storedLon - 120.9842) < 0.005))) {
+      globalCurrentLat = storedLat;
+      globalCurrentLon = storedLon;
+      globalHasGPSFix = true;
+      globalLastFixTime = millis();
+      Serial.printf("[CONFIG] Stored exact location loaded from Firestore: Lat: %.6f, Lon: %.6f\n",
+                    storedLat, storedLon);
+    }
   }
   
   Serial.printf("[CONFIG] Loaded: Parent Phone: %s, Parent UID: %s, Student UID: %s\n", 
@@ -1435,11 +1902,34 @@ void triggerEmergencyAlertProcess(const String& triggerSource) {
   bool hasGPS = getGPSLocation(lat, lon);
 
   if (!hasGPS) {
-    Serial.println("[WARNING] GPS lock pending. Using default fallback coordinates (Manila).");
-    lat = 14.5995;
-    lon = 120.9842;
+    if (globalCurrentLat != 0.0 && globalCurrentLon != 0.0) {
+      lat = globalCurrentLat;
+      lon = globalCurrentLon;
+      Serial.printf("[GPS] Using stored last known exact coordinates: Lat: %.6f, Lon: %.6f\n", lat, lon);
+    } else {
+      Serial.println("[WARNING] Satellite lock pending. Querying cellular tower LBS...");
+      if (!queryA7670CellularLBS(lat, lon)) {
+        delay(1000);
+        queryA7670InternalGNSS(lat, lon);
+      }
+    }
   }
-  Serial.printf("[INFO] Coordinates: Lat: %.6f, Lon: %.6f\n", lat, lon);
+
+  // If still 0.0, 0.0, check Firestore for student profile coordinates
+  if (lat == 0.0 && lon == 0.0) {
+    Serial.println("[GPS] Live satellites and cellular LBS pending. Checking Firestore for student's phone location...");
+    fetchDeviceConfig();
+    if (globalCurrentLat != 0.0 && globalCurrentLon != 0.0) {
+      lat = globalCurrentLat;
+      lon = globalCurrentLon;
+      Serial.printf("[GPS] Acquired student location from Firestore: Lat: %.6f, Lon: %.6f\n", lat, lon);
+    }
+  }
+
+  Serial.printf("[INFO] Exact Coordinates: Lat: %.6f, Lon: %.6f\n", lat, lon);
+  if (lat != 0.0 && lon != 0.0) {
+    syncDeviceCoordinatesToFirestore(lat, lon);
+  }
 
   // 3. Send Backup SMS to Parent
   bool smsSent = sendSMSAlert(lat, lon);

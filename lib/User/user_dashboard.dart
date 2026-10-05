@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
@@ -52,6 +53,8 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
   String _deviceLocation = 'Unknown';
   String _deviceStatus = 'offline';
   LatLng? _deviceCoordinates;
+  bool _isDetectingLocation = false;
+  StreamSubscription<Position>? _positionStreamSub;
   BitmapDescriptor? _sosMarkerIcon;
   GoogleMapController? _routeMapController;
   LatLng? _nextMapFocusPoint;
@@ -95,6 +98,7 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
   }
 
   bool _isValidLatLng(double lat, double lng) {
+    if (lat.abs() < 0.0001 && lng.abs() < 0.0001) return false;
     return lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180;
   }
 
@@ -136,7 +140,9 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
 
     final location = data['location'];
     if (location is GeoPoint) {
-      return LatLng(location.latitude, location.longitude);
+      if (_isValidLatLng(location.latitude, location.longitude)) {
+        return LatLng(location.latitude, location.longitude);
+      }
     }
     if (location is String) {
       final parsed = _coordinatesFromText(location);
@@ -146,10 +152,27 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
     return null;
   }
 
+  bool _isDefaultManila(LatLng? p) {
+    if (p == null) return false;
+    return (p.latitude - 14.5995).abs() < 0.005 &&
+        (p.longitude - 120.9842).abs() < 0.005;
+  }
+
   LatLng? _extractAlertCoordinates(Map<String, dynamic> data) {
+    if (data['locationCleared'] == true ||
+        data['falseAlarm'] == true ||
+        (data['status'] ?? '').toString().toLowerCase() == 'false_alarm' ||
+        (data['status'] ?? '').toString().toLowerCase() == 'cancelled_false_trigger' ||
+        (data['status'] ?? '').toString().toLowerCase() == 'resolved' ||
+        (data['status'] ?? '').toString().toLowerCase() == 'acknowledged') {
+      return null;
+    }
+
     final coordinates = data['coordinates'];
     if (coordinates is GeoPoint) {
-      return LatLng(coordinates.latitude, coordinates.longitude);
+      if (_isValidLatLng(coordinates.latitude, coordinates.longitude)) {
+        return LatLng(coordinates.latitude, coordinates.longitude);
+      }
     }
     if (coordinates is Map) {
       final nested = _coordinatesFromValues(
@@ -167,10 +190,18 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
 
     final location = data['location'];
     if (location is GeoPoint) {
-      return LatLng(location.latitude, location.longitude);
+      if (_isValidLatLng(location.latitude, location.longitude)) {
+        return LatLng(location.latitude, location.longitude);
+      }
     }
     if (location is String) {
-      return _coordinatesFromText(location);
+      final fromTxt = _coordinatesFromText(location);
+      if (fromTxt != null) return fromTxt;
+    }
+
+    // Fallback: If hardware reported (0,0) or pending fix, use student's live location!
+    if (_deviceCoordinates != null && !_isDefaultManila(_deviceCoordinates)) {
+      return _deviceCoordinates;
     }
 
     return null;
@@ -195,10 +226,24 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
           final type = (data['type'] ?? '').toString().toLowerCase();
           return type == 'sos' || type == 'voice_help' || type == 'emergency';
         }).toList()..sort((a, b) {
-          final aTs = a.data()['timestamp'] as Timestamp?;
-          final bTs = b.data()['timestamp'] as Timestamp?;
-          final aClientTs = a.data()['clientTimestamp'] as Timestamp?;
-          final bClientTs = b.data()['clientTimestamp'] as Timestamp?;
+          final aData = a.data();
+          final bData = b.data();
+          final aStatus = (aData['status'] ?? '').toString().toLowerCase();
+          final bStatus = (bData['status'] ?? '').toString().toLowerCase();
+          int priority(String s) {
+            if (s == 'active' || s == 'verifying_speech') return 0;
+            if (s == 'acknowledged') return 1;
+            return 2;
+          }
+          final pA = priority(aStatus);
+          final pB = priority(bStatus);
+          if (pA != pB) {
+            return pA.compareTo(pB);
+          }
+          final aTs = aData['timestamp'] as Timestamp?;
+          final bTs = bData['timestamp'] as Timestamp?;
+          final aClientTs = aData['clientTimestamp'] as Timestamp?;
+          final bClientTs = bData['clientTimestamp'] as Timestamp?;
           final aMs =
               aTs?.millisecondsSinceEpoch ??
               aClientTs?.millisecondsSinceEpoch ??
@@ -212,13 +257,27 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
 
     if (sosDocs.isEmpty) return const _SosMapState();
 
-    final latest = sosDocs.first.data();
-    final coordinate = _extractAlertCoordinates(latest);
+    final latestDoc = sosDocs.first;
+    final latest = latestDoc.data();
     final status = (latest['status'] ?? '').toString().toLowerCase();
+    final isActive = status == 'active' || status == 'verifying_speech';
+    final isAck = status == 'acknowledged';
+    final isFalseAlarm = status == 'false_alarm' || status == 'cancelled_false_trigger';
+    final isResolved = status == 'resolved';
+    final isCleared = latest['locationCleared'] == true;
+
+    // Coordinate is strictly null if false alarm, resolved, acknowledged, or location cleared
+    final coordinate = (isFalseAlarm || isResolved || isCleared || isAck || !isActive)
+        ? null
+        : _extractAlertCoordinates(latest);
+
     final locationText = (latest['location'] ?? '').toString().trim();
     return _SosMapState(
       coordinate: coordinate,
-      isActive: status == 'active' || status == 'verifying_speech',
+      isActive: isActive,
+      isAcknowledged: isAck,
+      isFalseAlarm: isFalseAlarm,
+      alertId: latestDoc.id,
       timestampLabel: _formatTimestamp(latest['timestamp'] as Timestamp?),
       areaLabel: locationText.isEmpty
           ? _formatCoordinateLabel(coordinate)
@@ -363,6 +422,185 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
     );
   }
 
+  Future<void> _handleAlertAction(String alertId, String currentStatus) async {
+    final status = currentStatus.toLowerCase().trim();
+    if (status == 'resolved') {
+      _showActionSnack("The issue is already been fixed.");
+      return;
+    }
+    if (status == 'false_alarm') {
+      _showActionSnack("This alert was already marked as a false alarm.");
+      return;
+    }
+    await _confirmAndReportFalseAlarm(alertId);
+  }
+
+  Future<void> _confirmAndReportFalseAlarm(String alertId) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) {
+        return AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          backgroundColor: AppColors.white,
+          title: Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFFEF3C7),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: const Icon(
+                  Icons.notifications_off_outlined,
+                  color: Color(0xFFB45309),
+                  size: 24,
+                ),
+              ),
+              const SizedBox(width: 12),
+              const Expanded(
+                child: Text(
+                  'False Alarm?',
+                  style: TextStyle(
+                    fontFamily: _hf,
+                    fontWeight: FontWeight.w600,
+                    fontSize: 22,
+                    color: AppColors.green,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          content: const Text(
+            'Did you accidentally click your device or trigger the emergency SOS?\n\n'
+            'Marking this as a False Alarm will cancel the alert and notify your parent that you are safe.',
+            style: TextStyle(
+              fontFamily: _bf,
+              fontSize: 13,
+              height: 1.5,
+              color: AppColors.textMain,
+            ),
+          ),
+          actionsPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(false),
+              child: const Text(
+                'KEEP ALERT ACTIVE',
+                style: TextStyle(
+                  fontFamily: _bf,
+                  fontSize: 11,
+                  letterSpacing: 1.5,
+                  fontWeight: FontWeight.w600,
+                  color: AppColors.textSub,
+                ),
+              ),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFFB45309),
+                foregroundColor: AppColors.white,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              ),
+              onPressed: () => Navigator.of(ctx).pop(true),
+              child: const Text(
+                'YES, FALSE ALARM',
+                style: TextStyle(
+                  fontFamily: _bf,
+                  fontSize: 11,
+                  letterSpacing: 1.5,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (confirmed == true) {
+      await _reportFalseAlarm(alertId);
+    }
+  }
+
+  Future<void> _reportFalseAlarm(String alertId) async {
+    final uid = FirebaseAuth.instance.currentUser?.uid ?? '';
+    try {
+      await _firestore.collection('emergency_alerts').doc(alertId).set({
+        'status': 'false_alarm',
+        'falseAlarm': true,
+        'falseAlarmBy': uid,
+        'falseAlarmAt': FieldValue.serverTimestamp(),
+        'cancellationReason': 'Device miss-clicked by student (False alarm reported)',
+        'locationCleared': true,
+        'location': 'Alert cancelled (False alarm)',
+        'coordinates': FieldValue.delete(),
+        'latitude': FieldValue.delete(),
+        'longitude': FieldValue.delete(),
+        'lat': FieldValue.delete(),
+        'lng': FieldValue.delete(),
+        'lon': FieldValue.delete(),
+        'resolvedAt': FieldValue.serverTimestamp(),
+        'resolvedBy': uid,
+      }, SetOptions(merge: true));
+      if (mounted) {
+        setState(() {
+          _avatarMood = 'happy';
+          _nextMapFocusPoint = null;
+          _lastFocusedMapPoint = null;
+          if (_linkedDeviceId.isEmpty || _linkedDeviceId == 'Not linked') {
+            _deviceCoordinates = null;
+            _deviceLocation = 'No coordinates';
+          }
+        });
+      }
+      if (_linkedDeviceId.isNotEmpty && _linkedDeviceId != 'Not linked') {
+        await _loadLinkedDevice();
+      }
+      _showActionSnack('Alert marked as False Alarm. Your parent has been notified that you are safe.');
+    } catch (e) {
+      _showActionSnack('Failed to update alert: $e', isError: true);
+    }
+  }
+
+  Future<void> _resolveAlertDone(String alertId) async {
+    final uid = FirebaseAuth.instance.currentUser?.uid ?? '';
+    try {
+      await _firestore.collection('emergency_alerts').doc(alertId).set({
+        'status': 'resolved',
+        'resolvedBy': uid,
+        'resolvedAt': FieldValue.serverTimestamp(),
+        'locationCleared': true,
+        'location': 'Location removed',
+        'coordinates': FieldValue.delete(),
+        'latitude': FieldValue.delete(),
+        'longitude': FieldValue.delete(),
+        'lat': FieldValue.delete(),
+        'lng': FieldValue.delete(),
+        'lon': FieldValue.delete(),
+      }, SetOptions(merge: true));
+      if (mounted) {
+        setState(() {
+          _avatarMood = 'happy';
+          _nextMapFocusPoint = null;
+          _lastFocusedMapPoint = null;
+          if (_linkedDeviceId.isEmpty || _linkedDeviceId == 'Not linked') {
+            _deviceCoordinates = null;
+            _deviceLocation = 'Location removed';
+          }
+        });
+      }
+      if (_linkedDeviceId.isNotEmpty && _linkedDeviceId != 'Not linked') {
+        await _loadLinkedDevice();
+      }
+      _showActionSnack("The issue is already been fixed. Location removed.");
+    } catch (e) {
+      _showActionSnack('Failed to resolve alert: $e', isError: true);
+    }
+  }
+
   Widget _buildWebMapFallback({required String contextLabel}) {
     return Container(
       color: const Color(0xFF830C0C),
@@ -393,6 +631,7 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
 
   @override
   void dispose() {
+    _positionStreamSub?.cancel();
     _routeMapController?.dispose();
     _profileNameCtrl.dispose();
     _profilePhoneCtrl.dispose();
@@ -433,6 +672,13 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
       await _loadLinkedDevice();
       await _loadLinkedParent();
       await _loadPendingInvitations();
+      if (_locationSharingEnabled &&
+          (_deviceCoordinates == null || _isDefaultManila(_deviceCoordinates))) {
+        await _detectDeviceExactLocation(showFeedback: false, autoCenter: true);
+      }
+      if (_locationSharingEnabled && _deviceCoordinates != null) {
+        _startLiveLocationTracking();
+      }
     } catch (e) {
       _showActionSnack('Failed to load dashboard data: $e', isError: true);
     } finally {
@@ -482,7 +728,10 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
           ? '${locationField.latitude.toStringAsFixed(6)}, ${locationField.longitude.toStringAsFixed(6)}'
           : (locationField ?? 'Unknown').toString();
       _deviceStatus = (data['status'] ?? 'active').toString().toLowerCase();
-      _deviceCoordinates = _extractDeviceCoordinates(data);
+      final parsedCoords = _extractDeviceCoordinates(data);
+      if (!_isDefaultManila(parsedCoords) || _deviceCoordinates == null) {
+        _deviceCoordinates = parsedCoords;
+      }
     });
   }
 
@@ -747,51 +996,211 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
 
   // ─── Actions ───────────────────────────────────────────────────
 
-  Future<LatLng?> _getCurrentPhoneLocation() async {
+  Future<LatLng?> _detectDeviceExactLocation({
+    bool showFeedback = true,
+    bool updateFirestore = true,
+    bool autoCenter = true,
+  }) async {
+    if (_isDetectingLocation) return _deviceCoordinates;
+    if (mounted) setState(() => _isDetectingLocation = true);
+
     try {
-      final isServiceEnabled = await Geolocator.isLocationServiceEnabled();
-      if (!isServiceEnabled) {
-        _showActionSnack(
-          'Location services are off. Using last known linked location.',
-          isError: true,
-        );
+      bool serviceEnabled = true;
+      try {
+        serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      } catch (_) {
+        serviceEnabled = true;
+      }
+
+      if (!serviceEnabled) {
+        if (showFeedback) {
+          _showActionSnack(
+            'Location services are turned off on your device. Please turn on GPS.',
+            isError: true,
+          );
+        }
         return null;
       }
 
-      var permission = await Geolocator.checkPermission();
+      LocationPermission permission = await Geolocator.checkPermission();
       if (permission == LocationPermission.denied) {
         permission = await Geolocator.requestPermission();
       }
 
       if (permission == LocationPermission.denied) {
-        _showActionSnack(
-          'Location permission denied. Using last known linked location.',
-          isError: true,
-        );
+        if (showFeedback) {
+          _showActionSnack(
+            'Location permission denied. Please allow location access to detect your exact position.',
+            isError: true,
+          );
+        }
         return null;
       }
 
       if (permission == LocationPermission.deniedForever) {
-        _showActionSnack(
-          'Location permission is permanently denied. Enable it in app settings.',
-          isError: true,
-        );
+        if (showFeedback) {
+          _showActionSnack(
+            'Location permission is permanently denied. Please enable it in browser / app site settings.',
+            isError: true,
+          );
+        }
         return null;
       }
 
-      final position = await Geolocator.getCurrentPosition(
-        desiredAccuracy: LocationAccuracy.bestForNavigation,
-        timeLimit: const Duration(seconds: 12),
-      );
+      Position? position;
+      // 1. Try high accuracy
+      try {
+        position = await Geolocator.getCurrentPosition(
+          desiredAccuracy: LocationAccuracy.high,
+          timeLimit: const Duration(seconds: 15),
+        );
+      } catch (e1) {
+        debugPrint('High accuracy location attempt: $e1. Trying medium accuracy...');
+        // 2. Fallback to medium accuracy
+        try {
+          position = await Geolocator.getCurrentPosition(
+            desiredAccuracy: LocationAccuracy.medium,
+            timeLimit: const Duration(seconds: 10),
+          );
+        } catch (e2) {
+          debugPrint('Medium accuracy location attempt: $e2. Trying last known...');
+          try {
+            position = await Geolocator.getLastKnownPosition();
+          } catch (_) {}
+          if (position == null) {
+            if (showFeedback) {
+              _showActionSnack(
+                'Could not detect live GPS location. Please check device location settings.',
+                isError: true,
+              );
+            }
+            return null;
+          }
+        }
+      }
 
-      return LatLng(position.latitude, position.longitude);
-    } catch (_) {
+      final exactPoint = LatLng(position.latitude, position.longitude);
+      final label =
+          '${exactPoint.latitude.toStringAsFixed(6)}, ${exactPoint.longitude.toStringAsFixed(6)}';
+
+      if (!mounted) return exactPoint;
+
+      setState(() {
+        _deviceCoordinates = exactPoint;
+        _deviceLocation = label;
+        if (_deviceId == 'Not linked') {
+          _deviceId = 'Device GPS (Active)';
+          _deviceName = 'This Device (Live GPS)';
+          _deviceStatus = 'active';
+        }
+      });
+
+      if (autoCenter) {
+        _focusRouteMapOnPoint(exactPoint, zoom: 16, force: true);
+      }
+
+      if (updateFirestore) {
+        await _syncLocationToFirestore(exactPoint, label);
+      }
+
+      if (_locationSharingEnabled) {
+        _startLiveLocationTracking();
+      }
+
+      if (showFeedback) {
+        _showActionSnack('Exact device location detected: $label');
+      }
+
+      return exactPoint;
+    } catch (e) {
+      if (showFeedback) {
+        _showActionSnack('Failed to detect location: $e', isError: true);
+      }
+      return null;
+    } finally {
+      if (mounted) {
+        setState(() => _isDetectingLocation = false);
+      }
+    }
+  }
+
+  void _startLiveLocationTracking() {
+    _positionStreamSub?.cancel();
+    try {
+      const locationSettings = LocationSettings(
+        accuracy: LocationAccuracy.high,
+        distanceFilter: 10,
+      );
+      _positionStreamSub = Geolocator.getPositionStream(
+        locationSettings: locationSettings,
+      ).listen(
+        (Position position) {
+          if (!mounted) return;
+          final point = LatLng(position.latitude, position.longitude);
+          final label =
+              '${point.latitude.toStringAsFixed(6)}, ${point.longitude.toStringAsFixed(6)}';
+          setState(() {
+            _deviceCoordinates = point;
+            _deviceLocation = label;
+          });
+          _syncLocationToFirestore(point, label);
+        },
+        onError: (e) {
+          debugPrint('Live location stream error: $e');
+        },
+      );
+    } catch (e) {
+      debugPrint('Failed to start location stream: $e');
+    }
+  }
+
+  Future<void> _syncLocationToFirestore(LatLng point, String label) async {
+    try {
+      final currentUser = FirebaseAuth.instance.currentUser;
+      if (currentUser == null) return;
+      final batch = _firestore.batch();
+
+      final userRef = _firestore.collection('users').doc(currentUser.uid);
+      batch.set(userRef, {
+        'location': GeoPoint(point.latitude, point.longitude),
+        'latitude': point.latitude,
+        'longitude': point.longitude,
+        'locationText': label,
+        'lastLocationUpdate': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+
+      if (_linkedDeviceId.isNotEmpty && _linkedDeviceId != 'Not linked') {
+        final devRef = _firestore.collection('devices').doc(_linkedDeviceId);
+        batch.set(devRef, {
+          'deviceId': _linkedDeviceId,
+          'location': GeoPoint(point.latitude, point.longitude),
+          'latitude': point.latitude,
+          'longitude': point.longitude,
+          'locationText': label,
+          'status': 'active',
+          'updatedAt': FieldValue.serverTimestamp(),
+        }, SetOptions(merge: true));
+      }
+
+      await batch.commit();
+    } catch (e) {
+      debugPrint('Failed to sync location to Firestore: $e');
+    }
+  }
+
+  Future<LatLng?> _getCurrentPhoneLocation() async {
+    final point = await _detectDeviceExactLocation(
+      showFeedback: false,
+      updateFirestore: true,
+      autoCenter: false,
+    );
+    if (point == null) {
       _showActionSnack(
         'Could not get live GPS location. Using last known linked location.',
         isError: true,
       );
-      return null;
     }
+    return point;
   }
 
   Future<void> _createSosAlert() async {
@@ -912,6 +1321,11 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
         _safeModeEnabled = safeModeEnabled;
         _locationSharingEnabled = locationSharingEnabled;
       });
+      if (locationSharingEnabled) {
+        _startLiveLocationTracking();
+      } else {
+        _positionStreamSub?.cancel();
+      }
       _showActionSnack('Settings saved.');
     } catch (e) {
       _showActionSnack('Failed to save settings: $e', isError: true);
@@ -1290,8 +1704,8 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                                           ),
                                         }
                                       : <Circle>{},
-                                  myLocationEnabled: false,
-                                  myLocationButtonEnabled: false,
+                                  myLocationEnabled: true,
+                                  myLocationButtonEnabled: true,
                                   zoomControlsEnabled: false,
                                   mapToolbarEnabled: false,
                                   compassEnabled: false,
@@ -1342,10 +1756,12 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                           child: InkWell(
                             borderRadius: BorderRadius.circular(12),
                             onTap: () async {
-                              await _loadLinkedDevice();
+                              await _detectDeviceExactLocation(
+                                showFeedback: true,
+                                autoCenter: true,
+                              );
                               if (!mounted) return;
                               setSheetState(() {});
-                              _showActionSnack('Location info refreshed.');
                             },
                             child: Container(
                               padding: const EdgeInsets.symmetric(vertical: 15),
@@ -1356,15 +1772,26 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                                   color: AppColors.gold.withOpacity(0.65),
                                 ),
                               ),
-                              child: const Text(
-                                'REFRESH',
-                                style: TextStyle(
-                                  fontFamily: _bf,
-                                  color: AppColors.white,
-                                  letterSpacing: 4,
-                                  fontSize: 11,
-                                  fontWeight: FontWeight.w400,
-                                ),
+                              child: const Row(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  Icon(
+                                    Icons.my_location_rounded,
+                                    size: 15,
+                                    color: AppColors.goldLt,
+                                  ),
+                                  SizedBox(width: 8),
+                                  Text(
+                                    'DETECT EXACT GPS LOCATION',
+                                    style: TextStyle(
+                                      fontFamily: _bf,
+                                      color: AppColors.white,
+                                      letterSpacing: 2,
+                                      fontSize: 10,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                ],
                               ),
                             ),
                           ),
@@ -1408,10 +1835,9 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
         _InfoRow('Location', _deviceLocation),
         _InfoRow('Status', _deviceStatus.toUpperCase()),
       ],
-      actionLabel: 'REFRESH',
+      actionLabel: 'DETECT GPS LOCATION',
       onAction: () async {
-        await _loadLinkedDevice();
-        _showActionSnack('Device status refreshed.');
+        await _detectDeviceExactLocation(showFeedback: true, autoCenter: true);
       },
     );
   }
@@ -1547,28 +1973,35 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                                       .doc(dId);
                                   final devDoc = await devDocRef.get();
 
+                                  final devData = <String, dynamic>{
+                                    'deviceId': dId,
+                                    'deviceName': dName,
+                                    'phoneNumber': _phoneNumber,
+                                    'status': 'active',
+                                    'studentUid': currentUid,
+                                    'studentName': _fullName,
+                                    'parentPhoneNumber': _linkedParentPhone,
+                                    'parentUid': _linkedParentUid,
+                                    'updatedAt': FieldValue.serverTimestamp(),
+                                  };
+                                  if (_deviceCoordinates != null) {
+                                    devData['location'] = GeoPoint(
+                                      _deviceCoordinates!.latitude,
+                                      _deviceCoordinates!.longitude,
+                                    );
+                                    devData['latitude'] =
+                                        _deviceCoordinates!.latitude;
+                                    devData['longitude'] =
+                                        _deviceCoordinates!.longitude;
+                                    devData['locationText'] = _deviceLocation;
+                                  }
+
                                   if (!devDoc.exists) {
-                                    await devDocRef.set({
-                                      'deviceId': dId,
-                                      'deviceName': dName,
-                                      'phoneNumber': _phoneNumber,
-                                      'location': 'Unknown',
-                                      'status': 'active',
-                                      'studentUid': currentUid,
-                                      'studentName': _fullName,
-                                      'parentPhoneNumber': _linkedParentPhone,
-                                      'parentUid': _linkedParentUid,
-                                      'createdAt': FieldValue.serverTimestamp(),
-                                    });
+                                    devData['location'] = devData['location'] ?? 'Unknown';
+                                    devData['createdAt'] = FieldValue.serverTimestamp();
+                                    await devDocRef.set(devData);
                                   } else {
-                                    await devDocRef.update({
-                                      'deviceName': dName,
-                                      'phoneNumber': _phoneNumber,
-                                      'studentUid': currentUid,
-                                      'studentName': _fullName,
-                                      'parentPhoneNumber': _linkedParentPhone,
-                                      'parentUid': _linkedParentUid,
-                                    });
+                                    await devDocRef.update(devData);
                                   }
 
                                   setState(() {
@@ -2103,6 +2536,213 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                                       ),
                                     ],
                                   ),
+                                  if (isActive) ...[
+                                    const SizedBox(height: 10),
+                                    SizedBox(
+                                      width: double.infinity,
+                                      child: Material(
+                                        color: const Color(0xFFB45309),
+                                        borderRadius: BorderRadius.circular(8),
+                                        child: InkWell(
+                                          borderRadius: BorderRadius.circular(8),
+                                          onTap: () => _confirmAndReportFalseAlarm(docs[i].id),
+                                          child: Container(
+                                            padding: const EdgeInsets.symmetric(vertical: 10),
+                                            alignment: Alignment.center,
+                                            decoration: BoxDecoration(
+                                              borderRadius: BorderRadius.circular(8),
+                                              border: Border.all(
+                                                color: AppColors.gold.withValues(alpha: 0.4),
+                                              ),
+                                            ),
+                                            child: Row(
+                                              mainAxisAlignment: MainAxisAlignment.center,
+                                              children: [
+                                                const Icon(
+                                                  Icons.notifications_off_outlined,
+                                                  color: AppColors.white,
+                                                  size: 14,
+                                                ),
+                                                const SizedBox(width: 8),
+                                                Text(
+                                                  'FALSE ALARM (MISS-CLICKED)',
+                                                  style: TextStyle(
+                                                    fontFamily: _bf,
+                                                    color: AppColors.white,
+                                                    letterSpacing: 2,
+                                                    fontSize: 10,
+                                                    fontWeight: FontWeight.w600,
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                  if (status.toLowerCase() == 'acknowledged') ...[
+                                    const SizedBox(height: 10),
+                                    Row(
+                                      children: [
+                                        Expanded(
+                                          child: Material(
+                                            color: const Color(0xFFB45309),
+                                            borderRadius: BorderRadius.circular(8),
+                                            child: InkWell(
+                                              borderRadius: BorderRadius.circular(8),
+                                              onTap: () => _confirmAndReportFalseAlarm(docs[i].id),
+                                              child: Container(
+                                                padding: const EdgeInsets.symmetric(vertical: 10),
+                                                alignment: Alignment.center,
+                                                decoration: BoxDecoration(
+                                                  borderRadius: BorderRadius.circular(8),
+                                                  border: Border.all(
+                                                    color: AppColors.gold.withValues(alpha: 0.4),
+                                                  ),
+                                                ),
+                                                child: Text(
+                                                  'FALSE ALARM',
+                                                  style: TextStyle(
+                                                    fontFamily: _bf,
+                                                    color: AppColors.white,
+                                                    letterSpacing: 2,
+                                                    fontSize: 10,
+                                                    fontWeight: FontWeight.w600,
+                                                  ),
+                                                ),
+                                              ),
+                                            ),
+                                          ),
+                                        ),
+                                        const SizedBox(width: 8),
+                                        Expanded(
+                                          child: Material(
+                                            color: const Color(0xFFCB392B),
+                                            borderRadius: BorderRadius.circular(8),
+                                            child: InkWell(
+                                              borderRadius: BorderRadius.circular(8),
+                                              onTap: () => _resolveAlertDone(docs[i].id),
+                                              child: Container(
+                                                padding: const EdgeInsets.symmetric(vertical: 10),
+                                                alignment: Alignment.center,
+                                                decoration: BoxDecoration(
+                                                  borderRadius: BorderRadius.circular(8),
+                                                  border: Border.all(
+                                                    color: AppColors.gold.withValues(alpha: 0.4),
+                                                  ),
+                                                ),
+                                                child: Text(
+                                                  'RESOLVE (DONE)',
+                                                  style: TextStyle(
+                                                    fontFamily: _bf,
+                                                    color: AppColors.white,
+                                                    letterSpacing: 2,
+                                                    fontSize: 10,
+                                                    fontWeight: FontWeight.w600,
+                                                  ),
+                                                ),
+                                              ),
+                                            ),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ],
+                                  if (status.toLowerCase() == 'false_alarm') ...[
+                                    const SizedBox(height: 10),
+                                    SizedBox(
+                                      width: double.infinity,
+                                      child: Material(
+                                        color: const Color(0xFFFEF3C7),
+                                        borderRadius: BorderRadius.circular(8),
+                                        child: InkWell(
+                                          borderRadius: BorderRadius.circular(8),
+                                          onTap: () {
+                                            _showActionSnack("This alert was marked as a false alarm (miss-clicked device).");
+                                          },
+                                          child: Container(
+                                            padding: const EdgeInsets.symmetric(vertical: 10),
+                                            alignment: Alignment.center,
+                                            decoration: BoxDecoration(
+                                              borderRadius: BorderRadius.circular(8),
+                                              border: Border.all(
+                                                color: const Color(0xFFF59E0B).withValues(alpha: 0.5),
+                                              ),
+                                            ),
+                                            child: Row(
+                                              mainAxisAlignment: MainAxisAlignment.center,
+                                              children: [
+                                                const Icon(
+                                                  Icons.check_circle_outline,
+                                                  size: 14,
+                                                  color: Color(0xFFB45309),
+                                                ),
+                                                const SizedBox(width: 6),
+                                                Text(
+                                                  'FALSE ALARM REPORTED (SAFE)',
+                                                  style: TextStyle(
+                                                    fontFamily: _bf,
+                                                    color: const Color(0xFFB45309),
+                                                    letterSpacing: 2,
+                                                    fontSize: 10,
+                                                    fontWeight: FontWeight.w600,
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                  if (status.toLowerCase() == 'resolved') ...[
+                                    const SizedBox(height: 10),
+                                    SizedBox(
+                                      width: double.infinity,
+                                      child: Material(
+                                        color: AppColors.green.withValues(alpha: 0.12),
+                                        borderRadius: BorderRadius.circular(8),
+                                        child: InkWell(
+                                          borderRadius: BorderRadius.circular(8),
+                                          onTap: () {
+                                            _showActionSnack("The issue is already been fixed.");
+                                          },
+                                          child: Container(
+                                            padding: const EdgeInsets.symmetric(vertical: 10),
+                                            alignment: Alignment.center,
+                                            decoration: BoxDecoration(
+                                              borderRadius: BorderRadius.circular(8),
+                                              border: Border.all(
+                                                color: AppColors.green.withValues(alpha: 0.4),
+                                              ),
+                                            ),
+                                            child: Row(
+                                              mainAxisAlignment: MainAxisAlignment.center,
+                                              children: [
+                                                const Icon(
+                                                  Icons.check_circle,
+                                                  size: 14,
+                                                  color: AppColors.green,
+                                                ),
+                                                const SizedBox(width: 6),
+                                                Text(
+                                                  'DONE (FIXED)',
+                                                  style: TextStyle(
+                                                    fontFamily: _bf,
+                                                    color: AppColors.green,
+                                                    letterSpacing: 2,
+                                                    fontSize: 10,
+                                                    fontWeight: FontWeight.w600,
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  ],
                                 ],
                               ),
                             );
@@ -3012,20 +3652,6 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
     }
   }
 
-  Widget _buildHomeTab() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        _buildHeroCard(),
-        const SizedBox(height: 16),
-        _buildRouteCard(),
-        const SizedBox(height: 18),
-        _buildSectionLabel('DEVICE STATUS'),
-        const SizedBox(height: 10),
-        _buildDeviceCard(),
-      ],
-    );
-  }
 
   Widget _buildMapTab() {
     final Stream<QuerySnapshot<Map<String, dynamic>>>? mapAlertsStream =
@@ -3056,8 +3682,19 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
             snapshot.data?.docs ??
             <QueryDocumentSnapshot<Map<String, dynamic>>>[];
         final sosState = _resolveSosMapState(docs);
-        final mapPoint =
-            sosState.coordinate ?? _nextMapFocusPoint ?? _deviceCoordinates;
+        final isEmergency = sosState.isActive || sosState.isAcknowledged;
+        final hasLinkedDevice =
+            _linkedDeviceId.isNotEmpty && _linkedDeviceId != 'Not linked';
+
+        // When emergency is active, focus on the SOS coordinates.
+        // When not in emergency (e.g. false alarm or resolved), only show location if there is an active linked device.
+        final mapPoint = isEmergency
+            ? (sosState.coordinate ?? _nextMapFocusPoint ?? _deviceCoordinates)
+            : (_deviceCoordinates ??
+                (hasLinkedDevice && _deviceStatus != 'offline'
+                    ? _deviceCoordinates
+                    : null));
+
         final hasPoint = mapPoint != null;
         if (sosState.coordinate != null && _nextMapFocusPoint != null) {
           WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -3067,22 +3704,141 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
         }
         final trackingLabel = sosState.isActive
             ? 'SOS active'
+            : isEmergency
+            ? 'Finding child'
             : hasPoint
             ? 'Active'
-            : 'No coordinates';
+            : 'Safe / Standby';
         final fallbackAreaLabel =
             _deviceLocation.trim().isEmpty ||
                 _deviceLocation.trim().toLowerCase() == 'unknown'
             ? _formatCoordinateLabel(mapPoint)
             : _deviceLocation;
-        final mapAreaLabel = sosState.areaLabel.isEmpty
-            ? fallbackAreaLabel
-            : sosState.areaLabel;
+        final mapAreaLabel = isEmergency
+            ? (sosState.areaLabel.isEmpty ? fallbackAreaLabel : sosState.areaLabel)
+            : (hasPoint ? fallbackAreaLabel : 'Safe (Standby mode)');
 
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             _buildHeroCard(),
+            if (sosState.isActive || sosState.isAcknowledged) ...[
+              const SizedBox(height: 14),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFFFFBEB),
+                  borderRadius: BorderRadius.circular(18),
+                  border: Border.all(
+                    color: const Color(0xFFF59E0B),
+                    width: 1.2,
+                  ),
+                  boxShadow: [
+                    BoxShadow(
+                      color: const Color(0xFFF59E0B).withValues(alpha: 0.15),
+                      blurRadius: 14,
+                      offset: const Offset(0, 5),
+                    ),
+                  ],
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Container(
+                          width: 36,
+                          height: 36,
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFFEF3C7),
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(
+                              color: const Color(0xFFF59E0B).withValues(alpha: 0.5),
+                            ),
+                          ),
+                          child: const Icon(
+                            Icons.warning_amber_rounded,
+                            color: Color(0xFFB45309),
+                            size: 20,
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                sosState.isActive
+                                    ? 'EMERGENCY SOS IS ACTIVE'
+                                    : 'EMERGENCY SOS (ACKNOWLEDGED)',
+                                style: const TextStyle(
+                                  fontFamily: _bf,
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w700,
+                                  letterSpacing: 1.5,
+                                  color: Color(0xFF92400E),
+                                ),
+                              ),
+                              const SizedBox(height: 2),
+                              Text(
+                                'Miss-clicked the device? Cancel it as a false alarm.',
+                                style: TextStyle(
+                                  fontFamily: _bf,
+                                  fontSize: 11,
+                                  color: const Color(0xFF78350F).withValues(alpha: 0.8),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    SizedBox(
+                      width: double.infinity,
+                      child: Material(
+                        color: const Color(0xFFB45309),
+                        borderRadius: BorderRadius.circular(10),
+                        child: InkWell(
+                          borderRadius: BorderRadius.circular(10),
+                          onTap: () {
+                            if (sosState.alertId.isNotEmpty) {
+                              _confirmAndReportFalseAlarm(sosState.alertId);
+                            }
+                          },
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(vertical: 12),
+                            alignment: Alignment.center,
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: const [
+                                Icon(
+                                  Icons.notifications_off_outlined,
+                                  color: Colors.white,
+                                  size: 16,
+                                ),
+                                SizedBox(width: 8),
+                                Text(
+                                  'FALSE ALARM (CANCEL ALERT)',
+                                  style: TextStyle(
+                                    fontFamily: _bf,
+                                    fontSize: 11,
+                                    letterSpacing: 2,
+                                    fontWeight: FontWeight.w700,
+                                    color: Colors.white,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
             const SizedBox(height: 16),
             _buildSectionLabel('LIVE MAP'),
             const SizedBox(height: 10),
@@ -3090,6 +3846,7 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
               mapPoint: mapPoint,
               sosIsActive: sosState.isActive,
               areaLabel: mapAreaLabel,
+              alertId: sosState.alertId,
             ),
             const SizedBox(height: 14),
             _buildDashboardPanel(
@@ -3098,7 +3855,9 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
               children: [
                 _buildDeviceRow(
                   'Coordinates',
-                  _formatCoordinateLabel(mapPoint),
+                  hasPoint
+                      ? _formatCoordinateLabel(mapPoint)
+                      : 'No active marker',
                 ),
                 const SizedBox(height: 8),
                 _buildDeviceRow('Tracking', trackingLabel),
@@ -3106,6 +3865,28 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                 _buildDeviceRow('Map Focus', mapAreaLabel),
                 const SizedBox(height: 8),
                 _buildDeviceRow('Device', _deviceName),
+                if (sosState.isActive || sosState.isAcknowledged) ...[
+                  const SizedBox(height: 14),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      _buildPanelAction(
+                        label: 'FALSE ALARM',
+                        onTap: () async {
+                          if (sosState.alertId.isNotEmpty) {
+                            await _confirmAndReportFalseAlarm(sosState.alertId);
+                          }
+                        },
+                      ),
+                      _buildPanelAction(
+                        label: 'ALERT HISTORY',
+                        onTap: _showAlertHistorySheet,
+                        isPrimary: false,
+                      ),
+                    ],
+                  ),
+                ],
               ],
             ),
           ],
@@ -3349,6 +4130,213 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                       ),
                     ],
                   ),
+                  if (isActive) ...[
+                    const SizedBox(height: 10),
+                    SizedBox(
+                      width: double.infinity,
+                      child: Material(
+                        color: const Color(0xFFB45309),
+                        borderRadius: BorderRadius.circular(8),
+                        child: InkWell(
+                          borderRadius: BorderRadius.circular(8),
+                          onTap: () => _confirmAndReportFalseAlarm(docs[i].id),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(vertical: 10),
+                            alignment: Alignment.center,
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(
+                                color: AppColors.gold.withValues(alpha: 0.4),
+                              ),
+                            ),
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                const Icon(
+                                  Icons.notifications_off_outlined,
+                                  color: AppColors.white,
+                                  size: 14,
+                                ),
+                                const SizedBox(width: 8),
+                                Text(
+                                  'FALSE ALARM (MISS-CLICKED)',
+                                  style: TextStyle(
+                                    fontFamily: _bf,
+                                    color: AppColors.white,
+                                    letterSpacing: 2,
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                  if (status.toLowerCase() == 'acknowledged') ...[
+                    const SizedBox(height: 10),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Material(
+                            color: const Color(0xFFB45309),
+                            borderRadius: BorderRadius.circular(8),
+                            child: InkWell(
+                              borderRadius: BorderRadius.circular(8),
+                              onTap: () => _confirmAndReportFalseAlarm(docs[i].id),
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(vertical: 10),
+                                alignment: Alignment.center,
+                                decoration: BoxDecoration(
+                                  borderRadius: BorderRadius.circular(8),
+                                  border: Border.all(
+                                    color: AppColors.gold.withValues(alpha: 0.4),
+                                  ),
+                                ),
+                                child: Text(
+                                  'FALSE ALARM',
+                                  style: TextStyle(
+                                    fontFamily: _bf,
+                                    color: AppColors.white,
+                                    letterSpacing: 2,
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Material(
+                            color: const Color(0xFFCB392B),
+                            borderRadius: BorderRadius.circular(8),
+                            child: InkWell(
+                              borderRadius: BorderRadius.circular(8),
+                              onTap: () => _resolveAlertDone(docs[i].id),
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(vertical: 10),
+                                alignment: Alignment.center,
+                                decoration: BoxDecoration(
+                                  borderRadius: BorderRadius.circular(8),
+                                  border: Border.all(
+                                    color: AppColors.gold.withValues(alpha: 0.4),
+                                  ),
+                                ),
+                                child: Text(
+                                  'RESOLVE (DONE)',
+                                  style: TextStyle(
+                                    fontFamily: _bf,
+                                    color: AppColors.white,
+                                    letterSpacing: 2,
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                  if (status.toLowerCase() == 'false_alarm') ...[
+                    const SizedBox(height: 10),
+                    SizedBox(
+                      width: double.infinity,
+                      child: Material(
+                        color: const Color(0xFFFEF3C7),
+                        borderRadius: BorderRadius.circular(8),
+                        child: InkWell(
+                          borderRadius: BorderRadius.circular(8),
+                          onTap: () {
+                            _showActionSnack("This alert was marked as a false alarm (miss-clicked device).");
+                          },
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(vertical: 10),
+                            alignment: Alignment.center,
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(
+                                color: const Color(0xFFF59E0B).withValues(alpha: 0.5),
+                              ),
+                            ),
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                const Icon(
+                                  Icons.check_circle_outline,
+                                  size: 14,
+                                  color: Color(0xFFB45309),
+                                ),
+                                const SizedBox(width: 6),
+                                Text(
+                                  'FALSE ALARM REPORTED (SAFE)',
+                                  style: TextStyle(
+                                    fontFamily: _bf,
+                                    color: const Color(0xFFB45309),
+                                    letterSpacing: 2,
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                  if (status.toLowerCase() == 'resolved') ...[
+                    const SizedBox(height: 10),
+                    SizedBox(
+                      width: double.infinity,
+                      child: Material(
+                        color: AppColors.green.withValues(alpha: 0.12),
+                        borderRadius: BorderRadius.circular(8),
+                        child: InkWell(
+                          borderRadius: BorderRadius.circular(8),
+                          onTap: () {
+                            _showActionSnack("The issue is already been fixed.");
+                          },
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(vertical: 10),
+                            alignment: Alignment.center,
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(
+                                color: AppColors.green.withValues(alpha: 0.4),
+                              ),
+                            ),
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                const Icon(
+                                  Icons.check_circle,
+                                  size: 14,
+                                  color: AppColors.green,
+                                ),
+                                const SizedBox(width: 6),
+                                Text(
+                                  'DONE (FIXED)',
+                                  style: TextStyle(
+                                    fontFamily: _bf,
+                                    color: AppColors.green,
+                                    letterSpacing: 2,
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
                 ],
               ),
             );
@@ -3899,13 +4887,14 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
     LatLng? mapPoint,
     bool sosIsActive = false,
     String areaLabel = '',
+    String alertId = '',
   }) {
     final effectivePoint = mapPoint ?? _deviceCoordinates;
     final center = effectivePoint ?? _defaultMapCenter;
     final hasPoint = effectivePoint != null;
     final focusLabel = areaLabel.isEmpty ? _deviceLocation : areaLabel;
     final requestedFocusPoint = _nextMapFocusPoint ?? effectivePoint;
-    if (requestedFocusPoint != null) {
+    if (requestedFocusPoint != null && (sosIsActive || hasPoint)) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
         _focusRouteMapOnPoint(requestedFocusPoint, zoom: hasPoint ? 16 : 12);
@@ -3987,8 +4976,8 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                               ),
                             }
                           : <Circle>{},
-                      myLocationEnabled: false,
-                      myLocationButtonEnabled: false,
+                      myLocationEnabled: true,
+                      myLocationButtonEnabled: true,
                       zoomControlsEnabled: false,
                       mapToolbarEnabled: false,
                       compassEnabled: false,
@@ -3998,7 +4987,7 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                         _routeMapController?.dispose();
                         _routeMapController = controller;
                         final focusPoint = _nextMapFocusPoint ?? effectivePoint;
-                        if (focusPoint != null) {
+                        if (focusPoint != null && (sosIsActive || hasPoint)) {
                           _focusRouteMapOnPoint(
                             focusPoint,
                             zoom: hasPoint ? 16 : 12,
@@ -4068,7 +5057,7 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                         ? 'SOS ACTIVE'
                         : hasPoint
                         ? 'TRACKING'
-                        : 'NO COORDS',
+                        : 'STANDBY',
                     style: TextStyle(
                       fontFamily: _bf,
                       color: AppColors.white,
@@ -4081,6 +5070,130 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
               ),
             ),
           ),
+          Positioned(
+            top: 48,
+            right: 14,
+            child: Material(
+              color: Colors.transparent,
+              child: InkWell(
+                onTap: _isDetectingLocation
+                    ? null
+                    : () => _detectDeviceExactLocation(
+                        showFeedback: true,
+                        autoCenter: true,
+                      ),
+                borderRadius: BorderRadius.circular(999),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 6,
+                  ),
+                  decoration: BoxDecoration(
+                    color: AppColors.green.withOpacity(0.92),
+                    borderRadius: BorderRadius.circular(999),
+                    border: Border.all(
+                      color: AppColors.gold.withOpacity(0.8),
+                      width: 1,
+                    ),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withOpacity(0.25),
+                        blurRadius: 6,
+                        offset: const Offset(0, 2),
+                      ),
+                    ],
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (_isDetectingLocation)
+                        const SizedBox(
+                          width: 11,
+                          height: 11,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            valueColor: AlwaysStoppedAnimation<Color>(
+                              AppColors.goldLt,
+                            ),
+                          ),
+                        )
+                      else
+                        const Icon(
+                          Icons.my_location_rounded,
+                          size: 12,
+                          color: AppColors.goldLt,
+                        ),
+                      const SizedBox(width: 5),
+                      Text(
+                        _isDetectingLocation ? 'LOCATING...' : 'LOCATE ME',
+                        style: const TextStyle(
+                          fontFamily: _bf,
+                          color: AppColors.goldLt,
+                          fontSize: 9,
+                          letterSpacing: 1.2,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+          if (sosIsActive && alertId.isNotEmpty)
+            Positioned(
+              top: 84,
+              right: 14,
+              child: Material(
+                color: Colors.transparent,
+                child: InkWell(
+                  onTap: () => _confirmAndReportFalseAlarm(alertId),
+                  borderRadius: BorderRadius.circular(999),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 6,
+                    ),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFCB392B),
+                      borderRadius: BorderRadius.circular(999),
+                      border: Border.all(
+                        color: Colors.white.withOpacity(0.6),
+                        width: 1,
+                      ),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withOpacity(0.35),
+                          blurRadius: 6,
+                          offset: const Offset(0, 2),
+                        ),
+                      ],
+                    ),
+                    child: const Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          Icons.notifications_off_outlined,
+                          size: 12,
+                          color: Colors.white,
+                        ),
+                        SizedBox(width: 5),
+                        Text(
+                          'CLEAR SOS',
+                          style: TextStyle(
+                            fontFamily: _bf,
+                            color: Colors.white,
+                            fontSize: 9,
+                            letterSpacing: 1.2,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
           Positioned(
             left: 0,
             right: 0,
@@ -4126,7 +5239,7 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                         ? (sosIsActive
                               ? 'SOS pinned at ${_formatCoordinateLabel(effectivePoint)}'
                               : '$_deviceName at ${_formatCoordinateLabel(effectivePoint)}')
-                        : 'Waiting for device coordinates. Save location as "lat, lng".',
+                        : 'Waiting for device coordinates. Tap "LOCATE ME" to detect.',
                     style: const TextStyle(
                       fontFamily: _bf,
                       color: Color(0xFFE8ECE9),
@@ -4305,7 +5418,69 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
             'GPS Sharing',
             _locationSharingEnabled ? 'Enabled' : 'Disabled',
           ),
-          const SizedBox(height: 16),
+          const SizedBox(height: 14),
+          SizedBox(
+            width: double.infinity,
+            child: Material(
+              color: Colors.transparent,
+              borderRadius: BorderRadius.circular(12),
+              child: InkWell(
+                onTap: _isDetectingLocation
+                    ? null
+                    : () => _detectDeviceExactLocation(
+                        showFeedback: true,
+                        autoCenter: true,
+                      ),
+                borderRadius: BorderRadius.circular(12),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(vertical: 13),
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(
+                      color: AppColors.green,
+                      width: 1.2,
+                    ),
+                    color: AppColors.offWhite,
+                  ),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      if (_isDetectingLocation)
+                        const SizedBox(
+                          width: 14,
+                          height: 14,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: AppColors.green,
+                          ),
+                        )
+                      else
+                        const Icon(
+                          Icons.gps_fixed_rounded,
+                          size: 16,
+                          color: AppColors.green,
+                        ),
+                      const SizedBox(width: 8),
+                      Text(
+                        _isDetectingLocation
+                            ? 'DETECTING DEVICE GPS...'
+                            : 'DETECT EXACT LOCATION',
+                        style: const TextStyle(
+                          fontFamily: _bf,
+                          color: AppColors.green,
+                          fontSize: 11,
+                          letterSpacing: 2,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(height: 10),
           SizedBox(
             width: double.infinity,
             child: Material(
@@ -4506,12 +5681,18 @@ class _ParentInvitation {
 class _SosMapState {
   final LatLng? coordinate;
   final bool isActive;
+  final bool isAcknowledged;
+  final bool isFalseAlarm;
+  final String alertId;
   final String timestampLabel;
   final String areaLabel;
 
   const _SosMapState({
     this.coordinate,
     this.isActive = false,
+    this.isAcknowledged = false,
+    this.isFalseAlarm = false,
+    this.alertId = '',
     this.timestampLabel = '',
     this.areaLabel = '',
   });
@@ -4575,26 +5756,42 @@ class _AlertBadge extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final upper = label.toUpperCase();
+    final isFalse = upper.contains('FALSE');
+    final isResolved = upper.contains('RESOLVED');
+
+    Color bg = AppColors.cream;
+    Color border = AppColors.border;
+    Color text = AppColors.textSub;
+
+    if (isActive) {
+      bg = const Color(0xFFCB392B).withOpacity(0.1);
+      border = const Color(0xFFCB392B).withOpacity(0.3);
+      text = const Color(0xFFCB392B);
+    } else if (isFalse) {
+      bg = const Color(0xFFFEF3C7);
+      border = const Color(0xFFF59E0B).withOpacity(0.5);
+      text = const Color(0xFFB45309);
+    } else if (isResolved) {
+      bg = AppColors.green.withOpacity(0.1);
+      border = AppColors.green.withOpacity(0.3);
+      text = AppColors.green;
+    }
+
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       decoration: BoxDecoration(
-        color: isActive
-            ? const Color(0xFFCB392B).withOpacity(0.1)
-            : AppColors.cream,
+        color: bg,
         borderRadius: BorderRadius.circular(6),
-        border: Border.all(
-          color: isActive
-              ? const Color(0xFFCB392B).withOpacity(0.3)
-              : AppColors.border,
-        ),
+        border: Border.all(color: border),
       ),
       child: Text(
-        label,
+        label.replaceAll('_', ' '),
         style: TextStyle(
           fontFamily: 'JosefinSans',
           fontSize: 9,
           letterSpacing: 2,
-          color: isActive ? const Color(0xFFCB392B) : AppColors.textSub,
+          color: text,
           fontWeight: FontWeight.w600,
         ),
       ),

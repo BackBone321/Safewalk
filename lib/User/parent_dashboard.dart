@@ -89,6 +89,7 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
   }
 
   bool _isValidLatLng(double lat, double lng) {
+    if (lat.abs() < 0.0001 && lng.abs() < 0.0001) return false;
     return lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180;
   }
 
@@ -130,7 +131,9 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
 
     final location = data['location'];
     if (location is GeoPoint) {
-      return LatLng(location.latitude, location.longitude);
+      if (_isValidLatLng(location.latitude, location.longitude)) {
+        return LatLng(location.latitude, location.longitude);
+      }
     }
     if (location is String) {
       final parsed = _coordinatesFromText(location);
@@ -140,10 +143,27 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
     return null;
   }
 
+  bool _isDefaultManila(LatLng? p) {
+    if (p == null) return false;
+    return (p.latitude - 14.5995).abs() < 0.005 &&
+        (p.longitude - 120.9842).abs() < 0.005;
+  }
+
   LatLng? _extractAlertCoordinates(Map<String, dynamic> data) {
+    if (data['locationCleared'] == true ||
+        data['falseAlarm'] == true ||
+        (data['status'] ?? '').toString().toLowerCase() == 'false_alarm' ||
+        (data['status'] ?? '').toString().toLowerCase() == 'cancelled_false_trigger' ||
+        (data['status'] ?? '').toString().toLowerCase() == 'resolved' ||
+        (data['status'] ?? '').toString().toLowerCase() == 'acknowledged') {
+      return null;
+    }
+
     final coordinates = data['coordinates'];
     if (coordinates is GeoPoint) {
-      return LatLng(coordinates.latitude, coordinates.longitude);
+      if (_isValidLatLng(coordinates.latitude, coordinates.longitude)) {
+        return LatLng(coordinates.latitude, coordinates.longitude);
+      }
     }
     if (coordinates is Map) {
       final nested = _coordinatesFromValues(
@@ -161,7 +181,13 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
 
     final location = data['location'];
     if (location is String) {
-      return _coordinatesFromText(location);
+      final fromTxt = _coordinatesFromText(location);
+      if (fromTxt != null) return fromTxt;
+    }
+
+    // Fallback: If hardware reported (0,0) or pending fix, use child's known live location!
+    if (_childDeviceCoordinates != null && !_isDefaultManila(_childDeviceCoordinates)) {
+      return _childDeviceCoordinates;
     }
     return null;
   }
@@ -250,6 +276,55 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
       ),
     );
+  }
+
+  Future<void> _handleAlertAction(String alertId, String currentStatus) async {
+    final status = currentStatus.toLowerCase().trim();
+    if (status == 'resolved') {
+      _showActionSnack("The issue is already been fixed.");
+      return;
+    }
+    final uid = FirebaseAuth.instance.currentUser?.uid ?? '';
+    if (status == 'acknowledged') {
+      try {
+        await _firestore.collection('emergency_alerts').doc(alertId).set({
+          'status': 'resolved',
+          'resolvedBy': uid,
+          'resolvedAt': FieldValue.serverTimestamp(),
+          'locationCleared': true,
+          'location': 'Location removed',
+          'coordinates': FieldValue.delete(),
+          'latitude': FieldValue.delete(),
+          'longitude': FieldValue.delete(),
+          'lat': FieldValue.delete(),
+          'lng': FieldValue.delete(),
+          'lon': FieldValue.delete(),
+        }, SetOptions(merge: true));
+        _showActionSnack("The issue is already been fixed. Location removed.");
+      } catch (e) {
+        _showActionSnack('Failed to resolve alert: $e', isError: true);
+      }
+      return;
+    }
+
+    try {
+      await _firestore.collection('emergency_alerts').doc(alertId).set({
+        'status': 'acknowledged',
+        'ackBy': uid,
+        'ackAt': FieldValue.serverTimestamp(),
+        'locationCleared': true,
+        'location': 'Location removed',
+        'coordinates': FieldValue.delete(),
+        'latitude': FieldValue.delete(),
+        'longitude': FieldValue.delete(),
+        'lat': FieldValue.delete(),
+        'lng': FieldValue.delete(),
+        'lon': FieldValue.delete(),
+      }, SetOptions(merge: true));
+      _showActionSnack('Alert acknowledged. SOS location removed from map.');
+    } catch (e) {
+      _showActionSnack('Failed to acknowledge alert: $e', isError: true);
+    }
   }
 
   Widget _buildWebMapFallback({required String contextLabel}) {
@@ -563,14 +638,30 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
             : (locationField ?? 'Unknown').toString();
         _deviceStatus = (device['status'] ?? 'active').toString().toLowerCase();
         _childDeviceCoordinates = _extractDeviceCoordinates(device);
+
+        // If the hardware tracker coordinates in Firestore are still default Manila,
+        // prioritize the student's real phone/browser GPS location!
+        if (_childDeviceCoordinates == null || _isDefaultManila(_childDeviceCoordinates)) {
+          final studentCoords = _extractDeviceCoordinates(childData);
+          if (studentCoords != null && !_isDefaultManila(studentCoords)) {
+            _childDeviceCoordinates = studentCoords;
+            final userLocField = childData['location'] ?? childData['currentLocation'];
+            _deviceLocation = userLocField is GeoPoint
+                ? '${userLocField.latitude.toStringAsFixed(6)}, ${userLocField.longitude.toStringAsFixed(6)}'
+                : (childData['locationText'] ?? userLocField ?? _deviceLocation).toString();
+          }
+        }
       } else {
-        _deviceId = childDeviceId.isNotEmpty ? childDeviceId : 'Not linked';
+        _deviceId = childDeviceId.isNotEmpty ? childDeviceId : 'Student Device (Live)';
         _deviceName = childDeviceId.isNotEmpty
             ? 'Unknown Tracker'
-            : 'No linked device';
-        _deviceLocation = 'Unknown';
-        _deviceStatus = 'offline';
-        _childDeviceCoordinates = null;
+            : '${childName.isNotEmpty ? childName : 'Student'}\'s Phone';
+        final userLocField = childData['location'] ?? childData['currentLocation'];
+        _deviceLocation = userLocField is GeoPoint
+            ? '${userLocField.latitude.toStringAsFixed(6)}, ${userLocField.longitude.toStringAsFixed(6)}'
+            : (childData['locationText'] ?? userLocField ?? 'Unknown').toString();
+        _childDeviceCoordinates = _extractDeviceCoordinates(childData);
+        _deviceStatus = (_childDeviceCoordinates != null || userLocField != null) ? 'active' : 'offline';
       }
     });
   }
@@ -1355,7 +1446,9 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                                   if (locationText.isNotEmpty) ...[
                                     const SizedBox(height: 4),
                                     Text(
-                                      'SOS Location: $locationText',
+                                      status.toLowerCase() == 'resolved'
+                                          ? 'SOS Location: Removed'
+                                          : 'SOS Location: $locationText',
                                       style: TextStyle(
                                         fontFamily: _bf,
                                         fontSize: 10,
@@ -1395,22 +1488,7 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                                           borderRadius: BorderRadius.circular(
                                             8,
                                           ),
-                                          onTap: () async {
-                                            await _firestore
-                                                .collection('emergency_alerts')
-                                                .doc(docs[i].id)
-                                                .set({
-                                                  'status': 'acknowledged',
-                                                  'ackBy':
-                                                      FirebaseAuth
-                                                          .instance
-                                                          .currentUser
-                                                          ?.uid ??
-                                                      '',
-                                                  'ackAt':
-                                                      FieldValue.serverTimestamp(),
-                                                }, SetOptions(merge: true));
-                                          },
+                                          onTap: () => _handleAlertAction(docs[i].id, status),
                                           child: Container(
                                             padding: const EdgeInsets.symmetric(
                                               vertical: 10,
@@ -1451,22 +1529,7 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                                           borderRadius: BorderRadius.circular(
                                             8,
                                           ),
-                                          onTap: () async {
-                                            await _firestore
-                                                .collection('emergency_alerts')
-                                                .doc(docs[i].id)
-                                                .set({
-                                                  'status': 'resolved',
-                                                  'resolvedBy':
-                                                      FirebaseAuth
-                                                          .instance
-                                                          .currentUser
-                                                          ?.uid ??
-                                                      '',
-                                                  'resolvedAt':
-                                                      FieldValue.serverTimestamp(),
-                                                }, SetOptions(merge: true));
-                                          },
+                                          onTap: () => _handleAlertAction(docs[i].id, status),
                                           child: Container(
                                             padding: const EdgeInsets.symmetric(
                                               vertical: 10,
@@ -1481,7 +1544,7 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                                               ),
                                             ),
                                             child: Text(
-                                              'RESOLVE',
+                                              'DONE',
                                               style: TextStyle(
                                                 fontFamily: _bf,
                                                 color: AppColors.white,
@@ -1489,6 +1552,114 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                                                 fontSize: 10,
                                                 fontWeight: FontWeight.w400,
                                               ),
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                  if (status.toLowerCase() == 'false_alarm' ||
+                                      status.toLowerCase() ==
+                                          'cancelled_false_trigger') ...[
+                                    const SizedBox(height: 10),
+                                    SizedBox(
+                                      width: double.infinity,
+                                      child: Material(
+                                        color: const Color(0xFFFEF3C7),
+                                        borderRadius: BorderRadius.circular(8),
+                                        child: InkWell(
+                                          borderRadius:
+                                              BorderRadius.circular(8),
+                                          onTap: () {
+                                            _showActionSnack(
+                                              "Student reported this alert as a false alarm (miss-clicked device).",
+                                            );
+                                          },
+                                          child: Container(
+                                            padding: const EdgeInsets.symmetric(
+                                              vertical: 10,
+                                            ),
+                                            alignment: Alignment.center,
+                                            decoration: BoxDecoration(
+                                              borderRadius:
+                                                  BorderRadius.circular(8),
+                                              border: Border.all(
+                                                color: const Color(0xFFF59E0B)
+                                                    .withValues(alpha: 0.5),
+                                              ),
+                                            ),
+                                            child: Row(
+                                              mainAxisAlignment:
+                                                  MainAxisAlignment.center,
+                                              children: [
+                                                const Icon(
+                                                  Icons.check_circle_outline,
+                                                  size: 14,
+                                                  color: Color(0xFFB45309),
+                                                ),
+                                                const SizedBox(width: 6),
+                                                Text(
+                                                  'FALSE ALARM REPORTED (SAFE)',
+                                                  style: TextStyle(
+                                                    fontFamily: _bf,
+                                                    color: const Color(0xFFB45309),
+                                                    letterSpacing: 2,
+                                                    fontSize: 10,
+                                                    fontWeight: FontWeight.w600,
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                  if (status.toLowerCase() == 'resolved') ...[
+                                    const SizedBox(height: 10),
+                                    SizedBox(
+                                      width: double.infinity,
+                                      child: Material(
+                                        color: AppColors.green.withValues(alpha: 0.12),
+                                        borderRadius: BorderRadius.circular(8),
+                                        child: InkWell(
+                                          borderRadius: BorderRadius.circular(8),
+                                          onTap: () {
+                                            _showActionSnack("The issue is already been fixed.");
+                                          },
+                                          child: Container(
+                                            padding: const EdgeInsets.symmetric(
+                                              vertical: 10,
+                                            ),
+                                            alignment: Alignment.center,
+                                            decoration: BoxDecoration(
+                                              borderRadius:
+                                                  BorderRadius.circular(8),
+                                              border: Border.all(
+                                                color: AppColors.green
+                                                    .withValues(alpha: 0.4),
+                                              ),
+                                            ),
+                                            child: Row(
+                                              mainAxisAlignment: MainAxisAlignment.center,
+                                              children: [
+                                                const Icon(
+                                                  Icons.check_circle,
+                                                  size: 14,
+                                                  color: AppColors.green,
+                                                ),
+                                                const SizedBox(width: 6),
+                                                Text(
+                                                  'DONE (FIXED)',
+                                                  style: TextStyle(
+                                                    fontFamily: _bf,
+                                                    color: AppColors.green,
+                                                    letterSpacing: 2,
+                                                    fontSize: 10,
+                                                    fontWeight: FontWeight.w600,
+                                                  ),
+                                                ),
+                                              ],
                                             ),
                                           ),
                                         ),
@@ -2496,6 +2667,8 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                 String sosTime = '-';
                 String sosLocation = 'No SOS location yet';
                 String sosSender = 'No sender yet';
+                String latestAlertId = '';
+                String latestAlertRawStatus = '';
 
                 if (snapshot.hasData && snapshot.data!.docs.isNotEmpty) {
                   final docs =
@@ -2531,10 +2704,15 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                         final bData = b.data();
                         final aStatus = (aData['status'] ?? '').toString().toLowerCase();
                         final bStatus = (bData['status'] ?? '').toString().toLowerCase();
-                        final aIsActive = aStatus == 'active' || aStatus == 'verifying_speech';
-                        final bIsActive = bStatus == 'active' || bStatus == 'verifying_speech';
-                        if (aIsActive != bIsActive) {
-                          return aIsActive ? -1 : 1;
+                        int priority(String s) {
+                          if (s == 'active' || s == 'verifying_speech') return 0;
+                          if (s == 'acknowledged') return 1;
+                          return 2;
+                        }
+                        final pA = priority(aStatus);
+                        final pB = priority(bStatus);
+                        if (pA != pB) {
+                          return pA.compareTo(pB);
                         }
                         final aTs = aData['timestamp'] as Timestamp?;
                         final bTs = bData['timestamp'] as Timestamp?;
@@ -2545,6 +2723,7 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
 
                   if (docs.isNotEmpty) {
                     final latest = docs.first.data();
+                    latestAlertId = docs.first.id;
                     final latestSosCoordinate = _extractAlertCoordinates(
                       latest,
                     );
@@ -2558,18 +2737,43 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                     final latestStatus = (latest['status'] ?? '')
                         .toString()
                         .toLowerCase();
+                    latestAlertRawStatus = latestStatus;
                     final isActive =
                         latestStatus == 'active' ||
                         latestStatus == 'verifying_speech';
-                    sosStatus = isActive ? 'ACTIVE' : 'RESOLVED';
+                    final isAck = latestStatus == 'acknowledged';
+                    final isResolved = latestStatus == 'resolved';
+                    final isFalseAlarm =
+                        latestStatus == 'false_alarm' ||
+                        latestStatus == 'cancelled_false_trigger';
+
+                    if (isActive) {
+                      sosStatus = 'ACTIVE';
+                      sosLocation = latestSosCoordinate != null
+                          ? _formatCoordinateValue(latestSosCoordinate)
+                          : fallbackLocation.isEmpty
+                          ? 'No SOS location yet'
+                          : fallbackLocation;
+                    } else if (isAck) {
+                      sosStatus = 'FINDING CHILD (ACKNOWLEDGED)';
+                      sosLocation = latestSosCoordinate != null
+                          ? _formatCoordinateValue(latestSosCoordinate)
+                          : fallbackLocation.isEmpty
+                          ? 'Tracking child...'
+                          : fallbackLocation;
+                    } else if (isResolved) {
+                      sosStatus = 'RESOLVED';
+                      sosLocation = 'Location removed (Issue fixed)';
+                    } else if (isFalseAlarm) {
+                      sosStatus = 'FALSE ALARM (CHILD SAFE)';
+                      sosLocation = 'Child cancelled - miss clicked device';
+                    } else {
+                      sosStatus = 'NO SOS YET';
+                      sosLocation = 'No SOS location yet';
+                    }
                     sosTime = _formatTimestamp(
                       latest['timestamp'] as Timestamp?,
                     );
-                    sosLocation = latestSosCoordinate != null
-                        ? _formatCoordinateValue(latestSosCoordinate)
-                        : fallbackLocation.isEmpty
-                        ? 'No SOS location yet'
-                        : fallbackLocation;
                   }
                 }
 
@@ -2600,6 +2804,28 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                             label: 'ALERT HISTORY',
                             onTap: _showAlertHistorySheet,
                           ),
+                          if (latestAlertId.isNotEmpty) ...[
+                            if (latestAlertRawStatus == 'active' || latestAlertRawStatus == 'verifying_speech')
+                              _buildPanelAction(
+                                label: 'ACKNOWLEDGE',
+                                onTap: () => _handleAlertAction(latestAlertId, latestAlertRawStatus),
+                              )
+                            else if (latestAlertRawStatus == 'acknowledged')
+                              _buildPanelAction(
+                                label: 'DONE',
+                                onTap: () => _handleAlertAction(latestAlertId, latestAlertRawStatus),
+                              )
+                            else if (latestAlertRawStatus == 'false_alarm' || latestAlertRawStatus == 'cancelled_false_trigger')
+                              _buildPanelAction(
+                                label: 'FALSE ALARM (SAFE)',
+                                onTap: () async => _showActionSnack("Student reported this alert as a false alarm (miss-clicked device)."),
+                              )
+                            else if (latestAlertRawStatus == 'resolved')
+                              _buildPanelAction(
+                                label: 'DONE (FIXED)',
+                                onTap: () async => _showActionSnack("The issue is already been fixed."),
+                              ),
+                          ],
                         ],
                       ),
                     ),
@@ -2832,7 +3058,9 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                   if (locationText.isNotEmpty) ...[
                     const SizedBox(height: 4),
                     Text(
-                      'SOS Location: $locationText',
+                      status.toLowerCase() == 'resolved'
+                          ? 'SOS Location: Removed'
+                          : 'SOS Location: $locationText',
                       style: TextStyle(
                         fontFamily: _bf,
                         fontSize: 10,
@@ -2861,6 +3089,172 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                       ),
                     ],
                   ),
+                  if (isActive) ...[
+                    const SizedBox(height: 10),
+                    SizedBox(
+                      width: double.infinity,
+                      child: Material(
+                        color: AppColors.green,
+                        borderRadius: BorderRadius.circular(8),
+                        child: InkWell(
+                          borderRadius: BorderRadius.circular(8),
+                          onTap: () => _handleAlertAction(docs[i].id, status),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(vertical: 10),
+                            alignment: Alignment.center,
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(
+                                color: AppColors.gold.withValues(alpha: 0.4),
+                              ),
+                            ),
+                            child: Text(
+                              'ACKNOWLEDGE',
+                              style: TextStyle(
+                                fontFamily: _bf,
+                                color: AppColors.white,
+                                letterSpacing: 3,
+                                fontSize: 10,
+                                fontWeight: FontWeight.w400,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                  if (status.toLowerCase() == 'acknowledged') ...[
+                    const SizedBox(height: 10),
+                    SizedBox(
+                      width: double.infinity,
+                      child: Material(
+                        color: const Color(0xFFCB392B),
+                        borderRadius: BorderRadius.circular(8),
+                        child: InkWell(
+                          borderRadius: BorderRadius.circular(8),
+                          onTap: () => _handleAlertAction(docs[i].id, status),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(vertical: 10),
+                            alignment: Alignment.center,
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(
+                                color: AppColors.gold.withValues(alpha: 0.4),
+                              ),
+                            ),
+                            child: Text(
+                              'DONE',
+                              style: TextStyle(
+                                fontFamily: _bf,
+                                color: AppColors.white,
+                                letterSpacing: 3,
+                                fontSize: 10,
+                                fontWeight: FontWeight.w400,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                  if (status.toLowerCase() == 'false_alarm' ||
+                      status.toLowerCase() == 'cancelled_false_trigger') ...[
+                    const SizedBox(height: 10),
+                    SizedBox(
+                      width: double.infinity,
+                      child: Material(
+                        color: const Color(0xFFFEF3C7),
+                        borderRadius: BorderRadius.circular(8),
+                        child: InkWell(
+                          borderRadius: BorderRadius.circular(8),
+                          onTap: () {
+                            _showActionSnack(
+                              "Student reported this alert as a false alarm (miss-clicked device).",
+                            );
+                          },
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(vertical: 10),
+                            alignment: Alignment.center,
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(
+                                color: const Color(0xFFF59E0B)
+                                    .withValues(alpha: 0.5),
+                              ),
+                            ),
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                const Icon(
+                                  Icons.check_circle_outline,
+                                  size: 14,
+                                  color: Color(0xFFB45309),
+                                ),
+                                const SizedBox(width: 6),
+                                Text(
+                                  'FALSE ALARM REPORTED (SAFE)',
+                                  style: TextStyle(
+                                    fontFamily: _bf,
+                                    color: const Color(0xFFB45309),
+                                    letterSpacing: 2,
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                  if (status.toLowerCase() == 'resolved') ...[
+                    const SizedBox(height: 10),
+                    SizedBox(
+                      width: double.infinity,
+                      child: Material(
+                        color: AppColors.green.withValues(alpha: 0.12),
+                        borderRadius: BorderRadius.circular(8),
+                        child: InkWell(
+                          borderRadius: BorderRadius.circular(8),
+                          onTap: () {
+                            _showActionSnack("The issue is already been fixed.");
+                          },
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(vertical: 10),
+                            alignment: Alignment.center,
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(
+                                color: AppColors.green.withValues(alpha: 0.4),
+                              ),
+                            ),
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                const Icon(
+                                  Icons.check_circle,
+                                  size: 14,
+                                  color: AppColors.green,
+                                ),
+                                const SizedBox(width: 6),
+                                Text(
+                                  'DONE (FIXED)',
+                                  style: TextStyle(
+                                    fontFamily: _bf,
+                                    color: AppColors.green,
+                                    letterSpacing: 2,
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
                 ],
               ),
             );
@@ -2914,12 +3308,11 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                   alertType == 'sos' ||
                   alertType == 'voice_help' ||
                   alertType == 'emergency';
-              final isActiveOrAck =
-                  status == 'active' ||
-                  status == 'acknowledged' ||
-                  status == 'verifying_speech';
+              final isActiveEmergency =
+                  (status == 'active' || status == 'verifying_speech') &&
+                  data['locationCleared'] != true;
               return isEmergency &&
-                  isActiveOrAck &&
+                  isActiveEmergency &&
                   (_childUid.isNotEmpty
                       ? (alertChildUid == _childUid ||
                             (_deviceId != 'Not linked' &&
@@ -2950,6 +3343,7 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
         }
 
         final latestSosData = sosDocs.isNotEmpty ? sosDocs.first.data() : null;
+        final latestSosAlertId = sosDocs.isNotEmpty ? sosDocs.first.id : '';
         final latestSosPoint = latestSosData == null
             ? null
             : _extractAlertCoordinates(latestSosData);
@@ -3014,7 +3408,8 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
               icon: BitmapDescriptor.defaultMarkerWithHue(colorHue),
               infoWindow: InfoWindow(
                 title: '$sender - SOS',
-                snippet: pointLabel,
+                snippet: '$pointLabel • Tap to Acknowledge & Remove Location',
+                onTap: () => _handleAlertAction(doc.id, alertStatus),
               ),
             ),
           );
@@ -3074,7 +3469,7 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                   ? '$sosMarkersWithPoint SOS MARKERS'
                   : latestSosIsActive
                   ? 'SOS LOCATION'
-                  : 'LAST SOS LOCATION')
+                  : 'FINDING CHILD')
             : hasPoint
             ? 'LIVE TRACKING'
             : 'NO LOCATION YET';
@@ -3082,7 +3477,9 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
             ? const Color(0xFF7E1F14)
             : const Color(0xFF0E5B3C);
         final footerTitle = hasSosPoints
-            ? 'SOS FROM $latestSosSender${latestSosLabel.isEmpty ? '' : ' | $latestSosLabel'}'
+            ? (latestSosIsActive
+                ? 'SOS FROM $latestSosSender${latestSosLabel.isEmpty ? '' : ' | $latestSosLabel'}'
+                : 'FINDING $latestSosSender (ACKNOWLEDGED)')
             : 'CHILD LAST LOCATION';
         final footerLocation = hasSosPoints
             ? latestSosLocationText
@@ -3126,8 +3523,8 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                           scrollGesturesEnabled: true,
                           markers: markers,
                           circles: circles,
-                          myLocationEnabled: false,
-                          myLocationButtonEnabled: false,
+                          myLocationEnabled: true,
+                          myLocationButtonEnabled: true,
                           zoomControlsEnabled: false,
                           mapToolbarEnabled: false,
                           compassEnabled: false,
@@ -3165,6 +3562,118 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                   ),
                 ),
               ),
+              if (hasSosPoints || latestSosIsActive)
+                Positioned(
+                  top: 14,
+                  right: 14,
+                  child: Material(
+                    color: Colors.transparent,
+                    child: InkWell(
+                      borderRadius: BorderRadius.circular(999),
+                      onTap: () {
+                        if (latestSosAlertId.isNotEmpty) {
+                          _handleAlertAction(latestSosAlertId, latestSosStatus);
+                        }
+                      },
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 13,
+                          vertical: 6,
+                        ),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFCB392B),
+                          borderRadius: BorderRadius.circular(999),
+                          border: Border.all(
+                            color: Colors.white.withValues(alpha: 0.6),
+                            width: 1,
+                          ),
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.black.withValues(alpha: 0.4),
+                              blurRadius: 8,
+                              offset: const Offset(0, 2),
+                            ),
+                          ],
+                        ),
+                        child: const Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              Icons.check_circle_outline,
+                              color: Colors.white,
+                              size: 14,
+                            ),
+                            SizedBox(width: 5),
+                            Text(
+                              'ACKNOWLEDGE',
+                              style: TextStyle(
+                                fontFamily: _bf,
+                                color: Colors.white,
+                                fontSize: 10,
+                                letterSpacing: 1.2,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                )
+              else
+                Positioned(
+                  top: 14,
+                  right: 14,
+                  child: Material(
+                    color: Colors.transparent,
+                    child: InkWell(
+                      borderRadius: BorderRadius.circular(999),
+                      onTap: () => _loadDashboard(),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 6,
+                        ),
+                        decoration: BoxDecoration(
+                          color: AppColors.green.withValues(alpha: 0.9),
+                          borderRadius: BorderRadius.circular(999),
+                          border: Border.all(
+                            color: AppColors.gold.withValues(alpha: 0.8),
+                            width: 0.8,
+                          ),
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.black.withValues(alpha: 0.25),
+                              blurRadius: 6,
+                              offset: const Offset(0, 2),
+                            ),
+                          ],
+                        ),
+                        child: const Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              Icons.refresh_rounded,
+                              color: AppColors.goldLt,
+                              size: 13,
+                            ),
+                            SizedBox(width: 4),
+                            Text(
+                              'REFRESH',
+                              style: TextStyle(
+                                fontFamily: _bf,
+                                color: AppColors.goldLt,
+                                fontSize: 9,
+                                letterSpacing: 1.2,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
               Positioned(
                 left: 0,
                 right: 0,
@@ -3645,7 +4154,7 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
 
   Widget _buildPanelAction({
     required String label,
-    required Future<void> Function() onTap,
+    required dynamic Function() onTap,
     bool isPrimary = true,
   }) {
     return Material(
@@ -4153,26 +4662,42 @@ class _AlertBadge extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final upper = label.toUpperCase();
+    final isFalse = upper.contains('FALSE');
+    final isResolved = upper.contains('RESOLVED');
+
+    Color bg = AppColors.cream;
+    Color border = AppColors.border;
+    Color text = AppColors.textSub;
+
+    if (isActive) {
+      bg = const Color(0xFFCB392B).withValues(alpha: 0.1);
+      border = const Color(0xFFCB392B).withValues(alpha: 0.3);
+      text = const Color(0xFFCB392B);
+    } else if (isFalse) {
+      bg = const Color(0xFFFEF3C7);
+      border = const Color(0xFFF59E0B).withValues(alpha: 0.5);
+      text = const Color(0xFFB45309);
+    } else if (isResolved) {
+      bg = AppColors.green.withValues(alpha: 0.1);
+      border = AppColors.green.withValues(alpha: 0.3);
+      text = AppColors.green;
+    }
+
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       decoration: BoxDecoration(
-        color: isActive
-            ? const Color(0xFFCB392B).withValues(alpha: 0.1)
-            : AppColors.cream,
+        color: bg,
         borderRadius: BorderRadius.circular(6),
-        border: Border.all(
-          color: isActive
-              ? const Color(0xFFCB392B).withValues(alpha: 0.3)
-              : AppColors.border,
-        ),
+        border: Border.all(color: border),
       ),
       child: Text(
-        label,
+        label.replaceAll('_', ' '),
         style: TextStyle(
           fontFamily: 'JosefinSans',
           fontSize: 9,
           letterSpacing: 2,
-          color: isActive ? const Color(0xFFCB392B) : AppColors.textSub,
+          color: text,
           fontWeight: FontWeight.w600,
         ),
       ),
