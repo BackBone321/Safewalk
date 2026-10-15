@@ -34,6 +34,9 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
 
   final TextEditingController _profileNameCtrl = TextEditingController();
   final TextEditingController _profilePhoneCtrl = TextEditingController();
+  final TextEditingController _inviteStudentUidCtrl = TextEditingController();
+  final TextEditingController _inviteStudentPhoneCtrl = TextEditingController();
+  bool _isSendingInvite = false;
 
   String _parentName = 'Parent';
   String _parentEmail = '';
@@ -65,7 +68,6 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
     _NavItem('Child', Icons.shield_outlined),
     _NavItem('Alerts', Icons.notifications_none_rounded),
     _NavItem('Profile', Icons.person_outline),
-    _NavItem('Settings', Icons.settings_outlined),
   ];
 
   // ─── Helpers ──────────────────────────────────────────────────
@@ -358,6 +360,8 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
   void dispose() {
     _profileNameCtrl.dispose();
     _profilePhoneCtrl.dispose();
+    _inviteStudentUidCtrl.dispose();
+    _inviteStudentPhoneCtrl.dispose();
     super.dispose();
   }
 
@@ -569,6 +573,37 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
     }, SetOptions(merge: true));
 
     _showActionSnack('Invitation sent to $studentName.');
+  }
+
+  Future<void> _handleSendInvitationInProfile() async {
+    final enteredUid = _inviteStudentUidCtrl.text.trim();
+    final enteredPhone = _inviteStudentPhoneCtrl.text.trim();
+    if (enteredUid.isEmpty && enteredPhone.isEmpty) {
+      _showActionSnack('Enter a valid student UID or phone number.', isError: true);
+      return;
+    }
+
+    setState(() => _isSendingInvite = true);
+    try {
+      String targetUid = enteredUid;
+      if (targetUid.isEmpty && enteredPhone.isNotEmpty) {
+        targetUid = await _resolveStudentUidFromPhone(enteredPhone);
+      }
+
+      if (targetUid.isEmpty) {
+        _showActionSnack('Student account not found with that phone number.', isError: true);
+        return;
+      }
+
+      await _sendStudentInvitation(studentUid: targetUid);
+      _inviteStudentUidCtrl.clear();
+      _inviteStudentPhoneCtrl.clear();
+      await _loadDashboard();
+    } finally {
+      if (mounted) {
+        setState(() => _isSendingInvite = false);
+      }
+    }
   }
 
   Future<void> _loadChildData(String childUid) async {
@@ -1992,433 +2027,7 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
     }
   }
 
-  // ─── LUXURY SETTINGS SHEET ─────────────────────────────────────
 
-  Future<void> _showSettingsDialog() async {
-    final inviteStudentUidCtrl = TextEditingController();
-    final inviteStudentPhoneCtrl = TextEditingController();
-    try {
-      await showModalBottomSheet<void>(
-        context: context,
-        isScrollControlled: true,
-        backgroundColor: Colors.transparent,
-        builder: (sheetCtx) {
-          bool localAlerts = _alertsEnabled;
-          bool localSms = _smsAlertsEnabled;
-          bool localEmail = _emailAlertsEnabled;
-          bool isSaving = false;
-          bool isSendingInvite = false;
-          String selectedChildUid = _childUid;
-
-          return StatefulBuilder(
-            builder: (context, setSheet) {
-              return Padding(
-                padding: EdgeInsets.only(
-                  bottom: MediaQuery.of(context).viewInsets.bottom,
-                ),
-                child: Container(
-                  decoration: const BoxDecoration(
-                    color: AppColors.offWhite,
-                    borderRadius: BorderRadius.vertical(
-                      top: Radius.circular(28),
-                    ),
-                  ),
-                  child: SingleChildScrollView(
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Container(
-                          height: 1,
-                          decoration: const BoxDecoration(
-                            gradient: LinearGradient(
-                              colors: [
-                                Colors.transparent,
-                                AppColors.gold,
-                                Colors.transparent,
-                              ],
-                            ),
-                          ),
-                        ),
-                        const SizedBox(height: 14),
-                        Container(
-                          width: 36,
-                          height: 4,
-                          decoration: BoxDecoration(
-                            color: AppColors.border,
-                            borderRadius: BorderRadius.circular(99),
-                          ),
-                        ),
-                        Padding(
-                          padding: const EdgeInsets.fromLTRB(24, 20, 24, 36),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                'PREFERENCES',
-                                style: TextStyle(
-                                  fontFamily: _bf,
-                                  fontSize: 9,
-                                  letterSpacing: 4,
-                                  color: AppColors.gold,
-                                  fontWeight: FontWeight.w300,
-                                ),
-                              ),
-                              const SizedBox(height: 6),
-                              RichText(
-                                text: const TextSpan(
-                                  style: TextStyle(
-                                    fontFamily: _hf,
-                                    fontSize: 34,
-                                    height: 1.05,
-                                    color: AppColors.green,
-                                    fontWeight: FontWeight.w300,
-                                  ),
-                                  children: [
-                                    TextSpan(text: 'Account\n'),
-                                    TextSpan(
-                                      text: 'Settings',
-                                      style: TextStyle(
-                                        fontStyle: FontStyle.italic,
-                                        color: AppColors.goldDark,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                              const SizedBox(height: 24),
-                              Container(
-                                height: 1,
-                                decoration: const BoxDecoration(
-                                  gradient: LinearGradient(
-                                    colors: [
-                                      AppColors.gold,
-                                      Colors.transparent,
-                                    ],
-                                  ),
-                                ),
-                              ),
-                              const SizedBox(height: 22),
-                              Text(
-                                'NOTIFICATIONS',
-                                style: TextStyle(
-                                  fontFamily: _bf,
-                                  fontSize: 9,
-                                  letterSpacing: 4,
-                                  color: AppColors.gold,
-                                  fontWeight: FontWeight.w300,
-                                ),
-                              ),
-                              const SizedBox(height: 14),
-                              _DashSettingsTile(
-                                title: 'Enable Alerts',
-                                subtitle: 'Receive emergency notifications',
-                                icon: Icons.notifications_outlined,
-                                value: localAlerts,
-                                onChanged: (v) =>
-                                    setSheet(() => localAlerts = v),
-                              ),
-                              const SizedBox(height: 10),
-                              _DashSettingsTile(
-                                title: 'SMS Alerts',
-                                subtitle: 'Receive alerts via SMS',
-                                icon: Icons.sms_outlined,
-                                value: localSms,
-                                onChanged: (v) => setSheet(() => localSms = v),
-                              ),
-                              const SizedBox(height: 10),
-                              _DashSettingsTile(
-                                title: 'Email Alerts',
-                                subtitle: 'Receive alerts via email',
-                                icon: Icons.email_outlined,
-                                value: localEmail,
-                                onChanged: (v) =>
-                                    setSheet(() => localEmail = v),
-                              ),
-                              const SizedBox(height: 22),
-                              Text(
-                                'LINKED STUDENTS',
-                                style: TextStyle(
-                                  fontFamily: _bf,
-                                  fontSize: 9,
-                                  letterSpacing: 4,
-                                  color: AppColors.gold,
-                                  fontWeight: FontWeight.w300,
-                                ),
-                              ),
-                              const SizedBox(height: 10),
-                              if (_linkedStudents.isEmpty)
-                                Container(
-                                  width: double.infinity,
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 14,
-                                    vertical: 12,
-                                  ),
-                                  decoration: BoxDecoration(
-                                    color: AppColors.white,
-                                    borderRadius: BorderRadius.circular(12),
-                                    border: Border.all(color: AppColors.border),
-                                  ),
-                                  child: Text(
-                                    'No linked students yet. Send an invitation below.',
-                                    style: TextStyle(
-                                      fontFamily: _bf,
-                                      fontSize: 11,
-                                      color: AppColors.textSub,
-                                    ),
-                                  ),
-                                )
-                              else
-                                Wrap(
-                                  spacing: 8,
-                                  runSpacing: 8,
-                                  children: _linkedStudents.map((student) {
-                                    final selected =
-                                        selectedChildUid == student.uid;
-                                    final shortUid = student.uid.length > 6
-                                        ? student.uid.substring(0, 6)
-                                        : student.uid;
-                                    return ChoiceChip(
-                                      label: Text(
-                                        '${student.name} - $shortUid',
-                                        style: TextStyle(
-                                          fontFamily: _bf,
-                                          fontSize: 10,
-                                          color: selected
-                                              ? AppColors.white
-                                              : AppColors.green,
-                                        ),
-                                      ),
-                                      selected: selected,
-                                      onSelected: (_) => setSheet(
-                                        () => selectedChildUid = student.uid,
-                                      ),
-                                      selectedColor: AppColors.green,
-                                      backgroundColor: AppColors.white,
-                                      side: BorderSide(
-                                        color: selected
-                                            ? AppColors.gold.withValues(
-                                                alpha: 0.6,
-                                              )
-                                            : AppColors.border,
-                                      ),
-                                    );
-                                  }).toList(),
-                                ),
-                              const SizedBox(height: 16),
-                              Text(
-                                'INVITE STUDENT',
-                                style: TextStyle(
-                                  fontFamily: _bf,
-                                  fontSize: 9,
-                                  letterSpacing: 4,
-                                  color: AppColors.gold,
-                                  fontWeight: FontWeight.w300,
-                                ),
-                              ),
-                              const SizedBox(height: 12),
-                              _DashLuxuryField(
-                                label: 'STUDENT UID',
-                                hint: 'Enter student UID',
-                                controller: inviteStudentUidCtrl,
-                              ),
-                              const SizedBox(height: 12),
-                              _DashLuxuryField(
-                                label: 'OR STUDENT PHONE NUMBER',
-                                hint: 'Example: +63 9XXXXXXXXX',
-                                controller: inviteStudentPhoneCtrl,
-                                keyboardType: TextInputType.phone,
-                              ),
-                              const SizedBox(height: 8),
-                              Text(
-                                'Student must accept this invitation from their dashboard.',
-                                style: TextStyle(
-                                  fontFamily: _bf,
-                                  fontSize: 10,
-                                  color: AppColors.textSub,
-                                ),
-                              ),
-                              const SizedBox(height: 10),
-                              SizedBox(
-                                width: double.infinity,
-                                child: OutlinedButton(
-                                  onPressed: isSendingInvite
-                                      ? null
-                                      : () async {
-                                          setSheet(
-                                            () => isSendingInvite = true,
-                                          );
-                                          try {
-                                            final enteredUid =
-                                                inviteStudentUidCtrl.text
-                                                    .trim();
-                                            final enteredPhone =
-                                                inviteStudentPhoneCtrl.text
-                                                    .trim();
-                                            String targetUid = enteredUid;
-                                            if (targetUid.isEmpty &&
-                                                enteredPhone.isNotEmpty) {
-                                              targetUid =
-                                                  await _resolveStudentUidFromPhone(
-                                                    enteredPhone,
-                                                  );
-                                            }
-                                            if (targetUid.isEmpty) {
-                                              _showActionSnack(
-                                                'Enter a valid student UID or phone number.',
-                                                isError: true,
-                                              );
-                                              return;
-                                            }
-                                            await _sendStudentInvitation(
-                                              studentUid: targetUid,
-                                            );
-                                            await _loadDashboard();
-                                            if (!sheetCtx.mounted) return;
-                                            setSheet(() {
-                                              if (selectedChildUid.isEmpty &&
-                                                  _linkedStudents.isNotEmpty) {
-                                                selectedChildUid =
-                                                    _linkedStudents.first.uid;
-                                              }
-                                              inviteStudentUidCtrl.clear();
-                                              inviteStudentPhoneCtrl.clear();
-                                            });
-                                          } finally {
-                                            if (sheetCtx.mounted) {
-                                              setSheet(
-                                                () => isSendingInvite = false,
-                                              );
-                                            }
-                                          }
-                                        },
-                                  style: OutlinedButton.styleFrom(
-                                    foregroundColor: AppColors.green,
-                                    side: BorderSide(
-                                      color: AppColors.gold.withValues(
-                                        alpha: 0.55,
-                                      ),
-                                    ),
-                                    padding: const EdgeInsets.symmetric(
-                                      vertical: 12,
-                                    ),
-                                  ),
-                                  child: isSendingInvite
-                                      ? const SizedBox(
-                                          width: 18,
-                                          height: 18,
-                                          child: CircularProgressIndicator(
-                                            strokeWidth: 2,
-                                          ),
-                                        )
-                                      : const Text(
-                                          'SEND INVITATION',
-                                          style: TextStyle(
-                                            fontFamily: _bf,
-                                            fontSize: 11,
-                                            letterSpacing: 2.2,
-                                            fontWeight: FontWeight.w600,
-                                          ),
-                                        ),
-                                ),
-                              ),
-                              const SizedBox(height: 28),
-                              SizedBox(
-                                width: double.infinity,
-                                child: Material(
-                                  color: AppColors.green,
-                                  child: InkWell(
-                                    onTap: isSaving
-                                        ? null
-                                        : () async {
-                                            setSheet(() => isSaving = true);
-                                            String selectedPhone = '';
-                                            for (final student
-                                                in _linkedStudents) {
-                                              if (student.uid ==
-                                                  selectedChildUid) {
-                                                selectedPhone = student.phone;
-                                                break;
-                                              }
-                                            }
-                                            await _saveSettings(
-                                              alertsEnabled: localAlerts,
-                                              smsAlertsEnabled: localSms,
-                                              emailAlertsEnabled: localEmail,
-                                              childUid: selectedChildUid,
-                                              childPhoneNumber: selectedPhone,
-                                            );
-                                            if (sheetCtx.mounted) {
-                                              Navigator.pop(sheetCtx);
-                                            }
-                                          },
-                                    child: Container(
-                                      padding: const EdgeInsets.symmetric(
-                                        vertical: 16,
-                                      ),
-                                      alignment: Alignment.center,
-                                      decoration: BoxDecoration(
-                                        border: Border.all(
-                                          color: AppColors.gold.withValues(
-                                            alpha: 0.65,
-                                          ),
-                                        ),
-                                      ),
-                                      child: isSaving
-                                          ? const SizedBox(
-                                              width: 18,
-                                              height: 18,
-                                              child: CircularProgressIndicator(
-                                                strokeWidth: 2,
-                                                color: AppColors.gold,
-                                              ),
-                                            )
-                                          : Text(
-                                              'SAVE SETTINGS',
-                                              style: TextStyle(
-                                                fontFamily: _bf,
-                                                color: AppColors.white,
-                                                letterSpacing: 4,
-                                                fontSize: 11,
-                                                fontWeight: FontWeight.w400,
-                                              ),
-                                            ),
-                                    ),
-                                  ),
-                                ),
-                              ),
-                              const SizedBox(height: 14),
-                              Center(
-                                child: GestureDetector(
-                                  onTap: () => Navigator.pop(sheetCtx),
-                                  child: Text(
-                                    'CANCEL',
-                                    style: TextStyle(
-                                      fontFamily: _bf,
-                                      fontSize: 9,
-                                      letterSpacing: 3,
-                                      color: AppColors.textSub,
-                                      fontWeight: FontWeight.w300,
-                                    ),
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              );
-            },
-          );
-        },
-      );
-    } finally {
-      inviteStudentUidCtrl.dispose();
-      inviteStudentPhoneCtrl.dispose();
-    }
-  }
 
   Future<void> _onBottomNavTap(int index) async {
     setState(() => _selectedNavIndex = index);
@@ -2571,8 +2180,6 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
         return _buildAlertsTab();
       case 2:
         return _buildProfileTab();
-      case 3:
-        return _buildSettingsTab();
       case 0:
       default:
         return _buildChildTab();
@@ -3509,9 +3116,7 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                           contextLabel: 'Parent Child Tracking Card',
                         )
                       : GoogleMap(
-                          key: ValueKey(
-                            'parent-map-${center.latitude}-${center.longitude}-${hasSosPoints ? 'sos' : 'track'}-$sosMarkersWithPoint',
-                          ),
+                          key: const ValueKey('parent-map-main'),
                           initialCameraPosition: CameraPosition(
                             target: center,
                             zoom: hasPoint ? 16 : 12,
@@ -3865,191 +3470,339 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
             _buildPanelAction(label: 'EDIT PROFILE', onTap: _showProfileDialog),
           ],
         ),
+        const SizedBox(height: 18),
+        _buildSectionLabel('LINK YOUR CHILD'),
+        const SizedBox(height: 10),
+        _buildLinkChildFeature(),
+        const SizedBox(height: 20),
+        _buildSectionLabel('DANGER ZONE'),
+        const SizedBox(height: 10),
+        _buildSessionSecuritySection(),
       ],
     );
   }
 
-  Widget _buildSettingsTab() {
-    final linkedPreview = _linkedStudents.isEmpty
-        ? 'None'
-        : _linkedStudents.take(3).map((student) => student.name).join(', ') +
-              (_linkedStudents.length > 3
-                  ? ' +${_linkedStudents.length - 3} more'
-                  : '');
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        _buildHeroCard(),
-        const SizedBox(height: 18),
-        _buildSectionLabel('SETTINGS'),
-        const SizedBox(height: 10),
-        _buildDashboardPanel(
-          title: 'Preferences',
-          subtitle: 'PARENT CONTROL PANEL',
-          children: [
-            _buildDashboardRow(
-              'Global Alerts',
-              _alertsEnabled ? 'Enabled' : 'Disabled',
+  Widget _buildSessionSecuritySection() {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.fromLTRB(18, 16, 18, 18),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFFF8F8),
+        borderRadius: BorderRadius.circular(22),
+        border: Border.all(
+          color: const Color(0xFFCB392B).withValues(alpha: 0.25),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'ACCOUNT',
+            style: TextStyle(
+              fontFamily: _bf,
+              color: const Color(0xFFCB392B).withValues(alpha: 0.7),
+              fontSize: 9,
+              letterSpacing: 3,
+              fontWeight: FontWeight.w500,
             ),
-            const SizedBox(height: 8),
-            _buildDashboardRow(
-              'SMS Alerts',
-              _smsAlertsEnabled ? 'Enabled' : 'Disabled',
+          ),
+          const SizedBox(height: 6),
+          Text(
+            'Session & Security',
+            style: TextStyle(
+              fontFamily: _hf,
+              color: const Color(0xFF7E1F14),
+              fontSize: 26,
+              height: 1,
+              fontWeight: FontWeight.w300,
+              fontStyle: FontStyle.italic,
             ),
-            const SizedBox(height: 8),
-            _buildDashboardRow(
-              'Email Alerts',
-              _emailAlertsEnabled ? 'Enabled' : 'Disabled',
-            ),
-            const SizedBox(height: 14),
-            SizedBox(
-              width: double.infinity,
-              child: Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: [
-                  _buildPanelAction(
-                    label: 'OPEN SETTINGS',
-                    onTap: _showSettingsDialog,
-                  ),
-                  _buildPanelAction(
-                    label: 'REFRESH DATA',
-                    onTap: _loadDashboard,
-                    isPrimary: false,
-                  ),
+          ),
+          const SizedBox(height: 12),
+          Container(
+            height: 1,
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                colors: [
+                  const Color(0xFFCB392B).withValues(alpha: 0.3),
+                  Colors.transparent,
                 ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 14),
+          SizedBox(
+            width: double.infinity,
+            child: Material(
+              color: const Color(0xFFCB392B),
+              borderRadius: BorderRadius.circular(10),
+              child: InkWell(
+                onTap: _confirmLogout,
+                borderRadius: BorderRadius.circular(10),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 14,
+                  ),
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(
+                      color: const Color(0xFFCB392B).withValues(alpha: 0.5),
+                    ),
+                  ),
+                  child: Text(
+                    'LOG OUT',
+                    style: TextStyle(
+                      fontFamily: _bf,
+                      color: AppColors.white,
+                      fontSize: 11,
+                      letterSpacing: 3,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          SizedBox(
+            width: double.infinity,
+            child: Material(
+              color: Colors.transparent,
+              borderRadius: BorderRadius.circular(10),
+              child: InkWell(
+                onTap: _changeRoleToStudent,
+                borderRadius: BorderRadius.circular(10),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 14,
+                  ),
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(
+                      color: const Color(0xFFCB392B).withValues(alpha: 0.5),
+                    ),
+                  ),
+                  child: Text(
+                    'CHANGE ROLE TO STUDENT',
+                    style: TextStyle(
+                      fontFamily: _bf,
+                      color: const Color(0xFFCB392B),
+                      fontSize: 11,
+                      letterSpacing: 2,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildLinkChildFeature() {
+    return _buildDashboardPanel(
+      title: 'Link Your Child',
+      subtitle: 'CONNECTED STUDENTS & INVITATIONS',
+      children: [
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            const Text(
+              'LINKED STUDENTS',
+              style: TextStyle(
+                fontFamily: _bf,
+                fontSize: 9,
+                letterSpacing: 3,
+                color: AppColors.gold,
+                fontWeight: FontWeight.w400,
+              ),
+            ),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+              decoration: BoxDecoration(
+                color: AppColors.green.withValues(alpha: 0.1),
+                borderRadius: BorderRadius.circular(99),
+                border: Border.all(
+                  color: AppColors.gold.withValues(alpha: 0.3),
+                  width: 0.5,
+                ),
+              ),
+              child: Text(
+                '${_linkedStudents.length} Connected',
+                style: const TextStyle(
+                  fontFamily: _bf,
+                  fontSize: 9,
+                  letterSpacing: 1,
+                  color: AppColors.green,
+                  fontWeight: FontWeight.w600,
+                ),
               ),
             ),
           ],
         ),
-        const SizedBox(height: 20),
-        // Danger zone
-        _buildSectionLabel('DANGER ZONE'),
         const SizedBox(height: 10),
-        Container(
-          width: double.infinity,
-          padding: const EdgeInsets.fromLTRB(18, 16, 18, 18),
-          decoration: BoxDecoration(
-            color: const Color(0xFFFFF8F8),
-            borderRadius: BorderRadius.circular(22),
-            border: Border.all(
-              color: const Color(0xFFCB392B).withOpacity(0.25),
+        if (_linkedStudents.isEmpty)
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+            decoration: BoxDecoration(
+              color: AppColors.white,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: AppColors.border),
             ),
+            child: const Text(
+              'No linked students yet. Send an invitation below to connect your child.',
+              style: TextStyle(
+                fontFamily: _bf,
+                fontSize: 11,
+                color: AppColors.textSub,
+              ),
+            ),
+          )
+        else
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: _linkedStudents.map((student) {
+              final isSelected = student.uid == _childUid;
+              final shortUid = student.uid.length > 6
+                  ? student.uid.substring(0, 6)
+                  : student.uid;
+              return ChoiceChip(
+                label: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      isSelected ? Icons.check_circle : Icons.person_outline,
+                      size: 13,
+                      color: isSelected ? AppColors.white : AppColors.green,
+                    ),
+                    const SizedBox(width: 4),
+                    Text(
+                      '${student.name} - $shortUid',
+                      style: TextStyle(
+                        fontFamily: _bf,
+                        fontSize: 10,
+                        color: isSelected ? AppColors.white : AppColors.green,
+                        fontWeight: isSelected ? FontWeight.w600 : FontWeight.w400,
+                      ),
+                    ),
+                  ],
+                ),
+                selected: isSelected,
+                onSelected: (_) => _switchActiveChild(student.uid),
+                selectedColor: AppColors.green,
+                backgroundColor: AppColors.white,
+                side: BorderSide(
+                  color: isSelected
+                      ? AppColors.gold.withValues(alpha: 0.8)
+                      : AppColors.border,
+                ),
+              );
+            }).toList(),
           ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                'ACCOUNT',
-                style: TextStyle(
-                  fontFamily: _bf,
-                  color: const Color(0xFFCB392B).withOpacity(0.7),
-                  fontSize: 9,
-                  letterSpacing: 3,
-                  fontWeight: FontWeight.w500,
-                ),
-              ),
-              const SizedBox(height: 6),
-              Text(
-                'Session & Security',
-                style: TextStyle(
-                  fontFamily: _hf,
-                  color: const Color(0xFF7E1F14),
-                  fontSize: 26,
-                  height: 1,
-                  fontWeight: FontWeight.w300,
-                  fontStyle: FontStyle.italic,
-                ),
-              ),
-              const SizedBox(height: 12),
-              Container(
-                height: 1,
+        const SizedBox(height: 18),
+        const Divider(color: AppColors.border, height: 1),
+        const SizedBox(height: 14),
+        const Text(
+          'INVITE STUDENT',
+          style: TextStyle(
+            fontFamily: _bf,
+            fontSize: 9,
+            letterSpacing: 3,
+            color: AppColors.gold,
+            fontWeight: FontWeight.w400,
+          ),
+        ),
+        const SizedBox(height: 6),
+        const Text(
+          'Enter student UID or phone number to link your child to this dashboard.',
+          style: TextStyle(
+            fontFamily: _bf,
+            fontSize: 10,
+            color: AppColors.textSub,
+          ),
+        ),
+        const SizedBox(height: 12),
+        _DashLuxuryField(
+          label: 'STUDENT UID',
+          hint: 'Enter student UID',
+          controller: _inviteStudentUidCtrl,
+        ),
+        const SizedBox(height: 12),
+        _DashLuxuryField(
+          label: 'OR STUDENT PHONE NUMBER',
+          hint: 'Example: +63 9XXXXXXXXX or 09XXXXXXXXX',
+          controller: _inviteStudentPhoneCtrl,
+          keyboardType: TextInputType.phone,
+        ),
+        const SizedBox(height: 8),
+        const Text(
+          'Student must accept this invitation from their dashboard.',
+          style: TextStyle(
+            fontFamily: _bf,
+            fontSize: 10,
+            color: AppColors.textSub,
+          ),
+        ),
+        const SizedBox(height: 14),
+        SizedBox(
+          width: double.infinity,
+          child: Material(
+            color: AppColors.green,
+            borderRadius: BorderRadius.circular(4),
+            child: InkWell(
+              onTap: _isSendingInvite ? null : _handleSendInvitationInProfile,
+              child: Container(
+                padding: const EdgeInsets.symmetric(vertical: 14),
+                alignment: Alignment.center,
                 decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    colors: [
-                      const Color(0xFFCB392B).withOpacity(0.3),
-                      Colors.transparent,
-                    ],
+                  borderRadius: BorderRadius.circular(4),
+                  border: Border.all(
+                    color: AppColors.gold.withValues(alpha: 0.65),
                   ),
                 ),
+                child: _isSendingInvite
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: AppColors.gold,
+                        ),
+                      )
+                    : const Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(Icons.send_rounded, size: 14, color: AppColors.goldLt),
+                          SizedBox(width: 8),
+                          Text(
+                            'SEND INVITATION',
+                            style: TextStyle(
+                              fontFamily: _bf,
+                              fontSize: 11,
+                              letterSpacing: 3,
+                              color: AppColors.white,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ],
+                      ),
               ),
-              const SizedBox(height: 14),
-              SizedBox(
-                width: double.infinity,
-                child: Material(
-                  color: const Color(0xFFCB392B),
-                  borderRadius: BorderRadius.circular(10),
-                  child: InkWell(
-                    onTap: _confirmLogout,
-                    borderRadius: BorderRadius.circular(10),
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 16,
-                        vertical: 14,
-                      ),
-                      alignment: Alignment.center,
-                      decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(10),
-                        border: Border.all(
-                          color: const Color(0xFFCB392B).withOpacity(0.5),
-                        ),
-                      ),
-                      child: Text(
-                        'LOG OUT',
-                        style: TextStyle(
-                          fontFamily: _bf,
-                          color: AppColors.white,
-                          fontSize: 11,
-                          letterSpacing: 3,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 12),
-              SizedBox(
-                width: double.infinity,
-                child: Material(
-                  color: Colors.transparent,
-                  borderRadius: BorderRadius.circular(10),
-                  child: InkWell(
-                    onTap: _changeRoleToStudent,
-                    borderRadius: BorderRadius.circular(10),
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 16,
-                        vertical: 14,
-                      ),
-                      alignment: Alignment.center,
-                      decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(10),
-                        border: Border.all(
-                          color: const Color(0xFFCB392B).withValues(alpha: 0.5),
-                        ),
-                      ),
-                      child: Text(
-                        'CHANGE ROLE TO STUDENT',
-                        style: TextStyle(
-                          fontFamily: _bf,
-                          color: const Color(0xFFCB392B),
-                          fontSize: 11,
-                          letterSpacing: 2,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-            ],
+            ),
           ),
         ),
       ],
     );
   }
+
+
 
   Widget _buildDashboardPanel({
     required String title,
@@ -4832,105 +4585,7 @@ class _DashLuxuryFieldState extends State<_DashLuxuryField>
   }
 }
 
-// ─────────────────────────────────────────────────────────────────
-//  Luxury Settings Toggle Tile
-// ─────────────────────────────────────────────────────────────────
 
-class _DashSettingsTile extends StatelessWidget {
-  final String title;
-  final String subtitle;
-  final IconData icon;
-  final bool value;
-  final ValueChanged<bool> onChanged;
-
-  const _DashSettingsTile({
-    required this.title,
-    required this.subtitle,
-    required this.icon,
-    required this.value,
-    required this.onChanged,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return AnimatedContainer(
-      duration: const Duration(milliseconds: 200),
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-      decoration: BoxDecoration(
-        color: value
-            ? AppColors.green.withValues(alpha: 0.04)
-            : AppColors.white,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(
-          color: value
-              ? AppColors.gold.withValues(alpha: 0.5)
-              : AppColors.border,
-        ),
-      ),
-      child: Row(
-        children: [
-          AnimatedContainer(
-            duration: const Duration(milliseconds: 200),
-            width: 38,
-            height: 38,
-            decoration: BoxDecoration(
-              color: value ? AppColors.green : AppColors.cream,
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(
-                color: value
-                    ? AppColors.gold.withValues(alpha: 0.4)
-                    : AppColors.border,
-                width: 0.8,
-              ),
-            ),
-            child: Icon(
-              icon,
-              size: 18,
-              color: value ? AppColors.gold : AppColors.textSub,
-            ),
-          ),
-          const SizedBox(width: 14),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  title,
-                  style: TextStyle(
-                    fontFamily: 'JosefinSans',
-                    fontSize: 13,
-                    letterSpacing: 0.5,
-                    color: value ? AppColors.green : AppColors.textMain,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  subtitle,
-                  style: const TextStyle(
-                    fontFamily: 'JosefinSans',
-                    fontSize: 10,
-                    letterSpacing: 0.3,
-                    color: AppColors.textSub,
-                    fontWeight: FontWeight.w300,
-                  ),
-                ),
-              ],
-            ),
-          ),
-          Switch(
-            value: value,
-            onChanged: onChanged,
-            activeThumbColor: AppColors.gold,
-            activeTrackColor: AppColors.green.withValues(alpha: 0.4),
-            inactiveThumbColor: AppColors.textSub,
-            inactiveTrackColor: AppColors.cream,
-          ),
-        ],
-      ),
-    );
-  }
-}
 
 class _StudentStatusCard extends StatelessWidget {
   final _LinkedStudent student;

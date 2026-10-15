@@ -1624,9 +1624,7 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
               child: kIsWeb && !isGoogleMapsJsLoaded()
                   ? _buildWebMapFallback(contextLabel: 'Admin SOS Map')
                   : GoogleMap(
-                      key: ValueKey(
-                        'admin-sos-map-${center.latitude}-${center.longitude}-$markerCount',
-                      ),
+                      key: const ValueKey('admin-sos-map-main'),
                       initialCameraPosition: CameraPosition(
                         target: center,
                         zoom: hasPoint ? 15 : 12,

@@ -68,13 +68,14 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
   String _linkedParentName = '';
   List<_ParentInvitation> _pendingInvitations = const [];
   bool _isLoadingInvitations = false;
+  bool _isHandlingInvitation = false;
+  String _invitationActionId = '';
 
   final List<_NavItem> _navItems = const [
     _NavItem('Map', Icons.map_outlined),
     _NavItem('Device', Icons.smartphone_outlined),
     _NavItem('Alerts', Icons.notifications_none_rounded),
     _NavItem('Profile', Icons.person_outline),
-    _NavItem('Settings', Icons.settings_outlined),
   ];
 
   // ─── Helpers ──────────────────────────────────────────────────
@@ -1214,7 +1215,7 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
       await _loadLinkedDevice();
       if (_linkedParentUid.trim().isEmpty) {
         _showActionSnack(
-          'No linked parent yet. Accept a parent invitation in Settings first.',
+          'No linked parent yet. Accept a parent invitation in Profile first.',
           isError: true,
         );
         return;
@@ -1650,9 +1651,7 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                                   contextLabel: 'Student Location Sheet',
                                 )
                               : GoogleMap(
-                                  key: ValueKey(
-                                    'sheet-map-${center.latitude}-${center.longitude}-${sosIsActive ? 'sos' : 'track'}',
-                                  ),
+                                  key: const ValueKey('sheet-map-main'),
                                   initialCameraPosition: CameraPosition(
                                     target: center,
                                     zoom: hasPoint ? 16 : 12,
@@ -3043,454 +3042,6 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
     }
   }
 
-  // ─── LUXURY SETTINGS SHEET ─────────────────────────────────────
-
-  Future<void> _showSettingsDialog() async {
-    await _loadPendingInvitations();
-    if (!mounted) return;
-    await showModalBottomSheet<void>(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (sheetCtx) {
-        bool localAlerts = _alertsEnabled;
-        bool localSafeMode = _safeModeEnabled;
-        bool localLocationSharing = _locationSharingEnabled;
-        bool isSaving = false;
-        bool isHandlingInvitation = false;
-        String invitationActionId = '';
-
-        return StatefulBuilder(
-          builder: (context, setSheet) {
-            return Padding(
-              padding: EdgeInsets.only(
-                bottom: MediaQuery.of(context).viewInsets.bottom,
-              ),
-              child: Container(
-                decoration: const BoxDecoration(
-                  color: AppColors.offWhite,
-                  borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
-                ),
-                child: SingleChildScrollView(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Container(
-                        height: 1,
-                        decoration: const BoxDecoration(
-                          gradient: LinearGradient(
-                            colors: [
-                              Colors.transparent,
-                              AppColors.gold,
-                              Colors.transparent,
-                            ],
-                          ),
-                        ),
-                      ),
-                      const SizedBox(height: 14),
-                      Container(
-                        width: 36,
-                        height: 4,
-                        decoration: BoxDecoration(
-                          color: AppColors.border,
-                          borderRadius: BorderRadius.circular(99),
-                        ),
-                      ),
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(24, 20, 24, 36),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              'PREFERENCES',
-                              style: TextStyle(
-                                fontFamily: _bf,
-                                fontSize: 9,
-                                letterSpacing: 4,
-                                color: AppColors.gold,
-                                fontWeight: FontWeight.w300,
-                              ),
-                            ),
-                            const SizedBox(height: 6),
-                            RichText(
-                              text: const TextSpan(
-                                style: TextStyle(
-                                  fontFamily: _hf,
-                                  fontSize: 34,
-                                  height: 1.05,
-                                  color: AppColors.green,
-                                  fontWeight: FontWeight.w300,
-                                ),
-                                children: [
-                                  TextSpan(text: 'Account\n'),
-                                  TextSpan(
-                                    text: 'Settings',
-                                    style: TextStyle(
-                                      fontStyle: FontStyle.italic,
-                                      color: AppColors.goldDark,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                            const SizedBox(height: 24),
-                            Container(
-                              height: 1,
-                              decoration: const BoxDecoration(
-                                gradient: LinearGradient(
-                                  colors: [AppColors.gold, Colors.transparent],
-                                ),
-                              ),
-                            ),
-                            const SizedBox(height: 22),
-                            Text(
-                              'SAFETY & ALERTS',
-                              style: TextStyle(
-                                fontFamily: _bf,
-                                fontSize: 9,
-                                letterSpacing: 4,
-                                color: AppColors.gold,
-                                fontWeight: FontWeight.w300,
-                              ),
-                            ),
-                            const SizedBox(height: 14),
-                            _DashSettingsTile(
-                              title: 'Enable Alerts',
-                              subtitle: 'Receive emergency notifications',
-                              icon: Icons.notifications_outlined,
-                              value: localAlerts,
-                              onChanged: (v) => setSheet(() => localAlerts = v),
-                            ),
-                            const SizedBox(height: 10),
-                            _DashSettingsTile(
-                              title: 'Safe Mode',
-                              subtitle: 'Enhanced safety monitoring',
-                              icon: Icons.shield_outlined,
-                              value: localSafeMode,
-                              onChanged: (v) =>
-                                  setSheet(() => localSafeMode = v),
-                            ),
-                            const SizedBox(height: 10),
-                            _DashSettingsTile(
-                              title: 'Location Sharing',
-                              subtitle: 'Share GPS with guardians & admin',
-                              icon: Icons.location_on_outlined,
-                              value: localLocationSharing,
-                              onChanged: (v) =>
-                                  setSheet(() => localLocationSharing = v),
-                            ),
-                            const SizedBox(height: 22),
-                            Text(
-                              'PARENT INVITATIONS',
-                              style: TextStyle(
-                                fontFamily: _bf,
-                                fontSize: 9,
-                                letterSpacing: 4,
-                                color: AppColors.gold,
-                                fontWeight: FontWeight.w300,
-                              ),
-                            ),
-                            const SizedBox(height: 10),
-                            _buildDeviceRow(
-                              'Pending Requests',
-                              _pendingInvitations.length.toString(),
-                            ),
-                            const SizedBox(height: 10),
-                            Align(
-                              alignment: Alignment.centerRight,
-                              child: TextButton(
-                                onPressed: _isLoadingInvitations
-                                    ? null
-                                    : () async {
-                                        await _loadPendingInvitations();
-                                        if (sheetCtx.mounted) setSheet(() {});
-                                      },
-                                child: Text(
-                                  _isLoadingInvitations
-                                      ? 'Refreshing...'
-                                      : 'Refresh Invitations',
-                                  style: TextStyle(
-                                    fontFamily: _bf,
-                                    fontSize: 10,
-                                    letterSpacing: 1,
-                                    color: AppColors.green,
-                                  ),
-                                ),
-                              ),
-                            ),
-                            if (_isLoadingInvitations)
-                              const Center(
-                                child: Padding(
-                                  padding: EdgeInsets.symmetric(vertical: 14),
-                                  child: CircularProgressIndicator(
-                                    color: AppColors.gold,
-                                    strokeWidth: 2,
-                                  ),
-                                ),
-                              )
-                            else if (_pendingInvitations.isEmpty)
-                              Container(
-                                width: double.infinity,
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 14,
-                                  vertical: 12,
-                                ),
-                                decoration: BoxDecoration(
-                                  color: AppColors.white,
-                                  borderRadius: BorderRadius.circular(12),
-                                  border: Border.all(color: AppColors.border),
-                                ),
-                                child: Text(
-                                  'No pending invitations right now.',
-                                  style: TextStyle(
-                                    fontFamily: _bf,
-                                    fontSize: 11,
-                                    color: AppColors.textSub,
-                                  ),
-                                ),
-                              )
-                            else
-                              Column(
-                                children: _pendingInvitations.map((invite) {
-                                  final isBusy =
-                                      isHandlingInvitation &&
-                                      invitationActionId == invite.id;
-                                  return Padding(
-                                    padding: const EdgeInsets.only(bottom: 10),
-                                    child: Container(
-                                      width: double.infinity,
-                                      padding: const EdgeInsets.fromLTRB(
-                                        12,
-                                        10,
-                                        12,
-                                        10,
-                                      ),
-                                      decoration: BoxDecoration(
-                                        color: AppColors.white,
-                                        borderRadius: BorderRadius.circular(12),
-                                        border: Border.all(
-                                          color: AppColors.border,
-                                        ),
-                                      ),
-                                      child: Column(
-                                        crossAxisAlignment:
-                                            CrossAxisAlignment.start,
-                                        children: [
-                                          Text(
-                                            invite.parentName.isEmpty
-                                                ? 'Parent'
-                                                : invite.parentName,
-                                            style: TextStyle(
-                                              fontFamily: _bf,
-                                              color: AppColors.green,
-                                              fontSize: 12,
-                                              fontWeight: FontWeight.w600,
-                                            ),
-                                          ),
-                                          const SizedBox(height: 2),
-                                          Text(
-                                            invite.parentPhone.isEmpty
-                                                ? 'No phone provided'
-                                                : invite.parentPhone,
-                                            style: TextStyle(
-                                              fontFamily: _bf,
-                                              color: AppColors.textSub,
-                                              fontSize: 11,
-                                            ),
-                                          ),
-                                          const SizedBox(height: 2),
-                                          Text(
-                                            'Received ${_formatTimestamp(invite.createdAt)}',
-                                            style: TextStyle(
-                                              fontFamily: _bf,
-                                              color: AppColors.textSub,
-                                              fontSize: 10,
-                                            ),
-                                          ),
-                                          const SizedBox(height: 10),
-                                          Wrap(
-                                            spacing: 8,
-                                            runSpacing: 8,
-                                            children: [
-                                              OutlinedButton(
-                                                onPressed: isBusy
-                                                    ? null
-                                                    : () async {
-                                                        setSheet(() {
-                                                          isHandlingInvitation =
-                                                              true;
-                                                          invitationActionId =
-                                                              invite.id;
-                                                        });
-                                                        try {
-                                                          await _rejectInvitation(
-                                                            invite,
-                                                          );
-                                                          if (sheetCtx
-                                                              .mounted) {
-                                                            setSheet(() {});
-                                                          }
-                                                        } finally {
-                                                          if (sheetCtx
-                                                              .mounted) {
-                                                            setSheet(() {
-                                                              isHandlingInvitation =
-                                                                  false;
-                                                              invitationActionId =
-                                                                  '';
-                                                            });
-                                                          }
-                                                        }
-                                                      },
-                                                style: OutlinedButton.styleFrom(
-                                                  foregroundColor:
-                                                      AppColors.textSub,
-                                                  side: BorderSide(
-                                                    color: AppColors.border,
-                                                  ),
-                                                ),
-                                                child: const Text('Reject'),
-                                              ),
-                                              ElevatedButton(
-                                                onPressed: isBusy
-                                                    ? null
-                                                    : () async {
-                                                        setSheet(() {
-                                                          isHandlingInvitation =
-                                                              true;
-                                                          invitationActionId =
-                                                              invite.id;
-                                                        });
-                                                        try {
-                                                          await _acceptInvitation(
-                                                            invite,
-                                                          );
-                                                          if (sheetCtx
-                                                              .mounted) {
-                                                            setSheet(() {});
-                                                          }
-                                                        } finally {
-                                                          if (sheetCtx
-                                                              .mounted) {
-                                                            setSheet(() {
-                                                              isHandlingInvitation =
-                                                                  false;
-                                                              invitationActionId =
-                                                                  '';
-                                                            });
-                                                          }
-                                                        }
-                                                      },
-                                                style: ElevatedButton.styleFrom(
-                                                  backgroundColor:
-                                                      AppColors.green,
-                                                  foregroundColor:
-                                                      AppColors.white,
-                                                ),
-                                                child: isBusy
-                                                    ? const SizedBox(
-                                                        width: 14,
-                                                        height: 14,
-                                                        child:
-                                                            CircularProgressIndicator(
-                                                              strokeWidth: 2,
-                                                              color:
-                                                                  Colors.white,
-                                                            ),
-                                                      )
-                                                    : const Text('Accept'),
-                                              ),
-                                            ],
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-                                  );
-                                }).toList(),
-                              ),
-                            const SizedBox(height: 28),
-                            SizedBox(
-                              width: double.infinity,
-                              child: Material(
-                                color: AppColors.green,
-                                child: InkWell(
-                                  onTap: isSaving
-                                      ? null
-                                      : () async {
-                                          setSheet(() => isSaving = true);
-                                          await _saveSettings(
-                                            alertsEnabled: localAlerts,
-                                            safeModeEnabled: localSafeMode,
-                                            locationSharingEnabled:
-                                                localLocationSharing,
-                                          );
-                                          if (sheetCtx.mounted) {
-                                            Navigator.pop(sheetCtx);
-                                          }
-                                        },
-                                  child: Container(
-                                    padding: const EdgeInsets.symmetric(
-                                      vertical: 16,
-                                    ),
-                                    alignment: Alignment.center,
-                                    decoration: BoxDecoration(
-                                      border: Border.all(
-                                        color: AppColors.gold.withOpacity(0.65),
-                                      ),
-                                    ),
-                                    child: isSaving
-                                        ? const SizedBox(
-                                            width: 18,
-                                            height: 18,
-                                            child: CircularProgressIndicator(
-                                              strokeWidth: 2,
-                                              color: AppColors.gold,
-                                            ),
-                                          )
-                                        : Text(
-                                            'SAVE SETTINGS',
-                                            style: TextStyle(
-                                              fontFamily: _bf,
-                                              color: AppColors.white,
-                                              letterSpacing: 4,
-                                              fontSize: 11,
-                                              fontWeight: FontWeight.w400,
-                                            ),
-                                          ),
-                                  ),
-                                ),
-                              ),
-                            ),
-                            const SizedBox(height: 14),
-                            Center(
-                              child: GestureDetector(
-                                onTap: () => Navigator.pop(sheetCtx),
-                                child: Text(
-                                  'CANCEL',
-                                  style: TextStyle(
-                                    fontFamily: _bf,
-                                    fontSize: 9,
-                                    letterSpacing: 3,
-                                    color: AppColors.textSub,
-                                    fontWeight: FontWeight.w300,
-                                  ),
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            );
-          },
-        );
-      },
-    );
-  }
-
   Future<void> _onBottomNavTap(int index) async {
     setState(() => _selectedNavIndex = index);
   }
@@ -3638,17 +3189,15 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
 
   Widget _buildCurrentTabContent() {
     switch (_selectedNavIndex) {
-      case 0:
-        return _buildMapTab();
       case 1:
         return _buildDeviceTab();
       case 2:
         return _buildAlertsTab();
       case 3:
         return _buildProfileTab();
-      case 4:
+      case 0:
       default:
-        return _buildSettingsTab();
+        return _buildMapTab();
     }
   }
 
@@ -4452,200 +4001,439 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
             _buildPanelAction(label: 'EDIT PROFILE', onTap: _showProfileDialog),
           ],
         ),
+        const SizedBox(height: 18),
+        _buildSectionLabel('PARENT INVITATIONS'),
+        const SizedBox(height: 10),
+        _buildParentInvitationsSection(),
+        const SizedBox(height: 20),
+        _buildSectionLabel('DANGER ZONE'),
+        const SizedBox(height: 10),
+        _buildSessionSecuritySection(),
       ],
     );
   }
 
-  Widget _buildSettingsTab() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
+  Widget _buildParentInvitationsSection() {
+    return _buildDashboardPanel(
+      title: 'Parent Invitations',
+      subtitle: 'INCOMING GUARDIAN CONNECTIONS',
       children: [
-        _buildHeroCard(),
-        const SizedBox(height: 16),
-        _buildSectionLabel('SETTINGS'),
-        const SizedBox(height: 10),
-        _buildDashboardPanel(
-          title: 'Preferences',
-          subtitle: 'STUDENT CONTROLS',
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            _buildDeviceRow(
-              'Student UID',
-              _studentUid.isEmpty ? 'Unavailable' : _studentUid,
+            const Text(
+              'PENDING REQUESTS',
+              style: TextStyle(
+                fontFamily: _bf,
+                fontSize: 9,
+                letterSpacing: 3,
+                color: AppColors.gold,
+                fontWeight: FontWeight.w400,
+              ),
             ),
-            const SizedBox(height: 8),
-            _buildDeviceRow('Alerts', _alertsEnabled ? 'Enabled' : 'Disabled'),
-            const SizedBox(height: 8),
-            _buildDeviceRow(
-              'Safe Mode',
-              _safeModeEnabled ? 'Enabled' : 'Disabled',
-            ),
-            const SizedBox(height: 8),
-            _buildDeviceRow(
-              'Location Sharing',
-              _locationSharingEnabled ? 'Enabled' : 'Disabled',
-            ),
-            const SizedBox(height: 8),
-            _buildDeviceRow(
-              'Parent Link',
-              _linkedParentUid.isEmpty ? 'Not linked' : 'Connected',
-            ),
-            const SizedBox(height: 8),
-            _buildDeviceRow(
-              'Parent Name',
-              _linkedParentName.isEmpty ? 'Not linked' : _linkedParentName,
-            ),
-            const SizedBox(height: 8),
-            _buildDeviceRow(
-              'Parent Contact',
-              _linkedParentPhone.isEmpty ? 'Not linked' : _linkedParentPhone,
-            ),
-            const SizedBox(height: 8),
-            _buildDeviceRow(
-              'Pending Invitations',
-              _pendingInvitations.length.toString(),
-            ),
-            const SizedBox(height: 14),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
+            Row(
               children: [
-                _buildPanelAction(
-                  label: 'OPEN SETTINGS',
-                  onTap: _showSettingsDialog,
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 3,
+                  ),
+                  decoration: BoxDecoration(
+                    color: AppColors.green.withValues(alpha: 0.1),
+                    borderRadius: BorderRadius.circular(99),
+                    border: Border.all(
+                      color: AppColors.gold.withValues(alpha: 0.3),
+                      width: 0.5,
+                    ),
+                  ),
+                  child: Text(
+                    '${_pendingInvitations.length} Pending',
+                    style: const TextStyle(
+                      fontFamily: _bf,
+                      fontSize: 9,
+                      letterSpacing: 1,
+                      color: AppColors.green,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
                 ),
-                _buildPanelAction(
-                  label: 'REFRESH',
-                  onTap: _loadDashboard,
-                  isPrimary: false,
+                const SizedBox(width: 8),
+                InkWell(
+                  onTap: _isLoadingInvitations ? null : _loadPendingInvitations,
+                  borderRadius: BorderRadius.circular(8),
+                  child: Padding(
+                    padding: const EdgeInsets.all(4),
+                    child: _isLoadingInvitations
+                        ? const SizedBox(
+                            width: 14,
+                            height: 14,
+                            child: CircularProgressIndicator(
+                              color: AppColors.gold,
+                              strokeWidth: 1.5,
+                            ),
+                          )
+                        : const Icon(
+                            Icons.refresh_rounded,
+                            size: 16,
+                            color: AppColors.green,
+                          ),
+                  ),
                 ),
               ],
             ),
           ],
         ),
-        const SizedBox(height: 20),
-        _buildSectionLabel('DANGER ZONE'),
-        const SizedBox(height: 10),
-        Container(
-          width: double.infinity,
-          padding: const EdgeInsets.fromLTRB(18, 16, 18, 18),
-          decoration: BoxDecoration(
-            color: const Color(0xFFFFF8F8),
-            borderRadius: BorderRadius.circular(22),
-            border: Border.all(
-              color: const Color(0xFFCB392B).withOpacity(0.25),
+        const SizedBox(height: 12),
+        if (_isLoadingInvitations)
+          const Center(
+            child: Padding(
+              padding: EdgeInsets.symmetric(vertical: 20),
+              child: CircularProgressIndicator(
+                color: AppColors.gold,
+                strokeWidth: 2,
+              ),
             ),
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                'ACCOUNT',
-                style: TextStyle(
-                  fontFamily: _bf,
-                  color: const Color(0xFFCB392B).withOpacity(0.7),
-                  fontSize: 9,
-                  letterSpacing: 3,
-                  fontWeight: FontWeight.w500,
+          )
+        else if (_pendingInvitations.isEmpty)
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(
+              horizontal: 14,
+              vertical: 14,
+            ),
+            decoration: BoxDecoration(
+              color: AppColors.white,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: AppColors.border),
+            ),
+            child: Row(
+              children: [
+                Icon(
+                  Icons.mark_email_read_outlined,
+                  size: 20,
+                  color: AppColors.gold.withValues(alpha: 0.7),
                 ),
-              ),
-              const SizedBox(height: 6),
-              Text(
-                'Session & Security',
-                style: TextStyle(
-                  fontFamily: _hf,
-                  color: const Color(0xFF7E1F14),
-                  fontSize: 26,
-                  height: 1,
-                  fontWeight: FontWeight.w300,
-                  fontStyle: FontStyle.italic,
+                const SizedBox(width: 10),
+                const Expanded(
+                  child: Text(
+                    'No pending invitations right now. When a parent invites you, it will appear here.',
+                    style: TextStyle(
+                      fontFamily: _bf,
+                      fontSize: 11,
+                      color: AppColors.textSub,
+                    ),
+                  ),
                 ),
-              ),
-              const SizedBox(height: 12),
-              Container(
-                height: 1,
-                decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    colors: [
-                      const Color(0xFFCB392B).withOpacity(0.3),
-                      Colors.transparent,
+              ],
+            ),
+          )
+        else
+          Column(
+            children: _pendingInvitations.map((invite) {
+              final isBusy =
+                  _isHandlingInvitation && _invitationActionId == invite.id;
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 10),
+                child: Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+                  decoration: BoxDecoration(
+                    color: AppColors.white,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: AppColors.border),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Expanded(
+                            child: Text(
+                              invite.parentName.isEmpty
+                                  ? 'Parent'
+                                  : invite.parentName,
+                              style: const TextStyle(
+                                fontFamily: _bf,
+                                color: AppColors.green,
+                                fontSize: 13,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 6,
+                              vertical: 2,
+                            ),
+                            decoration: BoxDecoration(
+                              color: AppColors.gold.withValues(alpha: 0.1),
+                              borderRadius: BorderRadius.circular(4),
+                            ),
+                            child: const Text(
+                              'INVITATION',
+                              style: TextStyle(
+                                fontFamily: _bf,
+                                fontSize: 8,
+                                letterSpacing: 1,
+                                color: AppColors.gold,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        invite.parentPhone.isEmpty
+                            ? 'No phone provided'
+                            : invite.parentPhone,
+                        style: const TextStyle(
+                          fontFamily: _bf,
+                          color: AppColors.textSub,
+                          fontSize: 11,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        'Received ${_formatTimestamp(invite.createdAt)}',
+                        style: const TextStyle(
+                          fontFamily: _bf,
+                          color: AppColors.textSub,
+                          fontSize: 10,
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: OutlinedButton(
+                              onPressed: isBusy
+                                  ? null
+                                  : () async {
+                                      setState(() {
+                                        _isHandlingInvitation = true;
+                                        _invitationActionId = invite.id;
+                                      });
+                                      try {
+                                        await _rejectInvitation(invite);
+                                      } finally {
+                                        if (mounted) {
+                                          setState(() {
+                                            _isHandlingInvitation = false;
+                                            _invitationActionId = '';
+                                          });
+                                        }
+                                      }
+                                    },
+                              style: OutlinedButton.styleFrom(
+                                foregroundColor: AppColors.textSub,
+                                side: const BorderSide(color: AppColors.border),
+                                padding: const EdgeInsets.symmetric(
+                                  vertical: 10,
+                                ),
+                              ),
+                              child: isBusy
+                                  ? const SizedBox(
+                                      width: 14,
+                                      height: 14,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                        color: AppColors.gold,
+                                      ),
+                                    )
+                                  : const Text(
+                                      'REJECT',
+                                      style: TextStyle(
+                                        fontFamily: _bf,
+                                        fontSize: 10,
+                                        letterSpacing: 1.5,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: ElevatedButton(
+                              onPressed: isBusy
+                                  ? null
+                                  : () async {
+                                      setState(() {
+                                        _isHandlingInvitation = true;
+                                        _invitationActionId = invite.id;
+                                      });
+                                      try {
+                                        await _acceptInvitation(invite);
+                                      } finally {
+                                        if (mounted) {
+                                          setState(() {
+                                            _isHandlingInvitation = false;
+                                            _invitationActionId = '';
+                                          });
+                                        }
+                                      }
+                                    },
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: AppColors.green,
+                                foregroundColor: AppColors.white,
+                                elevation: 0,
+                                padding: const EdgeInsets.symmetric(
+                                  vertical: 10,
+                                ),
+                              ),
+                              child: isBusy
+                                  ? const SizedBox(
+                                      width: 14,
+                                      height: 14,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                        color: AppColors.gold,
+                                      ),
+                                    )
+                                  : const Text(
+                                      'ACCEPT',
+                                      style: TextStyle(
+                                        fontFamily: _bf,
+                                        fontSize: 10,
+                                        letterSpacing: 1.5,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                            ),
+                          ),
+                        ],
+                      ),
                     ],
                   ),
                 ),
-              ),
-              const SizedBox(height: 14),
-              SizedBox(
-                width: double.infinity,
-                child: Material(
-                  color: const Color(0xFFCB392B),
-                  borderRadius: BorderRadius.circular(10),
-                  child: InkWell(
-                    onTap: _confirmLogout,
-                    borderRadius: BorderRadius.circular(10),
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 16,
-                        vertical: 14,
-                      ),
-                      alignment: Alignment.center,
-                      decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(10),
-                        border: Border.all(
-                          color: const Color(0xFFCB392B).withOpacity(0.5),
-                        ),
-                      ),
-                      child: Text(
-                        'LOG OUT',
-                        style: TextStyle(
-                          fontFamily: _bf,
-                          color: AppColors.white,
-                          fontSize: 11,
-                          letterSpacing: 3,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 12),
-              SizedBox(
-                width: double.infinity,
-                child: Material(
-                  color: Colors.transparent,
-                  borderRadius: BorderRadius.circular(10),
-                  child: InkWell(
-                    onTap: _changeRoleToParent,
-                    borderRadius: BorderRadius.circular(10),
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 16,
-                        vertical: 14,
-                      ),
-                      alignment: Alignment.center,
-                      decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(10),
-                        border: Border.all(
-                          color: const Color(0xFFCB392B).withValues(alpha: 0.5),
-                        ),
-                      ),
-                      child: Text(
-                        'CHANGE ROLE TO PARENT',
-                        style: TextStyle(
-                          fontFamily: _bf,
-                          color: const Color(0xFFCB392B),
-                          fontSize: 11,
-                          letterSpacing: 2,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-            ],
+              );
+            }).toList(),
           ),
-        ),
       ],
+    );
+  }
+
+  Widget _buildSessionSecuritySection() {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.fromLTRB(18, 16, 18, 18),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFFF8F8),
+        borderRadius: BorderRadius.circular(22),
+        border: Border.all(
+          color: const Color(0xFFCB392B).withValues(alpha: 0.25),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'ACCOUNT',
+            style: TextStyle(
+              fontFamily: _bf,
+              color: const Color(0xFFCB392B).withValues(alpha: 0.7),
+              fontSize: 9,
+              letterSpacing: 3,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            'Session & Security',
+            style: TextStyle(
+              fontFamily: _hf,
+              color: const Color(0xFF7E1F14),
+              fontSize: 26,
+              height: 1,
+              fontWeight: FontWeight.w300,
+              fontStyle: FontStyle.italic,
+            ),
+          ),
+          const SizedBox(height: 12),
+          Container(
+            height: 1,
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                colors: [
+                  const Color(0xFFCB392B).withValues(alpha: 0.3),
+                  Colors.transparent,
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 14),
+          SizedBox(
+            width: double.infinity,
+            child: Material(
+              color: const Color(0xFFCB392B),
+              borderRadius: BorderRadius.circular(10),
+              child: InkWell(
+                onTap: _confirmLogout,
+                borderRadius: BorderRadius.circular(10),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 14,
+                  ),
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(
+                      color: const Color(0xFFCB392B).withValues(alpha: 0.5),
+                    ),
+                  ),
+                  child: Text(
+                    'LOG OUT',
+                    style: TextStyle(
+                      fontFamily: _bf,
+                      color: AppColors.white,
+                      fontSize: 11,
+                      letterSpacing: 3,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          SizedBox(
+            width: double.infinity,
+            child: Material(
+              color: Colors.transparent,
+              borderRadius: BorderRadius.circular(10),
+              child: InkWell(
+                onTap: _changeRoleToParent,
+                borderRadius: BorderRadius.circular(10),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 14,
+                  ),
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(
+                      color: const Color(0xFFCB392B).withValues(alpha: 0.5),
+                    ),
+                  ),
+                  child: Text(
+                    'CHANGE ROLE TO PARENT',
+                    style: TextStyle(
+                      fontFamily: _bf,
+                      color: const Color(0xFFCB392B),
+                      fontSize: 11,
+                      letterSpacing: 2,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 
@@ -4922,13 +4710,7 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
               child: kIsWeb && !isGoogleMapsJsLoaded()
                   ? _buildWebMapFallback(contextLabel: 'Student Route Card')
                   : GoogleMap(
-                      key: ValueKey(
-                        'route-map-${center.latitude}-${center.longitude}-${sosIsActive
-                            ? 'sos'
-                            : hasPoint
-                            ? 'track'
-                            : 'none'}',
-                      ),
+                      key: const ValueKey('route-map-main'),
                       initialCameraPosition: CameraPosition(
                         target: center,
                         zoom: hasPoint ? 16 : 12,
@@ -4984,7 +4766,6 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                       rotateGesturesEnabled: false,
                       tiltGesturesEnabled: false,
                       onMapCreated: (controller) {
-                        _routeMapController?.dispose();
                         _routeMapController = controller;
                         final focusPoint = _nextMapFocusPoint ?? effectivePoint;
                         if (focusPoint != null && (sosIsActive || hasPoint)) {
@@ -5925,100 +5706,3 @@ class _DashLuxuryFieldState extends State<_DashLuxuryField>
     );
   }
 }
-
-// ─────────────────────────────────────────────────────────────────
-//  Luxury Settings Toggle Tile
-// ─────────────────────────────────────────────────────────────────
-
-class _DashSettingsTile extends StatelessWidget {
-  final String title;
-  final String subtitle;
-  final IconData icon;
-  final bool value;
-  final ValueChanged<bool> onChanged;
-
-  const _DashSettingsTile({
-    required this.title,
-    required this.subtitle,
-    required this.icon,
-    required this.value,
-    required this.onChanged,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return AnimatedContainer(
-      duration: const Duration(milliseconds: 200),
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-      decoration: BoxDecoration(
-        color: value ? AppColors.green.withOpacity(0.04) : AppColors.white,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(
-          color: value ? AppColors.gold.withOpacity(0.5) : AppColors.border,
-        ),
-      ),
-      child: Row(
-        children: [
-          AnimatedContainer(
-            duration: const Duration(milliseconds: 200),
-            width: 38,
-            height: 38,
-            decoration: BoxDecoration(
-              color: value ? AppColors.green : AppColors.cream,
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(
-                color: value
-                    ? AppColors.gold.withOpacity(0.4)
-                    : AppColors.border,
-                width: 0.8,
-              ),
-            ),
-            child: Icon(
-              icon,
-              size: 18,
-              color: value ? AppColors.gold : AppColors.textSub,
-            ),
-          ),
-          const SizedBox(width: 14),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  title,
-                  style: TextStyle(
-                    fontFamily: 'JosefinSans',
-                    fontSize: 13,
-                    letterSpacing: 0.5,
-                    color: value ? AppColors.green : AppColors.textMain,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  subtitle,
-                  style: const TextStyle(
-                    fontFamily: 'JosefinSans',
-                    fontSize: 10,
-                    letterSpacing: 0.3,
-                    color: AppColors.textSub,
-                    fontWeight: FontWeight.w300,
-                  ),
-                ),
-              ],
-            ),
-          ),
-          Switch(
-            value: value,
-            onChanged: onChanged,
-            activeThumbColor: AppColors.gold,
-            activeTrackColor: AppColors.green.withOpacity(0.4),
-            inactiveThumbColor: AppColors.textSub,
-            inactiveTrackColor: AppColors.cream,
-          ),
-        ],
-      ),
-    );
-  }
-}
-

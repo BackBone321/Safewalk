@@ -912,8 +912,8 @@ bool triggerFirebaseAlert(double lat, double lon, const String& triggerType, con
   String rfcTimestamp = getNetworkTimeRFC3339();
 
   String alertMsg = (triggerType == "voice_help") ? 
-                    ("EMERGENCY: Voice distress '" + lastVoiceKeyword + "' call detected by INMP441 mic!") : 
-                    "EMERGENCY: SOS tactile button triggered by tracker.";
+                    ("EMERGENCY: Your child is in danger! Voice distress '" + lastVoiceKeyword + "' detected by microphone.") : 
+                    "EMERGENCY: Your child is in danger! SOS tactile button pressed.";
 
   // Construct JSON body
   String jsonBody = "{\"fields\":{";
@@ -1102,7 +1102,16 @@ bool sendSMSAlert(double lat, double lon) {
 
   // Construct destination command
   String targetParentPhone = (dynamicParentPhone.length() > 0 ? dynamicParentPhone : String(PARENT_PHONE));
+  targetParentPhone.trim();
+  // Automatically format 09XXXXXXXXX to +639XXXXXXXXX for cellular modem network compatibility
+  if (targetParentPhone.startsWith("09") && targetParentPhone.length() == 11) {
+    targetParentPhone = "+63" + targetParentPhone.substring(1);
+  } else if (!targetParentPhone.startsWith("+") && targetParentPhone.startsWith("9") && targetParentPhone.length() == 10) {
+    targetParentPhone = "+63" + targetParentPhone;
+  }
+
   String sendSmsCmd = "AT+CMGS=\"" + targetParentPhone + "\"";
+  Serial.printf("[SMS] Sending SMS alert to parent phone: %s\n", targetParentPhone.c_str());
   
   // Send destination command and wait for prompt (usually '>')
   modemSerial.println(sendSmsCmd);
@@ -1122,9 +1131,10 @@ bool sendSMSAlert(double lat, double lon) {
   if (gotPrompt) {
     // Construct message body
     String sourceLabel = (lastVoiceKeyword.length() > 0) ? lastVoiceKeyword : "SOS";
-    String message = "ALERT: Safewalk (" + sourceLabel + ") emergency triggered! Child Location:\n";
-    message += "https://maps.google.com/?q=" + String(lat, 6) + "," + String(lon, 6);
-    message += "\nLatitude: " + String(lat, 6) + "\nLongitude: " + String(lon, 6);
+    String message = "EMERGENCY: Your child is in danger!\n";
+    message += "Trigger: " + sourceLabel + "\n";
+    message += "Location: https://maps.google.com/?q=" + String(lat, 6) + "," + String(lon, 6) + "\n";
+    message += "Coordinates: " + String(lat, 6) + ", " + String(lon, 6);
     
     // Write message followed by Ctrl+Z character (ASCII 26) to commit SMS
     modemSerial.print(message);

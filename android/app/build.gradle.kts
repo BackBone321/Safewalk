@@ -8,7 +8,9 @@ val localProperties = Properties().apply {
     }
 }
 
-val mapsApiKey = localProperties.getProperty("MAPS_API_KEY", "")
+val mapsApiKey = localProperties.getProperty("MAPS_API_KEY", "").let {
+    if (it.isBlank()) "AIzaSyBgYE5B6V17GMhOUjiJs6Ygd98ya3LUUVw" else it
+}
 
 plugins {
     id("com.android.application")
