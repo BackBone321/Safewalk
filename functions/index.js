@@ -92,7 +92,7 @@ async function verifyVoiceDistressSpeech(base64Audio) {
             alternativeLanguageCodes: ["tl-PH"],
             speechContexts: [
               {
-                phrases: ["help", "help me", "sos", "emergency", "save me", "tulong"],
+                phrases: ["help", "help me", "sos", "emergency", "save me", "tulong", "tabang"],
                 boost: 20.0
               }
             ]
@@ -123,7 +123,7 @@ async function verifyVoiceDistressSpeech(base64Audio) {
         fullTranscript = fullTranscript.trim().toLowerCase();
         console.log(`[SPEECH AI] Transcription: "${fullTranscript}" (Confidence: ${maxConfidence})`);
 
-        const emergencyKeywords = ["help", "sos", "emergency", "save", "tulong", "distress", "stop"];
+        const emergencyKeywords = ["help", "sos", "emergency", "save", "tulong", "tabang", "distress", "stop"];
         const containsDistress = emergencyKeywords.some(word => fullTranscript.includes(word));
 
         return {

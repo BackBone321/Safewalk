@@ -157,10 +157,10 @@ sequenceDiagram
 |---|---|---|
 | `users` | User profile + role | `uid`, `fullName`, `email`, `phoneNumber`, `role`, `createdAt` |
 | `user_settings` | Per-user preferences | `alertsEnabled`, `safeModeEnabled`, `locationSharingEnabled`, `smsAlertsEnabled`, `emailAlertsEnabled`, `childUid`, `updatedAt` |
-| `devices` | Device registry / location source | `deviceId`, `deviceName`, `phoneNumber`, `location`, `status`, `createdAt`, optional coordinates |
+| `devices` | Device registry / location source | `deviceId`, `deviceName`, `phoneNumber`, **`parentPhoneNumber`** (SMS target), `parentUid`, `studentUid`, `location`, `status`, `createdAt`, optional coordinates |
 | `parent_student_invitations` | Invitation workflow | `parentUid`, `studentUid`, normalized phones, `status`, `createdAt`, `updatedAt`, `respondedAt` |
 | `parent_student_links` | Accepted parent-student links | parent/student IDs and names, normalized phones, `status`, `linkedAt`, `updatedAt` |
-| `emergency_alerts` | SOS and alert timeline | student/user IDs, parent IDs, `type`, `severity`, `status`, `message`, `location`, `coordinates`, `timestamp`, `ackBy`, `ackAt` |
+| `emergency_alerts` | SOS / voice SOS timeline | IDs, `type` (`sos` / `voice_help`), `voiceKeyword`, `smsSubmissionStatus`, `severity`, `status`, `message`, `location`, `coordinates`, `timestamp`, optional `audioClip`, `ackBy`, `ackAt` |
 | `login_logs` | Authentication audit trail | `uid`, `loginInput`, `email`, `status`, `role`, `location`, `deviceId`, `reason`, `timestamp` |
 | `sms_logs` | SMS delivery audit | `phoneNumber`, `message`, `status`, provider response fields, `timestamp` |
 | `email_logs` | Email delivery audit | `toEmail`, `subject`, `status`, provider response fields, `timestamp` |
@@ -169,28 +169,54 @@ sequenceDiagram
 | `system_backups/{id}/documents` | Backup payload docs | `collection`, `sourceId`, `data`, `createdAt` |
 | `walk_sessions` | Child route/session status | `uid`, `route`, `distanceKm`, `status` |
 
-## 6) Deployment View
+## 6) IoT Voice Emergency SMS (LILYGO T-A7670)
+
+Firmware: `firmware/brain_lilygo_t_a7670/` (see that folder’s README for wiring and flash steps).
+
+```mermaid
+sequenceDiagram
+    participant Mic as INMP441
+    participant Device as T-A7670 ESP32
+    participant Modem as A7670 LTE
+    participant FS as Firestore
+    participant Parent as Parent phone
+
+    Mic->>Device: I2S audio (HELP / TABANG)
+    Device->>Device: Edge Impulse keyword spot
+    Device->>FS: GET devices/{DEVICE_ID} (parentPhoneNumber)
+    Device->>Modem: AT+CMGS emergency SMS
+    Modem->>Parent: Carrier SMS submission
+    Device->>FS: POST emergency_alerts (smsSubmissionStatus)
+```
+
+| Concern | Implementation |
+|---|---|
+| Voice detection | On-device Edge Impulse (`help` / `tabang`); modem has no ASR |
+| Recipient | Reuses `devices/{id}.parentPhoneNumber` (no duplicate collection) |
+| SMS | A7670 cellular `AT+CMGS`; retry once on failure |
+| Duplicate prevention | Cooldown (`VOICE_COOLDOWN_MS`) + re-arm after keyword ends |
+| Status semantics | `smsSubmissionStatus`: `submitted` = carrier accepted; not handset delivery |
+| Auth to Firestore | HTTPS REST + Android API key (no Admin credentials in firmware) |
+
+## 7) Deployment View
 
 - Frontend runtime: Flutter (Web/Android/iOS/Desktop targets in repo)
-- Backend runtime: Firebase Authentication + Cloud Firestore
+- Backend runtime: Firebase Authentication + Cloud Firestore + Cloud Functions (`functions/index.js`)
+- IoT runtime: LILYGO T-A7670 V3 (cellular data + SMS)
 - External providers:
 - Email: EmailJS (`https://api.emailjs.com/api/v1.0/email/send`)
-- SMS: configurable HTTP gateway (`lib/config/sms_config.dart`)
+- SMS: modem SMS from device; optional app HTTP gateway (`lib/config/sms_config.dart`)
 - Maps: `google_maps_flutter` with web JS readiness guard
 
-## 7) Current Architectural Notes
+## 8) Current Architectural Notes
 
 - This is a client-heavy architecture (business logic in Flutter pages/services).
 - Firestore is the system of record for operational data and logs.
 - Real-time monitoring is implemented via Firestore snapshot streams.
-- Notification sending exists, but automatic alert-to-SMS/email fan-out is not yet wired from SOS events.
+- Device-side voice SOS already sends cellular SMS and writes `emergency_alerts`.
+- App SMS gateway fan-out remains optional and separate from modem SMS.
 - OTP state is in-memory inside `AuthService`; it resets when app process/session restarts.
 
-## 8) Recommended Next Architecture Step
+## 9) Recommended Next Architecture Step
 
-Introduce a backend automation layer (Firebase Cloud Functions) for:
-- server-side OTP issuance/verification
-- automatic SMS/email fan-out on new active `emergency_alerts`
-- centralized role/permission enforcement and immutable audit trails
-
-This keeps the current UI architecture while making security and reliability stronger.
+Harden device Firestore access (scoped rules / short-lived tokens) and optionally enable SMS delivery reports (CDS) if handset confirmation is required beyond carrier submission.

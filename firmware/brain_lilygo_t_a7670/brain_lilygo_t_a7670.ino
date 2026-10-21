@@ -1,20 +1,20 @@
 /*
  * Safewalk IoT Tracker - Board 1 (LILYGO T-A7670 V3 4G)
- * 
+ *
  * Hardware Details:
  * - Microcontroller: ESP32-D0WD-V3
- * - Cellular Module: A7670 4G LTE + GPS (connected via UART)
- * - Tactile Button: Connected between GPIO 14 and GND (internal pull-up enabled)
- * 
- * Features:
- * - Controls power state of the A7670 module using PWRKEY.
- * - Powers on GPS and decodes NMEA coordinates.
- * - Connects to the cellular network using APN details.
- * - Monitors a tactile button (debounced).
- * - On button press:
- *   1. Obtains current GPS coordinates.
- *   2. Sends a direct HTTP POST request to the Firebase Firestore REST API.
- *   3. Sends a backup SMS message to a pre-configured parent phone number.
+ * - Cellular Module: A7670 4G LTE + GNSS (UART TX=26, RX=27)
+ * - Tactile Button: GPIO 14 to GND (INPUT_PULLUP)
+ * - Microphone: INMP441 I2S (WS=25, SD=32, SCK=33)
+ *
+ * Emergency voice path (no button required):
+ *   1. Edge Impulse on-device keyword spotting for "HELP" / "TABANG"
+ *   2. Resolve parent phone from Firestore devices/{DEVICE_ID}.parentPhoneNumber
+ *   3. Send cellular SMS via A7670 AT+CMGS (submission confirmed by +CMGS/OK)
+ *   4. Upload emergency_alerts document over HTTPS (cellular data)
+ *
+ * NOTE: +CMGS OK means the carrier accepted the SMS for routing.
+ *       It is NOT a handset delivery receipt (that requires SMS status reports).
  */
 
 #include <HardwareSerial.h>
@@ -55,18 +55,21 @@ const char FIREBASE_API_KEY[] = "AIzaSyDaNNEfa8wqUZbfcsvhThuFo6MDDyTql5k"; // An
 // Device Registration Info
 const char DEVICE_ID[] = "safewalk_device_001";
 const char DEVICE_NAME[] = "LilyGo Tracker 001";
-const char DEVICE_PHONE[] = "09568165326"; // Simulated device SIM number
+const char DEVICE_PHONE[] = "+639129457063"; // LilyGo SIM card number (09129457063)
 
 // Alert Details & Parent SMS Fallback Info
 // The target parent's phone number to send the SMS to (Philippine format, e.g. "+639xxxxxxxxx")
-const char PARENT_PHONE[] = "09129457063"; 
+const char PARENT_PHONE[] = "=639568165326"; // Parent mobile phone number (09568165326)
 const char PARENT_UID[] = "parent_mock_uid_123"; // Handled in DB linking
 
 // Dynamic variables populated at runtime from SIM (AT+CNUM) and Firestore
 String devicePhoneNumber = "";
 String dynamicParentPhone = "";
+String dynamicStudentName = "";
 String dynamicParentUid = "";
 String dynamicStudentUid = "";
+bool pendingEmergencySMSCoordinateUpdate = false;
+String pendingUpdateTriggerType = "sos";
 
 #define TINY_GSM_MODEM_A7672X
 #include <TinyGsmClient.h>
@@ -95,10 +98,18 @@ int lastButtonState = HIGH;
 unsigned long lastDebounceTime = 0;
 const unsigned long DEBOUNCE_DELAY = 50; // milliseconds
 
-// Cooldown timer for voice triggers to avoid continuous alerts
+// Duplicate-alert prevention: cooldown + re-arm only after keyword ends
 unsigned long lastVoiceTriggerTime = 0;
-const unsigned long VOICE_COOLDOWN_MS = 15000; // 15 seconds cooldown
+const unsigned long VOICE_COOLDOWN_MS = 30000; // Configurable: block repeat SMS for this long
+bool voiceDetectorArmed = true;               // Disarmed on fire; re-armed after quiet + cooldown
+bool voiceKeywordCurrentlyActive = false;     // True while consecutive frames still match keyword
 String lastVoiceKeyword = "TABANG";
+String lastSmsSubmissionStatus = "none";      // "submitted" | "failed" | "none" (modem accept, not delivery)
+
+// Privacy: set to 0 to skip recording/uploading WAV clips (keyword detection still runs on-device)
+#ifndef ENABLE_VOICE_AUDIO_CLIP
+#define ENABLE_VOICE_AUDIO_CLIP 1
+#endif
 
 // Boot grace period: prevents any false triggers during startup while hardware/network stabilizes
 unsigned long systemBootReadyTime = 0;
@@ -118,7 +129,16 @@ bool getGPSLocation(double& lat, double& lon);
 String getField(const String& data, char separator, int index);
 bool setupNetwork();
 bool triggerFirebaseAlert(double lat, double lon, const String& triggerType = "sos", const String& audioBase64 = "");
-bool sendSMSAlert(double lat, double lon);
+bool setupSMS();
+void logSmsDiagnostics();
+bool sendSMSAlert(double lat, double lon, const String& triggerType = "sos");
+bool sendSMSViaModem(const String& recipient, const String& message, int smsServiceDomain);
+bool sendSMSViaModemWithFallbacks(const String& recipientIntl, const String& message);
+String formatPhoneNumberForSMS(const String& inputRaw);
+String formatPhoneNumberLocalPH(const String& intlOrLocal);
+void abortPendingSmsPrompt();
+void checkIncomingModemData();
+void handleIncomingSMS(int smsIndex);
 void flushModemBuffer();
 bool fetchDeviceConfig();
 bool autoRegisterDeviceInFirestore();
@@ -157,6 +177,9 @@ void setup() {
   // Connect to Network/APN
   setupNetwork();
 
+  // Initialize Cellular SMS Subsystem (Text mode, GSM charset, SMS parameters)
+  setupSMS();
+
   // Initialize INMP441 I2S Microphone
   initI2SMicrophone();
 
@@ -188,11 +211,30 @@ void loop() {
   lastButtonState = reading;
 
   // 2. Check INMP441 audio for voice 'Help' or 'Tabang' distress trigger
+  //    Cooldown blocks repeats; detector re-arms only after keyword ends AND cooldown elapses.
   bool voiceTriggerDetected = checkVoiceHelpTrigger();
-  if (voiceTriggerDetected && (millis() - lastVoiceTriggerTime > VOICE_COOLDOWN_MS)) {
-    lastVoiceTriggerTime = millis();
-    Serial.printf("\n[ALERT] Voice '%s' distress keyword confirmed by Edge Impulse AI!\n", lastVoiceKeyword.c_str());
-    triggerEmergencyAlertProcess("voice_help");
+  if (voiceTriggerDetected) {
+    voiceKeywordCurrentlyActive = true;
+    if (voiceDetectorArmed && (millis() - lastVoiceTriggerTime > VOICE_COOLDOWN_MS)) {
+      voiceDetectorArmed = false;
+      lastVoiceTriggerTime = millis();
+      Serial.printf("\n[ALERT] Voice '%s' distress keyword confirmed by Edge Impulse AI!\n", lastVoiceKeyword.c_str());
+      Serial.println("[ALERT] Detector disarmed until keyword ends and cooldown expires.");
+      triggerEmergencyAlertProcess("voice_help");
+    } else if (!voiceDetectorArmed) {
+      Serial.println("[ALERT] Keyword still audible — duplicate SMS suppressed (waiting for quiet + cooldown).");
+    }
+  } else {
+    if (voiceKeywordCurrentlyActive) {
+      voiceKeywordCurrentlyActive = false;
+      Serial.println("[ALERT] Keyword ended. Waiting for cooldown before re-arm...");
+    }
+    if (!voiceDetectorArmed &&
+        !voiceKeywordCurrentlyActive &&
+        (millis() - lastVoiceTriggerTime > VOICE_COOLDOWN_MS)) {
+      voiceDetectorArmed = true;
+      Serial.println("[ALERT] Voice detector re-armed.");
+    }
   }
 
   // 3. Process continuous GPS serial stream to maintain exact real-time coordinates
@@ -215,10 +257,17 @@ void loop() {
     }
   }
 
-  // Periodically read any incoming serial data from the modem to keep buffers clear
-  while (modemSerial.available()) {
-    Serial.write(modemSerial.read());
+  // 5. Follow-up SMS if satellite lock was acquired after emergency trigger
+  if (pendingEmergencySMSCoordinateUpdate && globalHasGPSFix && (millis() - globalLastFixTime < 30000)) {
+    if (globalCurrentLat != 0.0 && globalCurrentLon != 0.0) {
+      pendingEmergencySMSCoordinateUpdate = false;
+      Serial.println("\n[SMS] Live GPS lock established after SOS! Transmitting coordinate update SMS...");
+      sendSMSAlert(globalCurrentLat, globalCurrentLon, pendingUpdateTriggerType + "_update");
+    }
   }
+
+  // 6. Periodically monitor incoming serial data and SMS notifications (+CMTI) from modem
+  checkIncomingModemData();
 }
 
 // Discards all pending bytes from the modem UART receive buffer.
@@ -939,7 +988,10 @@ bool triggerFirebaseAlert(double lat, double lon, const String& triggerType, con
   jsonBody += "}},";
   jsonBody += "\"timestamp\":{\"timestampValue\":\"" + rfcTimestamp + "\"},";
   jsonBody += "\"locationSource\":{\"stringValue\":\"device_gps\"},";
-  jsonBody += "\"triggeredBy\":{\"stringValue\":\"iot_device\"}";
+  jsonBody += "\"triggeredBy\":{\"stringValue\":\"iot_device\"},";
+  jsonBody += "\"voiceKeyword\":{\"stringValue\":\"" + lastVoiceKeyword + "\"},";
+  jsonBody += "\"smsSubmissionStatus\":{\"stringValue\":\"" + lastSmsSubmissionStatus + "\"},";
+  jsonBody += "\"smsDeliveryNote\":{\"stringValue\":\"submitted_means_carrier_accepted_not_handset_delivery\"}";
   jsonBody += "}}";
 
   // Build full Firestore URL
@@ -1076,88 +1128,386 @@ bool triggerFirebaseAlert(double lat, double lon, const String& triggerType, con
 
 
 
-// Sends direct cellular SMS with Google Maps coordinates link to parent
-bool sendSMSAlert(double lat, double lon) {
+// Configures modem SMS subsystem (Text mode, GSM charset, SMS parameters, URC notifications)
+bool setupSMS() {
+  Serial.println("[SMS] Initializing SMS subsystem on A7670 modem...");
   String response;
-  Serial.println("[SMS] Preparing backup SMS alert to parent...");
-  
-  // Verify modem registered to network first
-  sendATCommand("AT+CREG?", response);
-  if (response.indexOf(",1") == -1 && response.indexOf(",5") == -1) {
-    Serial.println("[SMS] Warning: Modem is not registered to network. SMS may fail.");
+
+  sendATCommand("AT+CMEE=2", response, 2000);
+  sendATCommand("AT+CMGF=1", response, 2000);
+  sendATCommand("AT+CSCS=\"GSM\"", response, 2000);
+  sendATCommand("AT+CSMP=17,167,0,0", response, 2000);
+
+  // Prefer Circuit-Switched SMS. Packet-domain SMS (CGSMS=2) commonly returns
+  // "+CMS ERROR: unknown error" on PH LTE SIMs even when HTTPS data works.
+  sendATCommand("AT+CGSMS=1", response, 2000);
+  Serial.printf("[SMS] CGSMS (1=CS preferred): %s\n", response.c_str());
+
+  sendATCommand("AT+CSCA?", response, 2000);
+  Serial.printf("[SMS] SMSC: %s\n", response.c_str());
+  if (response.indexOf("+CSCA:") == -1 || response.indexOf("\"\"") != -1) {
+    Serial.println("[SMS] WARNING: SMSC empty/unknown. Put this SIM in a phone, send any SMS, reinsert.");
   }
 
-  // Set SMS mode to text (1 = text mode, 0 = PDU mode)
-  if (!sendATCommand("AT+CMGF=1", response, 2000)) {
-    Serial.printf("[SMS] Failed to set text mode. Response: %s. Retrying...\n", response.c_str());
-    // Retry once
-    delay(1000);
-    if (!sendATCommand("AT+CMGF=1", response, 2000)) {
-      return false;
+  sendATCommand("AT+CNMI=2,1,0,0,0", response, 2000);
+  logSmsDiagnostics();
+  Serial.println("[SMS] SMS subsystem configured (CS preferred).");
+  return true;
+}
+
+void logSmsDiagnostics() {
+  String response;
+  Serial.println("[SMS] ----- diagnostics -----");
+  sendATCommand("AT+CPIN?", response, 2000);
+  Serial.printf("[SMS] CPIN: %s\n", response.c_str());
+  sendATCommand("AT+CSQ", response, 2000);
+  Serial.printf("[SMS] CSQ: %s\n", response.c_str());
+  sendATCommand("AT+CREG?", response, 2000);
+  Serial.printf("[SMS] CREG: %s\n", response.c_str());
+  sendATCommand("AT+CEREG?", response, 2000);
+  Serial.printf("[SMS] CEREG: %s\n", response.c_str());
+  sendATCommand("AT+CGSMS?", response, 2000);
+  Serial.printf("[SMS] CGSMS?: %s\n", response.c_str());
+  sendATCommand("AT+CSCA?", response, 2000);
+  Serial.printf("[SMS] CSCA?: %s\n", response.c_str());
+  sendATCommand("AT+CPSI?", response, 3000);
+  Serial.printf("[SMS] CPSI: %s\n", response.c_str());
+  sendATCommand("ATI", response, 2000);
+  Serial.printf("[SMS] ATI: %s\n", response.c_str());
+  Serial.println("[SMS] ----- end diagnostics -----");
+}
+
+void abortPendingSmsPrompt() {
+  // ESC cancels an open CMGS '>' prompt so the modem is not left half-open
+  modemSerial.write(27);
+  delay(300);
+  flushModemBuffer();
+}
+
+// Cleanses, validates, and converts any raw phone number into standard international format (+639XXXXXXXXX)
+String formatPhoneNumberForSMS(const String& inputRaw) {
+  String clean = "";
+  for (int i = 0; i < inputRaw.length(); i++) {
+    char c = inputRaw.charAt(i);
+    if (isDigit(c) || (c == '+' && clean.length() == 0)) {
+      clean += c;
     }
   }
+  if (clean.startsWith("+63") && clean.length() == 13) {
+    return clean;
+  }
+  if (clean.startsWith("63") && clean.length() == 12) {
+    return "+" + clean;
+  }
+  if (clean.startsWith("09") && clean.length() == 11) {
+    return "+63" + clean.substring(1);
+  }
+  if (clean.startsWith("9") && clean.length() == 10) {
+    return "+63" + clean;
+  }
+  return clean;
+}
 
-  // Configure character set to GSM
-  sendATCommand("AT+CSCS=\"GSM\"", response);
+// Convert +639XXXXXXXXX (or already-local) to 09XXXXXXXXX for carrier variants that prefer local MSISDN
+String formatPhoneNumberLocalPH(const String& intlOrLocal) {
+  String intl = formatPhoneNumberForSMS(intlOrLocal);
+  if (intl.startsWith("+63") && intl.length() == 13) {
+    return "0" + intl.substring(3);
+  }
+  return intlOrLocal;
+}
 
-  // Construct destination command
-  String targetParentPhone = (dynamicParentPhone.length() > 0 ? dynamicParentPhone : String(PARENT_PHONE));
-  targetParentPhone.trim();
-  // Automatically format 09XXXXXXXXX to +639XXXXXXXXX for cellular modem network compatibility
-  if (targetParentPhone.startsWith("09") && targetParentPhone.length() == 11) {
-    targetParentPhone = "+63" + targetParentPhone.substring(1);
-  } else if (!targetParentPhone.startsWith("+") && targetParentPhone.startsWith("9") && targetParentPhone.length() == 10) {
-    targetParentPhone = "+63" + targetParentPhone;
+// Low-level AT+CMGS. smsServiceDomain: 1=CS preferred, 0=CS only, 2=PS preferred, 3=PS only
+bool sendSMSViaModem(const String& recipient, const String& message, int smsServiceDomain) {
+  String response;
+  flushModemBuffer();
+  abortPendingSmsPrompt();
+
+  String safeMsg = message;
+  if (safeMsg.length() > 150) {
+    Serial.printf("[SMS] Warning: Message length (%d) trimmed to 150 chars.\n", safeMsg.length());
+    safeMsg = safeMsg.substring(0, 150);
   }
 
-  String sendSmsCmd = "AT+CMGS=\"" + targetParentPhone + "\"";
-  Serial.printf("[SMS] Sending SMS alert to parent phone: %s\n", targetParentPhone.c_str());
-  
-  // Send destination command and wait for prompt (usually '>')
+  sendATCommand("AT+CMEE=2", response, 1000);
+  sendATCommand("AT+CEREG?", response, 1500);
+  bool isRegistered = (response.indexOf(",1") != -1 || response.indexOf(",5") != -1);
+  if (!isRegistered) {
+    sendATCommand("AT+CREG?", response, 1500);
+    isRegistered = (response.indexOf(",1") != -1 || response.indexOf(",5") != -1);
+  }
+  if (!isRegistered) {
+    Serial.println("[SMS] Warning: not registered on CS/EPS. SMS may fail.");
+  }
+
+  if (!sendATCommand("AT+CMGF=1", response, 2000)) {
+    Serial.printf("[SMS] AT+CMGF=1 failed: %s\n", response.c_str());
+    Serial.println("[SMS] If CMGF always errors, this A7670 variant may not support SMS.");
+    return false;
+  }
+
+  sendATCommand("AT+CSCS=\"GSM\"", response, 1000);
+  sendATCommand("AT+CSMP=17,167,0,0", response, 1000);
+
+  String cgsmsCmd = "AT+CGSMS=" + String(smsServiceDomain);
+  sendATCommand(cgsmsCmd, response, 2000);
+  Serial.printf("[SMS] Using %s -> %s\n", cgsmsCmd.c_str(), response.c_str());
+
+  while (modemSerial.available()) modemSerial.read();
+
+  String sendSmsCmd = "AT+CMGS=\"" + recipient + "\"";
+  Serial.printf("[SMS] Issuing command: %s\n", sendSmsCmd.c_str());
   modemSerial.println(sendSmsCmd);
-  
+
   unsigned long start = millis();
   bool gotPrompt = false;
-  while (millis() - start < 3000) {
+  String promptResponse = "";
+  while (millis() - start < 8000) {
     if (modemSerial.available()) {
       char c = modemSerial.read();
+      promptResponse += c;
       if (c == '>') {
         gotPrompt = true;
         break;
       }
+      if (promptResponse.indexOf("ERROR") != -1) {
+        Serial.printf("[SMS] Modem rejected CMGS: %s\n", promptResponse.c_str());
+        abortPendingSmsPrompt();
+        return false;
+      }
+    }
+    delay(10);
+  }
+
+  if (!gotPrompt) {
+    Serial.printf("[SMS] No '>' prompt. Modem: %s\n", promptResponse.c_str());
+    abortPendingSmsPrompt();
+    return false;
+  }
+
+  delay(200);
+  modemSerial.print(safeMsg);
+  delay(200);
+  modemSerial.write(26); // Ctrl+Z
+
+  response = "";
+  start = millis();
+  unsigned long sawCmgsAt = 0;
+  while (millis() - start < 45000) {
+    while (modemSerial.available()) {
+      char c = modemSerial.read();
+      response += c;
+    }
+    if (response.indexOf("+CMS ERROR") != -1) {
+      Serial.printf("[SMS] Rejected by network/modem: %s\n", response.c_str());
+      abortPendingSmsPrompt();
+      return false;
+    }
+    if (response.indexOf("+CMGS:") != -1) {
+      if (sawCmgsAt == 0) sawCmgsAt = millis();
+      if (response.indexOf("OK") != -1) {
+        Serial.printf("[SMS] Carrier accepted SMS: %s\n", response.c_str());
+        return true;
+      }
+      // Some A7670 builds emit +CMGS:<mr> then delay OK; accept if no ERROR for 4s
+      if (response.indexOf("ERROR") == -1 && (millis() - sawCmgsAt > 4000)) {
+        Serial.printf("[SMS] Accepting +CMGS without delayed OK: %s\n", response.c_str());
+        return true;
+      }
+    } else if (response.indexOf("ERROR") != -1) {
+      Serial.printf("[SMS] Rejected by network/modem: %s\n", response.c_str());
+      abortPendingSmsPrompt();
+      return false;
+    }
+    delay(50);
+  }
+
+  Serial.printf("[SMS] Timed out waiting for CMGS. Raw: %s\n", response.c_str());
+  abortPendingSmsPrompt();
+  return false;
+}
+
+bool sendSMSViaModemWithFallbacks(const String& recipientIntl, const String& message) {
+  // Strategy order addresses common A7670 "+CMS ERROR: unknown error" on LTE:
+  // 1) CS preferred + international MSISDN
+  // 2) CS only + international
+  // 3) CS preferred + local 09… format
+  // 4) PS preferred + international (last resort)
+  struct Attempt {
+    const char* label;
+    int domain;
+    bool useLocal;
+  };
+  const Attempt attempts[] = {
+    {"CS preferred / +63", 1, false},
+    {"CS only / +63", 0, false},
+    {"CS preferred / 09", 1, true},
+    {"PS preferred / +63", 2, false},
+  };
+
+  for (size_t i = 0; i < sizeof(attempts) / sizeof(attempts[0]); i++) {
+    String dest = attempts[i].useLocal ? formatPhoneNumberLocalPH(recipientIntl) : recipientIntl;
+    Serial.printf("\n[SMS] Attempt %d/%d: %s -> %s\n",
+                  (int)(i + 1), (int)(sizeof(attempts) / sizeof(attempts[0])),
+                  attempts[i].label, dest.c_str());
+    if (sendSMSViaModem(dest, message, attempts[i].domain)) {
+      return true;
+    }
+    delay(1500);
+    flushModemBuffer();
+  }
+  return false;
+}
+
+// Main high-level emergency SMS function: formats concise message with coordinates link and sends to parent
+bool sendSMSAlert(double lat, double lon, const String& triggerType) {
+  Serial.println("\n[SMS] =========================================");
+  Serial.println("[SMS] Preparing emergency SMS alert to parent...");
+  Serial.println("[SMS] =========================================");
+
+  logSmsDiagnostics();
+
+  String targetParentPhone = (dynamicParentPhone.length() > 0 ? dynamicParentPhone : String(PARENT_PHONE));
+  targetParentPhone = formatPhoneNumberForSMS(targetParentPhone);
+  targetParentPhone.trim();
+
+  if (targetParentPhone.length() < 7) {
+    Serial.printf("[SMS] ERROR: Invalid parent phone '%s'.\n", targetParentPhone.c_str());
+    return false;
+  }
+
+  String triggerDesc = "SOS";
+  if (triggerType == "voice_help") {
+    triggerDesc = (lastVoiceKeyword.length() > 0 ? lastVoiceKeyword : "HELP");
+  } else if (triggerType.endsWith("_update")) {
+    triggerDesc = "GPS";
+  }
+
+  // Keep first attempt short/plain GSM-7 (long URLs often trip CMS ERROR on some SIMs)
+  String shortMsg = "EMERGENCY ALERT: A request for help has been detected. Please check immediately.";
+  shortMsg += " [";
+  shortMsg += triggerDesc;
+  shortMsg += "]";
+  if (lat != 0.0 && lon != 0.0) {
+    shortMsg += " Loc:";
+    shortMsg += String(lat, 5);
+    shortMsg += ",";
+    shortMsg += String(lon, 5);
+  }
+
+  Serial.printf("[SMS] Recipient (intl): %s\n", targetParentPhone.c_str());
+  Serial.println("[SMS] Message (" + String(shortMsg.length()) + " chars):\n" + shortMsg);
+
+  bool success = sendSMSViaModemWithFallbacks(targetParentPhone, shortMsg);
+
+  if (success) {
+    lastSmsSubmissionStatus = "submitted";
+    Serial.println("[SMS] [SUCCESS] SMS submitted to carrier (+CMGS). Not a handset delivery receipt.");
+  } else {
+    lastSmsSubmissionStatus = "failed";
+    Serial.println("[SMS] [FAILED] All SMS strategies failed.");
+    Serial.println("[SMS] Checklist:");
+    Serial.println("  1) SIM can send SMS from a phone (same SIM)");
+    Serial.println("  2) Prepaid has SMS load / SMS not blocked");
+    Serial.println("  3) SMSC present in AT+CSCA? (send SMS once from a phone to populate)");
+    Serial.println("  4) Antenna connected; AT+CSQ rssi ideally >= 12");
+    Serial.println("  5) Module is not A7670E-LNXY-UBL (no SMS hardware support)");
+  }
+
+  return success;
+}
+
+// Monitors modem serial UART stream for unsolicited result codes (URCs), such as incoming SMS (+CMTI)
+void checkIncomingModemData() {
+  static String modemLineBuffer = "";
+  while (modemSerial.available()) {
+    char c = modemSerial.read();
+    Serial.write(c); // Echo to debug console
+    if (c == '\n') {
+      modemLineBuffer.trim();
+      if (modemLineBuffer.startsWith("+CMTI:")) {
+        // e.g. +CMTI: "SM",1
+        int commaIdx = modemLineBuffer.indexOf(",");
+        if (commaIdx != -1) {
+          int smsIndex = modemLineBuffer.substring(commaIdx + 1).toInt();
+          if (smsIndex > 0) {
+            handleIncomingSMS(smsIndex);
+          }
+        }
+      }
+      modemLineBuffer = "";
+    } else if (c != '\r') {
+      if (modemLineBuffer.length() < 128) {
+        modemLineBuffer += c;
+      }
+    }
+  }
+}
+
+// Reads incoming SMS, processes parent location queries (LOC/HELP/STATUS), and replies with coordinates
+void handleIncomingSMS(int smsIndex) {
+  Serial.printf("\n[SMS] Handling incoming SMS notification at SIM memory index %d...\n", smsIndex);
+  String response;
+  
+  // Ensure text mode is active
+  sendATCommand("AT+CMGF=1", response, 1000);
+  
+  // Read message at SIM index
+  String readCmd = "AT+CMGR=" + String(smsIndex);
+  if (!sendATCommand(readCmd, response, 3000)) {
+    Serial.printf("[SMS] Failed to read SMS index %d.\n", smsIndex);
+    return;
+  }
+
+  // Parse sender phone number from +CMGR header:
+  // e.g. +CMGR: "REC UNREAD","+639568165326",,"26/10/19,21:55:00+32"
+  int firstQuote = response.indexOf("\",\"");
+  String senderPhone = "";
+  if (firstQuote != -1) {
+    int secondQuote = response.indexOf("\"", firstQuote + 3);
+    if (secondQuote != -1) {
+      senderPhone = response.substring(firstQuote + 3, secondQuote);
     }
   }
 
-  if (gotPrompt) {
-    // Construct message body
-    String sourceLabel = (lastVoiceKeyword.length() > 0) ? lastVoiceKeyword : "SOS";
-    String message = "EMERGENCY: Your child is in danger!\n";
-    message += "Trigger: " + sourceLabel + "\n";
-    message += "Location: https://maps.google.com/?q=" + String(lat, 6) + "," + String(lon, 6) + "\n";
-    message += "Coordinates: " + String(lat, 6) + ", " + String(lon, 6);
-    
-    // Write message followed by Ctrl+Z character (ASCII 26) to commit SMS
-    modemSerial.print(message);
-    modemSerial.write(26); 
-    
-    // Wait for confirmation response
-    response = "";
-    start = millis();
-    while (millis() - start < 15000) {
-      while (modemSerial.available()) {
-        char c = modemSerial.read();
-        response += c;
-      }
-      if (response.indexOf("+CMGS:") != -1 && response.indexOf("OK\r\n") != -1) {
-        return true;
-      }
+  String upperResponse = response;
+  upperResponse.toUpperCase();
+
+  Serial.printf("[SMS] Incoming SMS from: %s\n", senderPhone.c_str());
+
+  // Check if sender requested child location or status
+  if (upperResponse.indexOf("LOC") != -1 || 
+      upperResponse.indexOf("LOCATION") != -1 || 
+      upperResponse.indexOf("WHERE") != -1 || 
+      upperResponse.indexOf("STATUS") != -1 || 
+      upperResponse.indexOf("HELP") != -1 || 
+      upperResponse.indexOf("COORDINATES") != -1) {
+
+    Serial.println("[SMS] Location query keyword recognized! Acquiring GPS coordinates...");
+    double lat = 0.0;
+    double lon = 0.0;
+    getGPSLocation(lat, lon);
+
+    String childName = (dynamicStudentName.length() > 0) ? dynamicStudentName : "Child";
+    String reply = "[SAFEWALK STATUS]\n";
+    reply += childName + " Location:\n";
+    if (lat != 0.0 && lon != 0.0) {
+      reply += "https://maps.google.com/?q=" + String(lat, 6) + "," + String(lon, 6) + "\n";
+      reply += "Lat:" + String(lat, 6) + " Lon:" + String(lon, 6);
+    } else {
+      reply += "GPS: Acquiring fix (indoors)";
     }
-    Serial.printf("[SMS] No send confirmation response: %s\n", response.c_str());
-  } else {
-    Serial.println("[SMS] Failed to obtain write prompt from modem.");
+
+    String destination = senderPhone.length() > 0 ? senderPhone : (dynamicParentPhone.length() > 0 ? dynamicParentPhone : String(PARENT_PHONE));
+    destination = formatPhoneNumberForSMS(destination);
+    Serial.printf("[SMS] Replying to %s with coordinates (%d chars)...\n", destination.c_str(), reply.length());
+    sendSMSViaModemWithFallbacks(destination, reply);
   }
-  
-  return false;
+
+  // Delete message from SIM card storage to prevent memory overflow (SIM holds ~25-30 messages)
+  String deleteCmd = "AT+CMGD=" + String(smsIndex);
+  sendATCommand(deleteCmd, response, 2000);
+  Serial.printf("[SMS] Cleared SIM storage slot %d.\n", smsIndex);
 }
 
 // Parses a simple string field from a Firestore JSON response
@@ -1428,7 +1778,11 @@ bool fetchDeviceConfig() {
   // Parse fields
   String parsedParentUid = parseJsonStringField(httpData, "parentUid");
   String parsedParentPhone = parseJsonStringField(httpData, "parentPhoneNumber");
+  if (parsedParentPhone.length() == 0) {
+    parsedParentPhone = parseJsonStringField(httpData, "parentPhone");
+  }
   String parsedStudentUid = parseJsonStringField(httpData, "studentUid");
+  String parsedStudentName = parseJsonStringField(httpData, "studentName");
 
   if (parsedParentUid.length() > 0) {
     dynamicParentUid = parsedParentUid;
@@ -1438,6 +1792,9 @@ bool fetchDeviceConfig() {
   }
   if (parsedStudentUid.length() > 0) {
     dynamicStudentUid = parsedStudentUid;
+  }
+  if (parsedStudentName.length() > 0) {
+    dynamicStudentName = parsedStudentName;
   }
   
   String parsedPhone = parseJsonStringField(httpData, "phoneNumber");
@@ -1754,10 +2111,10 @@ bool checkVoiceHelpTrigger() {
   Serial.println();
 
   // 6. Tuned Keyword Confirmation:
-  // - TABANG: requires >= 50% confidence, must exceed noise, help, and other speech
-  // - HELP: requires >= 82% confidence, must exceed noise, tabang, and other speech (82% safely filters casual 'hello')
-  bool isTabangConfirmed = (tabangScore >= 0.50f) && (tabangScore > noiseScore) && (tabangScore > helpScore) && (tabangScore > otherScore);
-  bool isHelpConfirmed = (helpScore >= 0.82f) && (helpScore > noiseScore) && (helpScore > tabangScore) && (helpScore > otherScore);
+  // - TABANG: requires >= 45% confidence and must exceed noise
+  // - HELP: requires >= 50% confidence and must exceed noise
+  bool isTabangConfirmed = (tabangScore >= 0.45f) && (tabangScore > noiseScore);
+  bool isHelpConfirmed   = (helpScore >= 0.50f) && (helpScore > noiseScore);
 
   if (isTabangConfirmed || isHelpConfirmed) {
     const char* matchedWord = isTabangConfirmed ? "TABANG" : "HELP";
@@ -1897,16 +2254,28 @@ String recordAndEncodeAudioClip(size_t durationSeconds) {
 }
 
 
-// Main Emergency Dispatcher Routine (Button Press or Voice 'HELP')
+// Main Emergency Dispatcher Routine (Button Press or Voice 'HELP'/'TABANG')
 void triggerEmergencyAlertProcess(const String& triggerSource) {
   Serial.printf("\n=========================================\n");
   Serial.printf("[ALERT DISPATCHER] Triggered by: %s\n", triggerSource.c_str());
   Serial.printf("=========================================\n");
 
-  // 1. Record 3-second WAV Audio Clip from INMP441 Mic
-  String audioBase64 = recordAndEncodeAudioClip(3);
+  lastSmsSubmissionStatus = "none";
 
-  // 2. Obtain GPS Location
+  // 1. Optional short WAV clip for cloud re-verification (disable with ENABLE_VOICE_AUDIO_CLIP=0)
+  String audioBase64 = "";
+#if ENABLE_VOICE_AUDIO_CLIP
+  if (triggerSource == "voice_help") {
+    audioBase64 = recordAndEncodeAudioClip(1);
+  }
+#else
+  Serial.println("[PRIVACY] Voice audio clip upload disabled (on-device keyword only).");
+#endif
+
+  // 2. Refresh parent phone from Firestore before SMS (reuse devices/{DEVICE_ID})
+  fetchDeviceConfig();
+
+  // 3. Obtain GPS Location
   double lat = 0.0;
   double lon = 0.0;
   bool hasGPS = getGPSLocation(lat, lon);
@@ -1941,21 +2310,29 @@ void triggerEmergencyAlertProcess(const String& triggerSource) {
     syncDeviceCoordinatesToFirestore(lat, lon);
   }
 
-  // 3. Send Backup SMS to Parent
-  bool smsSent = sendSMSAlert(lat, lon);
-  if (smsSent) {
-    Serial.println("[SUCCESS] Backup SMS alert sent to parent."); 
+  // If coordinates are still 0,0 (indoor / pending lock), set pending flag so follow-up SMS sends once locked
+  if (lat == 0.0 || lon == 0.0) {
+    pendingEmergencySMSCoordinateUpdate = true;
+    pendingUpdateTriggerType = triggerSource;
   } else {
-    Serial.println("[ERROR] Failed to send backup SMS.");
+    pendingEmergencySMSCoordinateUpdate = false;
+  }
+
+  // 4. Send cellular SMS FIRST (primary emergency path) — recipient from Firestore parentPhoneNumber
+  bool smsSent = sendSMSAlert(lat, lon, triggerSource);
+  if (smsSent) {
+    Serial.println("[SUCCESS] Cellular SMS submitted to carrier for parent phone.");
+  } else {
+    Serial.println("[ERROR] Failed to submit cellular SMS.");
   }
 
   delay(3000);
-  flushModemBuffer();                                                                                                                                                 
+  flushModemBuffer();
 
-  // 4. Trigger HTTPS alert upload with audio payload to Firebase Firestore                                                                         
+  // 5. Upload emergency_alerts to Firestore (includes smsSubmissionStatus)
   bool firebaseSent = triggerFirebaseAlert(lat, lon, triggerSource, audioBase64);
   if (firebaseSent) {
-    Serial.println("[SUCCESS] Emergency alert with audio clip successfully uploaded to Firebase!");
+    Serial.println("[SUCCESS] Emergency alert uploaded to Firebase.");
   } else {
     Serial.println("[ERROR] Failed to upload emergency alert to Firebase.");
   }
