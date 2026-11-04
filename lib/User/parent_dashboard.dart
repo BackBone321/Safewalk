@@ -1,3 +1,7 @@
+import 'dart:async';
+import 'dart:typed_data';
+import 'dart:ui' as ui;
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
@@ -57,6 +61,14 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
   String _deviceLocation = 'Unknown';
   String _deviceStatus = 'offline';
   LatLng? _childDeviceCoordinates;
+  BitmapDescriptor? _sosMarkerIcon;
+  GoogleMapController? _parentMapController;
+  LatLng? _lastFocusedParentMapPoint;
+  StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>?
+  _childUserStreamSub;
+  StreamSubscription<dynamic>? _childDeviceStreamSub;
+  Map<String, dynamic> _latestChildDocData = const {};
+  Map<String, dynamic> _latestDeviceDocData = const {};
 
   bool _alertsEnabled = true;
   bool _smsAlertsEnabled = true;
@@ -116,33 +128,48 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
   }
 
   LatLng? _extractDeviceCoordinates(Map<String, dynamic> data) {
-    final direct = _coordinatesFromValues(
-      data['latitude'] ?? data['lat'],
-      data['longitude'] ?? data['lng'] ?? data['lon'],
-    );
-    if (direct != null) return direct;
+    final candidates = <LatLng>[];
 
     final coordinates = data['coordinates'];
-    if (coordinates is Map) {
+    if (coordinates is GeoPoint) {
+      if (_isValidLatLng(coordinates.latitude, coordinates.longitude)) {
+        candidates.add(LatLng(coordinates.latitude, coordinates.longitude));
+      }
+    } else if (coordinates is Map) {
       final nested = _coordinatesFromValues(
         coordinates['latitude'] ?? coordinates['lat'],
         coordinates['longitude'] ?? coordinates['lng'] ?? coordinates['lon'],
       );
-      if (nested != null) return nested;
+      if (nested != null) candidates.add(nested);
     }
 
-    final location = data['location'];
+    final location = data['location'] ?? data['currentLocation'];
     if (location is GeoPoint) {
       if (_isValidLatLng(location.latitude, location.longitude)) {
-        return LatLng(location.latitude, location.longitude);
+        candidates.add(LatLng(location.latitude, location.longitude));
       }
-    }
-    if (location is String) {
+    } else if (location is String) {
       final parsed = _coordinatesFromText(location);
-      if (parsed != null) return parsed;
+      if (parsed != null) candidates.add(parsed);
     }
 
-    return null;
+    final locationText = data['locationText'];
+    if (locationText is String) {
+      final parsedText = _coordinatesFromText(locationText);
+      if (parsedText != null) candidates.add(parsedText);
+    }
+
+    final direct = _coordinatesFromValues(
+      data['latitude'] ?? data['lat'],
+      data['longitude'] ?? data['lng'] ?? data['lon'],
+    );
+    if (direct != null) candidates.add(direct);
+
+    if (candidates.isEmpty) return null;
+    for (final c in candidates) {
+      if (!_isDefaultManila(c)) return c;
+    }
+    return candidates.first;
   }
 
   bool _isDefaultManila(LatLng? p) {
@@ -161,40 +188,171 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
       return null;
     }
 
+    final candidates = <LatLng>[];
+
     final coordinates = data['coordinates'];
     if (coordinates is GeoPoint) {
       if (_isValidLatLng(coordinates.latitude, coordinates.longitude)) {
-        return LatLng(coordinates.latitude, coordinates.longitude);
+        candidates.add(LatLng(coordinates.latitude, coordinates.longitude));
       }
-    }
-    if (coordinates is Map) {
+    } else if (coordinates is Map) {
       final nested = _coordinatesFromValues(
         coordinates['latitude'] ?? coordinates['lat'],
         coordinates['longitude'] ?? coordinates['lng'] ?? coordinates['lon'],
       );
-      if (nested != null) return nested;
+      if (nested != null) candidates.add(nested);
     }
 
     final direct = _coordinatesFromValues(
       data['latitude'] ?? data['lat'],
       data['longitude'] ?? data['lng'] ?? data['lon'],
     );
-    if (direct != null) return direct;
+    if (direct != null) candidates.add(direct);
 
     final location = data['location'];
-    if (location is String) {
+    if (location is GeoPoint) {
+      if (_isValidLatLng(location.latitude, location.longitude)) {
+        candidates.add(LatLng(location.latitude, location.longitude));
+      }
+    } else if (location is String) {
       final fromTxt = _coordinatesFromText(location);
-      if (fromTxt != null) return fromTxt;
+      if (fromTxt != null) candidates.add(fromTxt);
     }
 
-    // Fallback: If hardware reported (0,0) or pending fix, use child's known live location!
-    if (_childDeviceCoordinates != null && !_isDefaultManila(_childDeviceCoordinates)) {
+    LatLng? rawAlertPoint;
+    for (final c in candidates) {
+      if (!_isDefaultManila(c)) {
+        rawAlertPoint = c;
+        break;
+      }
+    }
+
+    final alertMs = _extractUpdateEpochMs(data, const [
+      'timestamp',
+      'clientTimestamp',
+    ]);
+    final childMs = _extractUpdateEpochMs(_latestChildDocData, const [
+      'lastLocationUpdate',
+      'updatedAt',
+    ]);
+    final devMs = _extractUpdateEpochMs(_latestDeviceDocData, const [
+      'updatedAt',
+      'lastSeen',
+      'createdAt',
+    ]);
+    final latestLiveMs = childMs > devMs ? childMs : devMs;
+
+    if (_childDeviceCoordinates != null &&
+        !_isDefaultManila(_childDeviceCoordinates) &&
+        (rawAlertPoint == null ||
+            (latestLiveMs > alertMs && alertMs > 0))) {
       return _childDeviceCoordinates;
     }
-    return null;
+
+    if (rawAlertPoint != null) return rawAlertPoint;
+    if (_childDeviceCoordinates != null &&
+        !_isDefaultManila(_childDeviceCoordinates)) {
+      return _childDeviceCoordinates;
+    }
+    return candidates.isNotEmpty ? candidates.first : _childDeviceCoordinates;
+  }
+
+  Future<Uint8List> _buildSosMarkerBytes({int size = 96}) async {
+    final markerSize = size.toDouble();
+    final recorder = ui.PictureRecorder();
+    final canvas = Canvas(
+      recorder,
+      Rect.fromLTWH(0, 0, markerSize, markerSize),
+    );
+
+    final center = Offset(markerSize / 2, markerSize * 0.36);
+    final topRadius = markerSize * 0.28;
+    const bodyColor = Color(0xFFE5192B);
+    final shadowPaint = Paint()
+      ..color = Colors.black.withValues(alpha: 0.22)
+      ..style = PaintingStyle.fill;
+    final pinPaint = Paint()
+      ..color = bodyColor
+      ..style = PaintingStyle.fill;
+    final borderPaint = Paint()
+      ..color = Colors.white
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = markerSize * 0.04;
+
+    final shadowPath = Path()
+      ..moveTo(center.dx, markerSize * 0.98)
+      ..lineTo(center.dx - topRadius * 0.68, center.dy + topRadius * 0.60)
+      ..lineTo(center.dx + topRadius * 0.68, center.dy + topRadius * 0.60)
+      ..close();
+    canvas.drawCircle(
+      Offset(center.dx, center.dy + markerSize * 0.02),
+      topRadius,
+      shadowPaint,
+    );
+    canvas.drawPath(shadowPath, shadowPaint);
+
+    final pinPath = Path()
+      ..moveTo(center.dx, markerSize * 0.96)
+      ..lineTo(center.dx - topRadius * 0.65, center.dy + topRadius * 0.55)
+      ..lineTo(center.dx + topRadius * 0.65, center.dy + topRadius * 0.55)
+      ..close();
+    canvas.drawCircle(center, topRadius, pinPaint);
+    canvas.drawPath(pinPath, pinPaint);
+    canvas.drawCircle(center, topRadius, borderPaint);
+    canvas.drawCircle(center, topRadius * 0.44, Paint()..color = Colors.white);
+
+    final picture = recorder.endRecording();
+    final image = await picture.toImage(size, size);
+    final bytes = await image.toByteData(format: ui.ImageByteFormat.png);
+    if (bytes == null) {
+      return Uint8List(0);
+    }
+    return bytes.buffer.asUint8List();
+  }
+
+  Future<void> _prepareMapMarkers() async {
+    try {
+      final bytes = await _buildSosMarkerBytes();
+      if (bytes.isEmpty) return;
+      final icon = BitmapDescriptor.bytes(bytes, width: 38, height: 38);
+      if (!mounted) return;
+      setState(() => _sosMarkerIcon = icon);
+    } catch (_) {}
   }
 
   LatLng get _childMapCenter => _childDeviceCoordinates ?? _defaultMapCenter;
+
+  bool _isSamePoint(LatLng a, LatLng b) {
+    const tolerance = 0.00001;
+    return (a.latitude - b.latitude).abs() <= tolerance &&
+        (a.longitude - b.longitude).abs() <= tolerance;
+  }
+
+  void _focusParentMapOnPoint(
+    LatLng point, {
+    double zoom = 16,
+    bool force = false,
+  }) {
+    final controller = _parentMapController;
+    if (controller == null) return;
+    if (!force &&
+        _lastFocusedParentMapPoint != null &&
+        _isSamePoint(_lastFocusedParentMapPoint!, point)) {
+      return;
+    }
+    _lastFocusedParentMapPoint = point;
+    try {
+      controller
+          .animateCamera(
+            CameraUpdate.newCameraPosition(
+              CameraPosition(target: point, zoom: zoom),
+            ),
+          )
+          .catchError((_) {});
+    } catch (e) {
+      debugPrint('Parent Google Map not ready yet: $e');
+    }
+  }
 
   String _formatTimestamp(Timestamp? ts) {
     if (ts == null) return 'Unknown time';
@@ -353,11 +511,15 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
   @override
   void initState() {
     super.initState();
+    _prepareMapMarkers();
     _loadDashboard();
   }
 
   @override
   void dispose() {
+    _childUserStreamSub?.cancel();
+    _childDeviceStreamSub?.cancel();
+    _parentMapController?.dispose();
     _profileNameCtrl.dispose();
     _profilePhoneCtrl.dispose();
     _inviteStudentUidCtrl.dispose();
@@ -606,12 +768,207 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
     }
   }
 
+  int _extractUpdateEpochMs(Map<String, dynamic> data, List<String> keys) {
+    for (final key in keys) {
+      final val = data[key];
+      if (val is Timestamp) return val.millisecondsSinceEpoch;
+    }
+    return 0;
+  }
+
+  void _applyResolvedChildAndDeviceState({
+    required String childUid,
+    required Map<String, dynamic> childData,
+    Map<String, dynamic>? deviceData,
+    String? deviceDocId,
+  }) {
+    if (!mounted) return;
+    final childName = (childData['fullName'] ?? 'Student').toString();
+    final childPhone = (childData['phoneNumber'] ?? '').toString();
+    final childDeviceId = (childData['linkedDeviceId'] ?? '').toString().trim();
+
+    final deviceCoords = deviceData != null
+        ? _extractDeviceCoordinates(deviceData)
+        : null;
+    final studentCoords = _extractDeviceCoordinates(childData);
+
+    final deviceValid = deviceCoords != null && !_isDefaultManila(deviceCoords);
+    final studentValid =
+        studentCoords != null && !_isDefaultManila(studentCoords);
+
+    final deviceMs = deviceData != null
+        ? _extractUpdateEpochMs(deviceData, const [
+            'lastSeen',
+            'updatedAt',
+            'createdAt',
+          ])
+        : 0;
+    final studentMs = _extractUpdateEpochMs(childData, const [
+      'lastLocationUpdate',
+      'updatedAt',
+    ]);
+
+    LatLng? bestCoords;
+    bool useStudentSource = false;
+    if (deviceValid && studentValid) {
+      if (studentMs > deviceMs && studentMs > 0) {
+        bestCoords = studentCoords;
+        useStudentSource = true;
+      } else {
+        bestCoords = deviceCoords;
+      }
+    } else if (deviceValid) {
+      bestCoords = deviceCoords;
+    } else if (studentValid) {
+      bestCoords = studentCoords;
+      useStudentSource = true;
+    } else {
+      bestCoords = deviceCoords ?? studentCoords;
+      useStudentSource = deviceCoords == null && studentCoords != null;
+    }
+
+    final prevCoords = _childDeviceCoordinates;
+    setState(() {
+      _childUid = childUid;
+      _childName = childName;
+      _childPhone = childPhone;
+
+      if (deviceData != null) {
+        _deviceId = (deviceData['deviceId'] ?? deviceDocId ?? childDeviceId)
+            .toString();
+        _deviceName = (deviceData['deviceName'] ?? 'Emergency Device')
+            .toString();
+        _deviceStatus = (deviceData['status'] ?? 'active')
+            .toString()
+            .toLowerCase();
+      } else {
+        _deviceId = childDeviceId.isNotEmpty
+            ? childDeviceId
+            : 'Student Device (Live)';
+        _deviceName = childDeviceId.isNotEmpty
+            ? 'Unknown Tracker'
+            : '${childName.isNotEmpty ? childName : 'Student'}\'s Phone';
+        _deviceStatus = bestCoords != null ? 'active' : 'offline';
+      }
+
+      _childDeviceCoordinates = bestCoords;
+      if (bestCoords != null && !_isDefaultManila(bestCoords)) {
+        _deviceLocation = _formatCoordinateValue(bestCoords);
+      } else if (useStudentSource || deviceData == null) {
+        final userLocField =
+            childData['location'] ?? childData['currentLocation'];
+        _deviceLocation = userLocField is GeoPoint
+            ? '${userLocField.latitude.toStringAsFixed(6)}, ${userLocField.longitude.toStringAsFixed(6)}'
+            : (childData['locationText'] ?? userLocField ?? 'Unknown')
+                  .toString();
+      } else {
+        final locationField = deviceData['location'];
+        _deviceLocation = locationField is GeoPoint
+            ? '${locationField.latitude.toStringAsFixed(6)}, ${locationField.longitude.toStringAsFixed(6)}'
+            : (deviceData['locationText'] ?? locationField ?? 'Unknown')
+                  .toString();
+      }
+    });
+
+    if (_childDeviceCoordinates != null &&
+        (prevCoords == null ||
+            !_isSamePoint(prevCoords, _childDeviceCoordinates!))) {
+      _focusParentMapOnPoint(_childDeviceCoordinates!, zoom: 16);
+    }
+  }
+
+  void _subscribeToChildRealtimeLocation({
+    required String childUid,
+    required String childDeviceId,
+    required String rawPhone,
+    String? directDeviceDocId,
+  }) {
+    _childUserStreamSub?.cancel();
+    _childDeviceStreamSub?.cancel();
+
+    _childUserStreamSub = _firestore
+        .collection('users')
+        .doc(childUid)
+        .snapshots()
+        .listen((docSnap) {
+          if (!docSnap.exists || docSnap.data() == null) return;
+          _latestChildDocData = docSnap.data()!;
+          final updatedDevId = (_latestChildDocData['linkedDeviceId'] ?? '')
+              .toString()
+              .trim();
+          _applyResolvedChildAndDeviceState(
+            childUid: childUid,
+            childData: _latestChildDocData,
+            deviceData: _latestDeviceDocData.isEmpty
+                ? null
+                : _latestDeviceDocData,
+          );
+          if (updatedDevId.isNotEmpty && updatedDevId != childDeviceId) {
+            _subscribeToChildRealtimeLocation(
+              childUid: childUid,
+              childDeviceId: updatedDevId,
+              rawPhone: rawPhone,
+              directDeviceDocId: updatedDevId,
+            );
+          }
+        }, onError: (e) {
+          debugPrint('Parent child user stream error: $e');
+        });
+
+    final resolvedDocId = (directDeviceDocId != null && directDeviceDocId.isNotEmpty)
+        ? directDeviceDocId
+        : null;
+
+    if (resolvedDocId != null) {
+      _childDeviceStreamSub = _firestore
+          .collection('devices')
+          .doc(resolvedDocId)
+          .snapshots()
+          .listen((docSnap) {
+            if (!docSnap.exists || docSnap.data() == null) return;
+            _latestDeviceDocData = docSnap.data()!;
+            _applyResolvedChildAndDeviceState(
+              childUid: childUid,
+              childData: _latestChildDocData,
+              deviceData: _latestDeviceDocData,
+              deviceDocId: docSnap.id,
+            );
+          }, onError: (e) {
+            debugPrint('Parent child device doc stream error: $e');
+          });
+    } else if (childDeviceId.isNotEmpty || rawPhone.isNotEmpty) {
+      final devQuery = childDeviceId.isNotEmpty
+          ? _firestore
+                .collection('devices')
+                .where('deviceId', isEqualTo: childDeviceId)
+                .limit(1)
+          : _firestore
+                .collection('devices')
+                .where('phoneNumber', isEqualTo: rawPhone)
+                .limit(1);
+
+      _childDeviceStreamSub = devQuery.snapshots().listen((snap) {
+        if (snap.docs.isEmpty) return;
+        _latestDeviceDocData = snap.docs.first.data();
+        _applyResolvedChildAndDeviceState(
+          childUid: childUid,
+          childData: _latestChildDocData,
+          deviceData: _latestDeviceDocData,
+          deviceDocId: snap.docs.first.id,
+        );
+      }, onError: (e) {
+        debugPrint('Parent child device stream error: $e');
+      });
+    }
+  }
+
   Future<void> _loadChildData(String childUid) async {
     final childDoc = await _firestore.collection('users').doc(childUid).get();
     if (!childDoc.exists) return;
 
     final childData = childDoc.data() ?? <String, dynamic>{};
-    final childName = (childData['fullName'] ?? 'Student').toString();
+    _latestChildDocData = childData;
+    _latestDeviceDocData = const {};
     final childPhone = (childData['phoneNumber'] ?? '').toString();
     final rawPhone = childPhone.trim();
     final normalizedPhone = _normalizePhoneForLookup(rawPhone);
@@ -639,6 +996,24 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
           .get();
     }
 
+    Map<String, dynamic>? resolvedDeviceData;
+    String? resolvedDeviceDocId;
+    if (deviceQuery.docs.isNotEmpty) {
+      resolvedDeviceData = deviceQuery.docs.first.data();
+      resolvedDeviceDocId = deviceQuery.docs.first.id;
+      _latestDeviceDocData = resolvedDeviceData;
+    } else if (childDeviceId.isNotEmpty) {
+      final directDev = await _firestore
+          .collection('devices')
+          .doc(childDeviceId)
+          .get();
+      if (directDev.exists && directDev.data() != null) {
+        resolvedDeviceData = directDev.data()!;
+        resolvedDeviceDocId = directDev.id;
+        _latestDeviceDocData = resolvedDeviceData;
+      }
+    }
+
     final walkQuery = await _firestore
         .collection('walk_sessions')
         .where('uid', isEqualTo: childUid)
@@ -648,10 +1023,6 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
 
     if (!mounted) return;
     setState(() {
-      _childUid = childUid;
-      _childName = childName;
-      _childPhone = childPhone;
-
       if (walkQuery.docs.isNotEmpty) {
         final walkData = walkQuery.docs.first.data();
         _childSessionActive = true;
@@ -661,44 +1032,22 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
       } else {
         _childSessionActive = false;
       }
-
-      if (deviceQuery.docs.isNotEmpty) {
-        final device = deviceQuery.docs.first.data();
-        _deviceId = (device['deviceId'] ?? deviceQuery.docs.first.id)
-            .toString();
-        _deviceName = (device['deviceName'] ?? 'Emergency Device').toString();
-        final locationField = device['location'];
-        _deviceLocation = locationField is GeoPoint
-            ? '${locationField.latitude.toStringAsFixed(6)}, ${locationField.longitude.toStringAsFixed(6)}'
-            : (locationField ?? 'Unknown').toString();
-        _deviceStatus = (device['status'] ?? 'active').toString().toLowerCase();
-        _childDeviceCoordinates = _extractDeviceCoordinates(device);
-
-        // If the hardware tracker coordinates in Firestore are still default Manila,
-        // prioritize the student's real phone/browser GPS location!
-        if (_childDeviceCoordinates == null || _isDefaultManila(_childDeviceCoordinates)) {
-          final studentCoords = _extractDeviceCoordinates(childData);
-          if (studentCoords != null && !_isDefaultManila(studentCoords)) {
-            _childDeviceCoordinates = studentCoords;
-            final userLocField = childData['location'] ?? childData['currentLocation'];
-            _deviceLocation = userLocField is GeoPoint
-                ? '${userLocField.latitude.toStringAsFixed(6)}, ${userLocField.longitude.toStringAsFixed(6)}'
-                : (childData['locationText'] ?? userLocField ?? _deviceLocation).toString();
-          }
-        }
-      } else {
-        _deviceId = childDeviceId.isNotEmpty ? childDeviceId : 'Student Device (Live)';
-        _deviceName = childDeviceId.isNotEmpty
-            ? 'Unknown Tracker'
-            : '${childName.isNotEmpty ? childName : 'Student'}\'s Phone';
-        final userLocField = childData['location'] ?? childData['currentLocation'];
-        _deviceLocation = userLocField is GeoPoint
-            ? '${userLocField.latitude.toStringAsFixed(6)}, ${userLocField.longitude.toStringAsFixed(6)}'
-            : (childData['locationText'] ?? userLocField ?? 'Unknown').toString();
-        _childDeviceCoordinates = _extractDeviceCoordinates(childData);
-        _deviceStatus = (_childDeviceCoordinates != null || userLocField != null) ? 'active' : 'offline';
-      }
     });
+
+    _applyResolvedChildAndDeviceState(
+      childUid: childUid,
+      childData: childData,
+      deviceData: resolvedDeviceData,
+      deviceDocId: resolvedDeviceDocId,
+    );
+
+    _subscribeToChildRealtimeLocation(
+      childUid: childUid,
+      childDeviceId: childDeviceId,
+      rawPhone: rawPhone,
+      directDeviceDocId: resolvedDeviceDocId ??
+          (childDeviceId.isNotEmpty ? childDeviceId : null),
+    );
   }
 
   Future<String> _resolveStudentUidFromPhone(String inputPhone) async {
@@ -3012,7 +3361,11 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
             Marker(
               markerId: MarkerId('sos-$childUid'),
               position: point,
-              icon: BitmapDescriptor.defaultMarkerWithHue(colorHue),
+              anchor: _sosMarkerIcon != null
+                  ? const Offset(0.5, 0.96)
+                  : const Offset(0.5, 1.0),
+              icon: _sosMarkerIcon ??
+                  BitmapDescriptor.defaultMarkerWithHue(colorHue),
               infoWindow: InfoWindow(
                 title: '$sender - SOS',
                 snippet: '$pointLabel • Tap to Acknowledge & Remove Location',
@@ -3044,9 +3397,13 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
             Marker(
               markerId: const MarkerId('child-location'),
               position: _childDeviceCoordinates!,
-              icon: BitmapDescriptor.defaultMarkerWithHue(
-                BitmapDescriptor.hueAzure,
-              ),
+              anchor: _sosMarkerIcon != null
+                  ? const Offset(0.5, 0.96)
+                  : const Offset(0.5, 1.0),
+              icon: _sosMarkerIcon ??
+                  BitmapDescriptor.defaultMarkerWithHue(
+                    BitmapDescriptor.hueRed,
+                  ),
               infoWindow: InfoWindow(
                 title: '$_childName - Live Location',
                 snippet: _deviceLocation,
@@ -3070,6 +3427,12 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
             : (_childDeviceCoordinates ?? latestSosPoint);
         final center = mapPoint ?? _childMapCenter;
         final hasPoint = mapPoint != null;
+        if (hasPoint) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (!mounted) return;
+            _focusParentMapOnPoint(center, zoom: 16);
+          });
+        }
 
         final tagLabel = hasSosPoints
             ? (sosMarkersWithPoint > 1
@@ -3135,7 +3498,16 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                           compassEnabled: false,
                           rotateGesturesEnabled: false,
                           tiltGesturesEnabled: false,
-                          onMapCreated: (_) {},
+                          onMapCreated: (controller) {
+                            _parentMapController = controller;
+                            if (hasPoint) {
+                              _focusParentMapOnPoint(
+                                center,
+                                zoom: 16,
+                                force: true,
+                              );
+                            }
+                          },
                         ),
                 ),
               ),

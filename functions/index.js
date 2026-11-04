@@ -187,8 +187,51 @@ exports.onEmergencyAlertCreated = functions.firestore
 
     if (deviceId && isAlertActive) {
       const deviceUpdate = {};
-      if (data.location) deviceUpdate.location = data.location;
-      if (data.coordinates) deviceUpdate.coordinates = data.coordinates;
+      const coordLat = data.coordinates && typeof data.coordinates.latitude === "number"
+        ? data.coordinates.latitude
+        : (typeof data.latitude === "number" ? data.latitude : 0);
+      const coordLng = data.coordinates && typeof data.coordinates.longitude === "number"
+        ? data.coordinates.longitude
+        : (typeof data.longitude === "number" ? data.longitude : 0);
+      const hasValidAlertCoords =
+        (Math.abs(coordLat) > 0.0001 || Math.abs(coordLng) > 0.0001) &&
+        Math.abs(coordLat) <= 90 &&
+        Math.abs(coordLng) <= 180;
+
+      if (hasValidAlertCoords) {
+        if (data.location && !String(data.location).startsWith("0.0000")) {
+          deviceUpdate.location = data.location;
+        }
+        if (data.coordinates) {
+          deviceUpdate.coordinates = data.coordinates;
+        }
+        deviceUpdate.latitude = coordLat;
+        deviceUpdate.longitude = coordLng;
+      } else {
+        try {
+          const devSnap = await admin.firestore().collection("devices").doc(deviceId).get();
+          const devData = devSnap.exists ? devSnap.data() : null;
+          const devCoords = devData && devData.coordinates;
+          const devLat = devCoords && typeof devCoords.latitude === "number"
+            ? devCoords.latitude
+            : (devData && typeof devData.latitude === "number" ? devData.latitude : 0);
+          const devLng = devCoords && typeof devCoords.longitude === "number"
+            ? devCoords.longitude
+            : (devData && typeof devData.longitude === "number" ? devData.longitude : 0);
+          if (Math.abs(devLat) > 0.0001 || Math.abs(devLng) > 0.0001) {
+            const fallbackLabel = `${devLat.toFixed(6)}, ${devLng.toFixed(6)}`;
+            await snapshot.ref.set({
+              coordinates: new admin.firestore.GeoPoint(devLat, devLng),
+              location: fallbackLabel,
+              latitude: devLat,
+              longitude: devLng,
+            }, { merge: true });
+            console.log(`Backfilled alert ${alertId} with valid device coordinates: ${fallbackLabel}`);
+          }
+        } catch (backfillErr) {
+          console.error(`Failed to backfill alert ${alertId} from device ${deviceId}:`, backfillErr);
+        }
+      }
       if (data.type === "voice_help") deviceUpdate.lastVoiceAlertAt = admin.firestore.FieldValue.serverTimestamp();
 
       if (Object.keys(deviceUpdate).length > 0) {

@@ -1,3 +1,7 @@
+import 'dart:async';
+import 'dart:typed_data';
+import 'dart:ui' as ui;
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -31,6 +35,19 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
   String _searchText = '';
   int _selectedMenuIndex = 0;
 
+  GoogleMapController? _adminMapController;
+  LatLng? _lastFocusedAdminPoint;
+  BitmapDescriptor? _sosMarkerIcon;
+  StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _devicesStreamSub;
+  StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _usersStreamSub;
+  final Map<String, Map<String, dynamic>> _devicesById =
+      <String, Map<String, dynamic>>{};
+  final Map<String, Map<String, dynamic>> _devicesByPhone =
+      <String, Map<String, dynamic>>{};
+  final Map<String, Map<String, dynamic>> _usersByUid =
+      <String, Map<String, dynamic>>{};
+  final Set<String> _backfilledAdminAlertIds = <String>{};
+
   static const LatLng _defaultMapCenter = LatLng(14.5995, 120.9842);
   static final Set<Factory<OneSequenceGestureRecognizer>>
   _mapGestureRecognizers = <Factory<OneSequenceGestureRecognizer>>{
@@ -46,9 +63,145 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
   ];
 
   @override
-  void dispose() {
+  void initState() {
+    super.initState();
+    _prepareMapMarkers();
+    _startLocationFallbackStreams();
+  }
 
+  @override
+  void dispose() {
+    _devicesStreamSub?.cancel();
+    _usersStreamSub?.cancel();
+    _adminMapController?.dispose();
     super.dispose();
+  }
+
+  void _startLocationFallbackStreams() {
+    _devicesStreamSub = FirebaseFirestore.instance
+        .collection('devices')
+        .snapshots()
+        .listen((snapshot) {
+          _devicesById.clear();
+          _devicesByPhone.clear();
+          for (final doc in snapshot.docs) {
+            final data = doc.data();
+            _devicesById[doc.id] = data;
+            final devId = (data['deviceId'] ?? '').toString().trim();
+            if (devId.isNotEmpty) {
+              _devicesById[devId] = data;
+            }
+            final phone = (data['phoneNumber'] ?? '').toString().trim();
+            if (phone.isNotEmpty) {
+              _devicesByPhone[phone] = data;
+            }
+          }
+          if (mounted) setState(() {});
+        }, onError: (_) {});
+
+    _usersStreamSub = FirebaseFirestore.instance
+        .collection('users')
+        .snapshots()
+        .listen((snapshot) {
+          _usersByUid.clear();
+          for (final doc in snapshot.docs) {
+            _usersByUid[doc.id] = doc.data();
+          }
+          if (mounted) setState(() {});
+        }, onError: (_) {});
+  }
+
+  Future<Uint8List> _buildSosMarkerBytes({int size = 96}) async {
+    final markerSize = size.toDouble();
+    final recorder = ui.PictureRecorder();
+    final canvas = Canvas(
+      recorder,
+      Rect.fromLTWH(0, 0, markerSize, markerSize),
+    );
+
+    final center = Offset(markerSize / 2, markerSize * 0.36);
+    final topRadius = markerSize * 0.28;
+    const bodyColor = Color(0xFFE5192B);
+    final shadowPaint = Paint()
+      ..color = Colors.black.withOpacity(0.22)
+      ..style = PaintingStyle.fill;
+    final pinPaint = Paint()
+      ..color = bodyColor
+      ..style = PaintingStyle.fill;
+    final borderPaint = Paint()
+      ..color = Colors.white
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = markerSize * 0.04;
+
+    final shadowPath = Path()
+      ..moveTo(center.dx, markerSize * 0.98)
+      ..lineTo(center.dx - topRadius * 0.68, center.dy + topRadius * 0.60)
+      ..lineTo(center.dx + topRadius * 0.68, center.dy + topRadius * 0.60)
+      ..close();
+    canvas.drawCircle(
+      Offset(center.dx, center.dy + markerSize * 0.02),
+      topRadius,
+      shadowPaint,
+    );
+    canvas.drawPath(shadowPath, shadowPaint);
+
+    final pinPath = Path()
+      ..moveTo(center.dx, markerSize * 0.96)
+      ..lineTo(center.dx - topRadius * 0.65, center.dy + topRadius * 0.55)
+      ..lineTo(center.dx + topRadius * 0.65, center.dy + topRadius * 0.55)
+      ..close();
+    canvas.drawCircle(center, topRadius, pinPaint);
+    canvas.drawPath(pinPath, pinPaint);
+    canvas.drawCircle(center, topRadius, borderPaint);
+    canvas.drawCircle(center, topRadius * 0.44, Paint()..color = Colors.white);
+
+    final picture = recorder.endRecording();
+    final image = await picture.toImage(size, size);
+    final bytes = await image.toByteData(format: ui.ImageByteFormat.png);
+    if (bytes == null) {
+      return Uint8List(0);
+    }
+    return bytes.buffer.asUint8List();
+  }
+
+  Future<void> _prepareMapMarkers() async {
+    try {
+      final bytes = await _buildSosMarkerBytes();
+      if (bytes.isEmpty) return;
+      final icon = BitmapDescriptor.bytes(bytes, width: 38, height: 38);
+      if (!mounted) return;
+      setState(() => _sosMarkerIcon = icon);
+    } catch (_) {}
+  }
+
+  bool _isSamePoint(LatLng a, LatLng b) {
+    const tolerance = 0.00001;
+    return (a.latitude - b.latitude).abs() <= tolerance &&
+        (a.longitude - b.longitude).abs() <= tolerance;
+  }
+
+  void _focusAdminMapOnPoint(
+    LatLng point, {
+    double zoom = 16,
+    bool force = false,
+  }) {
+    final controller = _adminMapController;
+    if (controller == null) return;
+    if (!force &&
+        _lastFocusedAdminPoint != null &&
+        _isSamePoint(_lastFocusedAdminPoint!, point)) {
+      return;
+    }
+    _lastFocusedAdminPoint = point;
+    try {
+      controller
+          .animateCamera(
+            CameraUpdate.newCameraPosition(
+              CameraPosition(target: point, zoom: zoom),
+            ),
+          )
+          .catchError((_) {});
+    } catch (_) {}
   }
 
   void _showMessage(String message, {bool isError = false}) {
@@ -150,47 +303,215 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
     return LatLng(lat, lng);
   }
 
-  LatLng? _extractAlertCoordinates(Map<String, dynamic> data) {
-    if (data['locationCleared'] == true ||
-        data['falseAlarm'] == true ||
-        (data['status'] ?? '').toString().toLowerCase() == 'false_alarm' ||
-        (data['status'] ?? '').toString().toLowerCase() == 'cancelled_false_trigger' ||
-        (data['status'] ?? '').toString().toLowerCase() == 'resolved' ||
-        (data['status'] ?? '').toString().toLowerCase() == 'acknowledged') {
-      return null;
+  bool _isDefaultManila(LatLng? p) {
+    if (p == null) return false;
+    return (p.latitude - 14.5995).abs() < 0.005 &&
+        (p.longitude - 120.9842).abs() < 0.005;
+  }
+
+  String _formatLocationField(dynamic loc) {
+    if (loc == null) return '-';
+    if (loc is GeoPoint) {
+      if (!_isValidLatLng(loc.latitude, loc.longitude)) return 'Pending GPS Fix';
+      return '${loc.latitude.toStringAsFixed(6)}, ${loc.longitude.toStringAsFixed(6)}';
     }
+    final text = loc.toString().trim();
+    if (text.isEmpty) return '-';
+    return text;
+  }
+
+  LatLng? _extractDirectCoordinatesFromMap(Map<String, dynamic> data) {
+    final candidates = <LatLng>[];
 
     final coordinates = data['coordinates'];
     if (coordinates is GeoPoint) {
       if (_isValidLatLng(coordinates.latitude, coordinates.longitude)) {
-        return LatLng(coordinates.latitude, coordinates.longitude);
+        candidates.add(LatLng(coordinates.latitude, coordinates.longitude));
       }
-    }
-    if (coordinates is Map) {
+    } else if (coordinates is Map) {
       final nested = _coordinatesFromValues(
         coordinates['latitude'] ?? coordinates['lat'],
         coordinates['longitude'] ?? coordinates['lng'] ?? coordinates['lon'],
       );
-      if (nested != null) return nested;
+      if (nested != null) candidates.add(nested);
     }
 
     final direct = _coordinatesFromValues(
       data['latitude'] ?? data['lat'],
       data['longitude'] ?? data['lng'] ?? data['lon'],
     );
-    if (direct != null) return direct;
+    if (direct != null) candidates.add(direct);
 
     final location = data['location'];
-    if (location is String) {
-      final fromTxt = _coordinatesFromText(location);
-      if (fromTxt != null) return fromTxt;
-    }
     if (location is GeoPoint) {
       if (_isValidLatLng(location.latitude, location.longitude)) {
-        return LatLng(location.latitude, location.longitude);
+        candidates.add(LatLng(location.latitude, location.longitude));
+      }
+    } else if (location is String) {
+      final fromTxt = _coordinatesFromText(location);
+      if (fromTxt != null) candidates.add(fromTxt);
+    }
+
+    final locationText = data['locationText'];
+    if (locationText is String) {
+      final fromTxt = _coordinatesFromText(locationText);
+      if (fromTxt != null) candidates.add(fromTxt);
+    }
+
+    if (candidates.isEmpty) return null;
+    for (final c in candidates) {
+      if (!_isDefaultManila(c)) return c;
+    }
+    return candidates.first;
+  }
+
+  int _extractTimestampMs(Map<String, dynamic> data, List<String> keys) {
+    for (final k in keys) {
+      final v = data[k];
+      if (v is Timestamp) return v.millisecondsSinceEpoch;
+    }
+    return 0;
+  }
+
+  LatLng? _extractAlertCoordinates(
+    Map<String, dynamic> data, {
+    String? alertId,
+  }) {
+    final status = (data['status'] ?? '').toString().toLowerCase();
+    if (data['locationCleared'] == true ||
+        data['falseAlarm'] == true ||
+        status == 'false_alarm' ||
+        status == 'cancelled_false_trigger' ||
+        status == 'resolved' ||
+        status == 'acknowledged') {
+      return null;
+    }
+
+    final directAlertPoint = _extractDirectCoordinatesFromMap(data);
+
+    final senderUid =
+        (data['uid'] ?? data['studentUid'] ?? '').toString().trim();
+    final studentData = senderUid.isNotEmpty ? _usersByUid[senderUid] : null;
+    final alertDeviceId = (data['deviceId'] ?? '').toString().trim();
+    final linkedDeviceId = alertDeviceId.isNotEmpty
+        ? alertDeviceId
+        : (studentData?['linkedDeviceId'] ?? '').toString().trim();
+    final alertPhone = (data['phoneNumber'] ??
+            studentData?['phoneNumber'] ??
+            '')
+        .toString()
+        .trim();
+
+    Map<String, dynamic>? deviceData;
+    if (linkedDeviceId.isNotEmpty) {
+      deviceData = _devicesById[linkedDeviceId];
+    }
+    if (deviceData == null && alertPhone.isNotEmpty) {
+      deviceData = _devicesByPhone[alertPhone];
+    }
+    if (deviceData == null && senderUid.isNotEmpty) {
+      for (final dev in _devicesById.values) {
+        if ((dev['studentUid'] ?? '').toString().trim() == senderUid) {
+          deviceData = dev;
+          break;
+        }
       }
     }
-    return null;
+
+    final devicePoint = deviceData != null
+        ? _extractDirectCoordinatesFromMap(deviceData)
+        : null;
+    final studentPoint = studentData != null
+        ? _extractDirectCoordinatesFromMap(studentData)
+        : null;
+
+    final alertMs = _extractTimestampMs(data, const [
+      'timestamp',
+      'clientTimestamp',
+    ]);
+    final deviceMs = deviceData != null
+        ? _extractTimestampMs(deviceData, const [
+            'updatedAt',
+            'lastSeen',
+            'createdAt',
+          ])
+        : 0;
+    final studentMs = studentData != null
+        ? _extractTimestampMs(studentData, const [
+            'lastLocationUpdate',
+            'updatedAt',
+          ])
+        : 0;
+
+    LatLng? bestFallback;
+    int bestFallbackMs = 0;
+    final deviceValid = devicePoint != null && !_isDefaultManila(devicePoint);
+    final studentValid =
+        studentPoint != null && !_isDefaultManila(studentPoint);
+
+    if (deviceValid && studentValid) {
+      if (studentMs > deviceMs && studentMs > 0) {
+        bestFallback = studentPoint;
+        bestFallbackMs = studentMs;
+      } else {
+        bestFallback = devicePoint;
+        bestFallbackMs = deviceMs;
+      }
+    } else if (deviceValid) {
+      bestFallback = devicePoint;
+      bestFallbackMs = deviceMs;
+    } else if (studentValid) {
+      bestFallback = studentPoint;
+      bestFallbackMs = studentMs;
+    } else {
+      bestFallback = devicePoint ?? studentPoint;
+    }
+
+    if (bestFallback == null) {
+      for (final dev in _devicesById.values) {
+        final candidate = _extractDirectCoordinatesFromMap(dev);
+        if (candidate != null && !_isDefaultManila(candidate)) {
+          bestFallback = candidate;
+          break;
+        }
+      }
+    }
+
+    LatLng? resolved;
+    if (directAlertPoint == null || _isDefaultManila(directAlertPoint)) {
+      resolved = bestFallback ?? directAlertPoint;
+    } else if (bestFallback != null &&
+        !_isDefaultManila(bestFallback) &&
+        bestFallbackMs > alertMs &&
+        alertMs > 0) {
+      resolved = bestFallback;
+    } else {
+      resolved = directAlertPoint;
+    }
+
+    if (alertId != null &&
+        alertId.isNotEmpty &&
+        resolved != null &&
+        !_isDefaultManila(resolved) &&
+        (directAlertPoint == null ||
+            _isDefaultManila(directAlertPoint) ||
+            !_isSamePoint(directAlertPoint, resolved)) &&
+        !_backfilledAdminAlertIds.contains(alertId)) {
+      _backfilledAdminAlertIds.add(alertId);
+      final label = _formatCoordinateValue(resolved);
+      FirebaseFirestore.instance
+          .collection('emergency_alerts')
+          .doc(alertId)
+          .set({
+            'coordinates': GeoPoint(resolved.latitude, resolved.longitude),
+            'location': label,
+            'latitude': resolved.latitude,
+            'longitude': resolved.longitude,
+          }, SetOptions(merge: true))
+          .catchError((_) {});
+    }
+
+    return resolved;
   }
 
   String _formatCoordinateValue(LatLng? value) {
@@ -1112,11 +1433,14 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
                       ),
                     ),
                     const SizedBox(height: 12),
-                    _AdminInfoRow('Device ID', data['deviceId'] ?? '-'),
+                    _AdminInfoRow('Device ID', (data['deviceId'] ?? '-').toString()),
                     const SizedBox(height: 6),
-                    _AdminInfoRow('Phone', data['phoneNumber'] ?? '-'),
+                    _AdminInfoRow('Phone', (data['phoneNumber'] ?? '-').toString()),
                     const SizedBox(height: 6),
-                    _AdminInfoRow('Location', data['location'] ?? '-'),
+                    _AdminInfoRow(
+                      'Location',
+                      _formatLocationField(data['location'] ?? data['coordinates']),
+                    ),
                     const SizedBox(height: 6),
                     _AdminInfoRow(
                       'Assigned Student',
@@ -1169,7 +1493,8 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
     final deviceIdCtrl = TextEditingController(text: (data['deviceId'] ?? '').toString());
     final deviceNameCtrl = TextEditingController(text: (data['deviceName'] ?? '').toString());
     final phoneCtrl = TextEditingController(text: (data['phoneNumber'] ?? '').toString());
-    final locationCtrl = TextEditingController(text: (data['location'] ?? '').toString());
+    final initialLoc = _formatLocationField(data['location'] ?? data['coordinates']);
+    final locationCtrl = TextEditingController(text: initialLoc == '-' ? '' : initialLoc);
     final studentUidCtrl = TextEditingController(text: (data['studentUid'] ?? '').toString());
     bool saving = false;
     bool detectingLocation = false;
@@ -1362,6 +1687,8 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
                               updateData['latitude'] = lat;
                               updateData['longitude'] = lng;
                               updateData['coordinates'] = GeoPoint(lat, lng);
+                              updateData['locationText'] = newLoc;
+                              updateData['updatedAt'] = FieldValue.serverTimestamp();
                             }
 
                             if (newStudentUid.isNotEmpty) {
@@ -1403,6 +1730,52 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
                                   .collection('users')
                                   .doc(newStudentUid)
                                   .update({'linkedDeviceId': newId});
+                            }
+
+                            if (lat != null &&
+                                lng != null &&
+                                _isValidLatLng(lat, lng)) {
+                              final geo = GeoPoint(lat, lng);
+                              if (newStudentUid.isNotEmpty) {
+                                await FirebaseFirestore.instance
+                                    .collection('users')
+                                    .doc(newStudentUid)
+                                    .set({
+                                      'coordinates': geo,
+                                      'location': geo,
+                                      'latitude': lat,
+                                      'longitude': lng,
+                                      'locationText': newLoc,
+                                      'lastLocationUpdate':
+                                          FieldValue.serverTimestamp(),
+                                    }, SetOptions(merge: true));
+                              }
+                              final activeAlerts = await FirebaseFirestore
+                                  .instance
+                                  .collection('emergency_alerts')
+                                  .where('status', isEqualTo: 'active')
+                                  .limit(30)
+                                  .get();
+                              for (final alertDoc in activeAlerts.docs) {
+                                final aData = alertDoc.data();
+                                final aUid = (aData['uid'] ??
+                                        aData['studentUid'] ??
+                                        '')
+                                    .toString()
+                                    .trim();
+                                final aDev =
+                                    (aData['deviceId'] ?? '').toString().trim();
+                                if ((newStudentUid.isNotEmpty &&
+                                        aUid == newStudentUid) ||
+                                    (newId.isNotEmpty && aDev == newId)) {
+                                  await alertDoc.reference.set({
+                                    'coordinates': geo,
+                                    'location': newLoc,
+                                    'latitude': lat,
+                                    'longitude': lng,
+                                  }, SetOptions(merge: true));
+                                }
+                              }
                             }
 
                             if (ctx.mounted) {
@@ -1554,22 +1927,72 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
     LatLng? firstPoint;
     for (final entry in latestBySender.entries) {
       final data = entry.value.data();
-      final point = _extractAlertCoordinates(data);
+      final point = _extractAlertCoordinates(data, alertId: entry.value.id);
       if (point == null) continue;
       firstPoint ??= point;
       final sender = _resolveAlertSenderName(data);
       final isActive =
-          (data['status'] ?? '').toString().toLowerCase() == 'active';
+          (data['status'] ?? '').toString().toLowerCase() == 'active' ||
+          (data['status'] ?? '').toString().toLowerCase() == 'verifying_speech';
       final pointLabel = _formatCoordinateValue(point);
       markers.add(
         Marker(
           markerId: MarkerId('admin-sos-${entry.key}'),
           position: point,
-          icon: BitmapDescriptor.defaultMarkerWithHue(
-            isActive ? BitmapDescriptor.hueRed : BitmapDescriptor.hueOrange,
-          ),
+          anchor: _sosMarkerIcon != null
+              ? const Offset(0.5, 0.96)
+              : const Offset(0.5, 1.0),
+          draggable: true,
+          onDragEnd: (newPoint) async {
+            final geo = GeoPoint(newPoint.latitude, newPoint.longitude);
+            final label = _formatCoordinateValue(newPoint);
+            await entry.value.reference.set({
+              'coordinates': geo,
+              'location': label,
+              'latitude': newPoint.latitude,
+              'longitude': newPoint.longitude,
+            }, SetOptions(merge: true));
+            final senderUid =
+                (data['uid'] ?? data['studentUid'] ?? '').toString().trim();
+            if (senderUid.isNotEmpty) {
+              await FirebaseFirestore.instance
+                  .collection('users')
+                  .doc(senderUid)
+                  .set({
+                    'coordinates': geo,
+                    'location': geo,
+                    'latitude': newPoint.latitude,
+                    'longitude': newPoint.longitude,
+                    'locationText': label,
+                    'lastLocationUpdate': FieldValue.serverTimestamp(),
+                  }, SetOptions(merge: true));
+            }
+            final devId = (data['deviceId'] ??
+                    _usersByUid[senderUid]?['linkedDeviceId'] ??
+                    '')
+                .toString()
+                .trim();
+            if (devId.isNotEmpty) {
+              await FirebaseFirestore.instance
+                  .collection('devices')
+                  .doc(devId)
+                  .set({
+                    'coordinates': geo,
+                    'location': label,
+                    'latitude': newPoint.latitude,
+                    'longitude': newPoint.longitude,
+                    'locationText': label,
+                    'updatedAt': FieldValue.serverTimestamp(),
+                  }, SetOptions(merge: true));
+            }
+            _focusAdminMapOnPoint(newPoint, zoom: 16, force: true);
+          },
+          icon: _sosMarkerIcon ??
+              BitmapDescriptor.defaultMarkerWithHue(
+                isActive ? BitmapDescriptor.hueRed : BitmapDescriptor.hueOrange,
+              ),
           infoWindow: InfoWindow(
-            title: '$sender - SOS',
+            title: '$sender - SOS ($pointLabel)',
             snippet: 'Tap to Acknowledge & Remove Location',
             onTap: () => _handleAlertAction(entry.value.id, data['status'] ?? 'active'),
           ),
@@ -1591,21 +2014,105 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
       );
     }
 
+    if (markers.isEmpty) {
+      final seenDevices = <String>{};
+      for (final dev in _devicesById.values) {
+        final devId = (dev['deviceId'] ?? '').toString().trim();
+        final dedupKey = devId.isEmpty ? dev.hashCode.toString() : devId;
+        if (seenDevices.contains(dedupKey)) continue;
+        seenDevices.add(dedupKey);
+
+        final point = _extractDirectCoordinatesFromMap(dev);
+        if (point == null || _isDefaultManila(point)) continue;
+        firstPoint ??= point;
+        final devName = (dev['deviceName'] ?? 'Tracker').toString();
+        final studentName = (dev['studentName'] ?? '').toString().trim();
+        final studentUid = (dev['studentUid'] ?? '').toString().trim();
+        final title = studentName.isNotEmpty ? '$studentName ($devName)' : devName;
+        final pointLabel = _formatCoordinateValue(point);
+        markers.add(
+          Marker(
+            markerId: MarkerId('admin-dev-$dedupKey'),
+            position: point,
+            anchor: _sosMarkerIcon != null
+                ? const Offset(0.5, 0.96)
+                : const Offset(0.5, 1.0),
+            draggable: true,
+            onDragEnd: (newPoint) async {
+              final geo = GeoPoint(newPoint.latitude, newPoint.longitude);
+              final label = _formatCoordinateValue(newPoint);
+              if (devId.isNotEmpty) {
+                await FirebaseFirestore.instance
+                    .collection('devices')
+                    .doc(devId)
+                    .set({
+                      'coordinates': geo,
+                      'location': label,
+                      'latitude': newPoint.latitude,
+                      'longitude': newPoint.longitude,
+                      'locationText': label,
+                      'updatedAt': FieldValue.serverTimestamp(),
+                    }, SetOptions(merge: true));
+              }
+              if (studentUid.isNotEmpty) {
+                await FirebaseFirestore.instance
+                    .collection('users')
+                    .doc(studentUid)
+                    .set({
+                      'coordinates': geo,
+                      'location': geo,
+                      'latitude': newPoint.latitude,
+                      'longitude': newPoint.longitude,
+                      'locationText': label,
+                      'lastLocationUpdate': FieldValue.serverTimestamp(),
+                    }, SetOptions(merge: true));
+              }
+              _focusAdminMapOnPoint(newPoint, zoom: 16, force: true);
+            },
+            icon: _sosMarkerIcon ??
+                BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueRed),
+            infoWindow: InfoWindow(
+              title: title,
+              snippet: pointLabel,
+            ),
+          ),
+        );
+        circles.add(
+          Circle(
+            circleId: CircleId('admin-dev-circle-$dedupKey'),
+            center: point,
+            radius: 60,
+            fillColor: const Color(0x44CB392B),
+            strokeColor: const Color(0xFFCB392B),
+            strokeWidth: 2,
+          ),
+        );
+      }
+    }
+
     final markerCount = markers.length;
     final latestData = sosDocs.isNotEmpty ? sosDocs.first.data() : null;
     final latestSender = latestData == null
-        ? 'Unknown sender'
+        ? 'Active Device'
         : _resolveAlertSenderName(latestData);
     final latestLabel = latestData == null
         ? ''
         : _formatTimestamp(latestData['timestamp'] as Timestamp?);
     final latestPoint = latestData == null
-        ? null
-        : _extractAlertCoordinates(latestData);
+        ? firstPoint
+        : _extractAlertCoordinates(latestData, alertId: sosDocs.first.id);
     final center = firstPoint ?? latestPoint ?? _defaultMapCenter;
     final hasPoint = markerCount > 0;
-    final footerTitle = hasPoint
+    if (hasPoint) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        _focusAdminMapOnPoint(center, zoom: 16);
+      });
+    }
+    final footerTitle = sosDocs.isNotEmpty && hasPoint
         ? 'LATEST SOS: $latestSender${latestLabel.isEmpty ? '' : ' | $latestLabel'}'
+        : hasPoint
+        ? 'TRACKED DEVICE LOCATION'
         : 'NO SOS LOCATION YET';
     final footerLocation = hasPoint
         ? _formatCoordinateValue(latestPoint ?? firstPoint)
@@ -1627,7 +2134,7 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
                       key: const ValueKey('admin-sos-map-main'),
                       initialCameraPosition: CameraPosition(
                         target: center,
-                        zoom: hasPoint ? 15 : 12,
+                        zoom: hasPoint ? 16 : 12,
                       ),
                       mapType: MapType.normal,
                       gestureRecognizers: _mapGestureRecognizers,
@@ -1642,7 +2149,16 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
                       compassEnabled: false,
                       rotateGesturesEnabled: false,
                       tiltGesturesEnabled: false,
-                      onMapCreated: (_) {},
+                      onMapCreated: (controller) {
+                        _adminMapController = controller;
+                        if (hasPoint) {
+                          _focusAdminMapOnPoint(
+                            center,
+                            zoom: 16,
+                            force: true,
+                          );
+                        }
+                      },
                     ),
             ),
           ),
@@ -1800,15 +2316,6 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
               );
             });
 
-          if (docs.isEmpty) {
-            return const Center(
-              child: Text(
-                'No emergency alerts found.',
-                style: TextStyle(color: AppColors.textSub),
-              ),
-            );
-          }
-
           return Column(
             children: [
               Padding(
@@ -1816,15 +2323,30 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
                 child: _buildEmergencySosMap(docs),
               ),
               Expanded(
-                child: ListView.separated(
+                child: docs.isEmpty
+                    ? const Center(
+                        child: Text(
+                          'No emergency alerts found.',
+                          style: TextStyle(color: AppColors.textSub),
+                        ),
+                      )
+                    : ListView.separated(
                   padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
                   itemCount: docs.length,
                   separatorBuilder: (_, __) => const SizedBox(height: 12),
                   itemBuilder: (context, index) {
                     final data = docs[index].data();
                     final sender = _resolveAlertSenderName(data);
-                    final locationText = (data['location'] ?? 'Unknown')
-                        .toString();
+                    final resolvedAlertPoint = _extractAlertCoordinates(
+                      data,
+                      alertId: docs[index].id,
+                    );
+                    final rawLocText = _formatLocationField(data['location']);
+                    final locationText =
+                        (rawLocText.startsWith('0.0000') || rawLocText == '-') &&
+                            resolvedAlertPoint != null
+                        ? _formatCoordinateValue(resolvedAlertPoint)
+                        : rawLocText;
                     final status = (data['status'] ?? 'unknown')
                         .toString()
                         .toUpperCase();

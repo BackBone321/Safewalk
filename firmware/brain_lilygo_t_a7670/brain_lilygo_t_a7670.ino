@@ -737,10 +737,10 @@ bool queryA7670CellularLBS(double& lat, double& lon) {
     if (cLat != 0.0 && cLon != 0.0) {
       lat = cLat;
       lon = cLon;
-      globalCurrentLat = cLat;
-      globalCurrentLon = cLon;
-      globalHasGPSFix = true;
-      globalLastFixTime = millis();
+      if (!globalHasGPSFix && globalCurrentLat == 0.0 && globalCurrentLon == 0.0) {
+        globalCurrentLat = cLat;
+        globalCurrentLon = cLon;
+      }
       Serial.printf("[LBS] SUCCESS! Cellular tower location acquired: Lat: %.6f, Lon: %.6f\n", lat, lon);
       return true;
     }
@@ -767,6 +767,8 @@ bool syncDeviceCoordinatesToFirestore(double lat, double lon) {
   String jsonBody = "{\"fields\":{";
   jsonBody += "\"location\":{\"stringValue\":\"" + String(lat, 6) + ", " + String(lon, 6) + "\"},";
   jsonBody += "\"coordinates\":{\"geoPointValue\":{\"latitude\":" + String(lat, 6) + ",\"longitude\":" + String(lon, 6) + "}},";
+  jsonBody += "\"latitude\":{\"doubleValue\":" + String(lat, 6) + "},";
+  jsonBody += "\"longitude\":{\"doubleValue\":" + String(lon, 6) + "},";
   jsonBody += "\"status\":{\"stringValue\":\"active\"},";
   jsonBody += "\"lastSeen\":{\"timestampValue\":\"" + rfcTimestamp + "\"}";
   jsonBody += "}}";
@@ -775,7 +777,7 @@ bool syncDeviceCoordinatesToFirestore(double lat, double lon) {
   url += FIREBASE_PROJECT_ID;
   url += "/databases/(default)/documents/devices/";
   url += DEVICE_ID;
-  url += "?updateMask.fieldPaths=location&updateMask.fieldPaths=coordinates&updateMask.fieldPaths=status&updateMask.fieldPaths=lastSeen&key=";
+  url += "?updateMask.fieldPaths=location&updateMask.fieldPaths=coordinates&updateMask.fieldPaths=latitude&updateMask.fieldPaths=longitude&updateMask.fieldPaths=status&updateMask.fieldPaths=lastSeen&key=";
   url += FIREBASE_API_KEY;
 
   sendATCommand("AT+HTTPTERM", response, 2000);
@@ -1802,16 +1804,28 @@ bool fetchDeviceConfig() {
     devicePhoneNumber = parsedPhone;
   }
 
-  // Check if student/device coordinates were stored in Firestore
+  // Only use stored Firestore coordinates as a last-resort fallback when no live satellite fix exists
   double storedLat = parseJsonDoubleField(httpData, "latitude");
   double storedLon = parseJsonDoubleField(httpData, "longitude");
-  if (storedLat != 0.0 && storedLon != 0.0) {
+  if ((storedLat == 0.0 || storedLon == 0.0) && httpData.indexOf("\"geoPointValue\"") != -1) {
+    int geoIdx = httpData.indexOf("\"geoPointValue\"");
+    int latIdx = httpData.indexOf("\"latitude\"", geoIdx);
+    int lonIdx = httpData.indexOf("\"longitude\"", geoIdx);
+    if (latIdx != -1 && lonIdx != -1) {
+      int latCol = httpData.indexOf(":", latIdx);
+      int lonCol = httpData.indexOf(":", lonIdx);
+      if (latCol != -1 && lonCol != -1) {
+        storedLat = httpData.substring(latCol + 1, httpData.indexOf(",", latCol)).toDouble();
+        storedLon = httpData.substring(lonCol + 1, httpData.indexOf("}", lonCol)).toDouble();
+      }
+    }
+  }
+  if (!globalHasGPSFix && globalCurrentLat == 0.0 && globalCurrentLon == 0.0 &&
+      storedLat != 0.0 && storedLon != 0.0) {
     if (!((abs(storedLat - 14.5995) < 0.005) && (abs(storedLon - 120.9842) < 0.005))) {
       globalCurrentLat = storedLat;
       globalCurrentLon = storedLon;
-      globalHasGPSFix = true;
-      globalLastFixTime = millis();
-      Serial.printf("[CONFIG] Stored exact location loaded from Firestore: Lat: %.6f, Lon: %.6f\n",
+      Serial.printf("[CONFIG] Stored fallback location loaded from Firestore: Lat: %.6f, Lon: %.6f\n",
                     storedLat, storedLon);
     }
   }
