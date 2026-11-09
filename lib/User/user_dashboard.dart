@@ -12,7 +12,9 @@ import 'package:google_maps_flutter/google_maps_flutter.dart';
 
 import '../auth/auth_service.dart';
 import '../login_dashboard/login_page.dart';
+import '../services/guardian_service.dart';
 import '../utils/google_maps_web_guard.dart';
+import 'guardian_contacts_panel.dart';
 
 class UserDashboardPage extends StatefulWidget {
   const UserDashboardPage({super.key});
@@ -33,6 +35,7 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
 
   final AuthService _authService = AuthService();
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  final GuardianService _guardianService = GuardianService();
 
   bool _isLoading = true;
   bool _isProfileSheetOpen = false;
@@ -58,11 +61,11 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
   StreamSubscription<dynamic>? _linkedDeviceStreamSub;
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _incomingAlertsSub;
   BitmapDescriptor? _sosMarkerIcon;
+  BitmapDescriptor? _respondedMarkerIcon;
   GoogleMapController? _routeMapController;
   LatLng? _nextMapFocusPoint;
   LatLng? _lastFocusedMapPoint;
   int _lastLocalLocationUpdateMs = 0;
-  bool _hasManualPinOverride = false;
   final Set<String> _backfilledAlertIds = <String>{};
   final Set<String> _notifiedAlertIds = <String>{};
   bool _initialAlertsSnapshotHandled = false;
@@ -186,8 +189,7 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
         data['falseAlarm'] == true ||
         (data['status'] ?? '').toString().toLowerCase() == 'false_alarm' ||
         (data['status'] ?? '').toString().toLowerCase() == 'cancelled_false_trigger' ||
-        (data['status'] ?? '').toString().toLowerCase() == 'resolved' ||
-        (data['status'] ?? '').toString().toLowerCase() == 'acknowledged') {
+        (data['status'] ?? '').toString().toLowerCase() == 'resolved') {
       return null;
     }
 
@@ -346,8 +348,13 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
           final aStatus = (aData['status'] ?? '').toString().toLowerCase();
           final bStatus = (bData['status'] ?? '').toString().toLowerCase();
           int priority(String s) {
-            if (s == 'active' || s == 'verifying_speech') return 0;
-            if (s == 'acknowledged') return 1;
+            if (s == 'active' ||
+                s == 'verifying_speech' ||
+                s == 'responded' ||
+                s == 'acknowledged' ||
+                s == 'not_resolved') {
+              return 0;
+            }
             return 2;
           }
           final pA = priority(aStatus);
@@ -377,21 +384,22 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
     final status = (latest['status'] ?? '').toString().toLowerCase();
     final isActive = status == 'active' || status == 'verifying_speech';
     final isAck = status == 'acknowledged';
+    final isNotResolved = status == 'not_resolved';
+    final isResponded = status == 'responded';
     final isFalseAlarm = status == 'false_alarm' || status == 'cancelled_false_trigger';
     final isResolved = status == 'resolved';
     final isCleared = latest['locationCleared'] == true;
+    final isOpen = isActive || isAck || isNotResolved || isResponded;
 
     LatLng? coordinate;
-    if (!isFalseAlarm && !isResolved && !isCleared && !isAck && isActive) {
+    if (isOpen && !isFalseAlarm && !isResolved && !isCleared) {
       final rawAlertCoord = _extractAlertCoordinates(latest);
       final hasValidDeviceCoord =
           _deviceCoordinates != null && !_isDefaultManila(_deviceCoordinates);
-      if (_hasManualPinOverride && hasValidDeviceCoord) {
+      if (hasValidDeviceCoord) {
         coordinate = _deviceCoordinates;
       } else if (rawAlertCoord != null && !_isDefaultManila(rawAlertCoord)) {
         coordinate = rawAlertCoord;
-      } else if (hasValidDeviceCoord) {
-        coordinate = _deviceCoordinates;
       } else {
         coordinate = rawAlertCoord ?? _deviceCoordinates;
       }
@@ -412,7 +420,10 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
       coordinate: coordinate,
       isActive: isActive,
       isAcknowledged: isAck,
+      isNotResolved: isNotResolved,
+      isResponded: isResponded,
       isFalseAlarm: isFalseAlarm,
+      hideMarker: isFalseAlarm,
       alertId: latestDoc.id,
       timestampLabel: _formatTimestamp(latest['timestamp'] as Timestamp?),
       areaLabel: (isZeroText || coordinate != null)
@@ -422,6 +433,10 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
   }
 
   LatLng get _mapCenter => _deviceCoordinates ?? _defaultMapCenter;
+
+  bool get _hasLinkedHardwareDevice =>
+      _linkedDeviceId.trim().isNotEmpty &&
+      _linkedDeviceId.trim() != 'Not linked';
 
   bool get _hasDeviceCoordinates => _deviceCoordinates != null;
 
@@ -472,7 +487,10 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
     }
   }
 
-  Future<Uint8List> _buildSosMarkerBytes({int size = 96}) async {
+  Future<Uint8List> _buildSosMarkerBytes({
+    int size = 96,
+    Color color = const Color(0xFFE5192B),
+  }) async {
     final markerSize = size.toDouble();
     final recorder = ui.PictureRecorder();
     final canvas = Canvas(
@@ -482,7 +500,7 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
 
     final center = Offset(markerSize / 2, markerSize * 0.36);
     final topRadius = markerSize * 0.28;
-    const bodyColor = Color(0xFFE5192B);
+    final bodyColor = color;
     final shadowPaint = Paint()
       ..color = Colors.black.withOpacity(0.22)
       ..style = PaintingStyle.fill;
@@ -527,11 +545,18 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
 
   Future<void> _prepareMapMarkers() async {
     try {
-      final bytes = await _buildSosMarkerBytes();
-      if (bytes.isEmpty) return;
-      final icon = BitmapDescriptor.bytes(bytes, width: 38, height: 38);
+      final red = await _buildSosMarkerBytes(color: const Color(0xFFE5192B));
+      final dark = await _buildSosMarkerBytes(color: const Color(0xFF111827));
       if (!mounted) return;
-      setState(() => _sosMarkerIcon = icon);
+      setState(() {
+        if (red.isNotEmpty) {
+          _sosMarkerIcon = BitmapDescriptor.bytes(red, width: 38, height: 38);
+        }
+        if (dark.isNotEmpty) {
+          _respondedMarkerIcon =
+              BitmapDescriptor.bytes(dark, width: 38, height: 38);
+        }
+      });
     } catch (_) {
       // Keep default marker fallback when custom marker generation fails.
     }
@@ -615,7 +640,7 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
           ),
           content: const Text(
             'Did you accidentally click your device or trigger the emergency SOS?\n\n'
-            'Marking this as a False Alarm will cancel the alert and notify your parent that you are safe.',
+            'Marking this as a False Alarm will cancel the alert and notify every saved guardian that you are safe.',
             style: TextStyle(
               fontFamily: _bf,
               fontSize: 13,
@@ -702,7 +727,14 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
       if (_linkedDeviceId.isNotEmpty && _linkedDeviceId != 'Not linked') {
         await _loadLinkedDevice();
       }
-      _showActionSnack('Alert marked as False Alarm. Your parent has been notified that you are safe.');
+      await _notifyGuardians(
+        'SAFEWALK: $_fullName cancelled the emergency alert and is safe.',
+        alertId: alertId,
+        triggeredBy: 'false_alarm',
+      );
+      _showActionSnack(
+        'Alert marked as False Alarm. Your guardians have been notified that you are safe.',
+      );
     } catch (e) {
       _showActionSnack('Failed to update alert: $e', isError: true);
     }
@@ -813,7 +845,7 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
             }
           });
           if (alertCoord != null && !_isDefaultManila(alertCoord)) {
-            _focusRouteMapOnPoint(alertCoord, zoom: 16, force: true);
+            _focusRouteMapOnPoint(alertCoord, zoom: 18, force: true);
           }
           if (_alertsEnabled) {
             _showActionSnack('🚨 ACTIVE EMERGENCY ALERT: $msg', isError: true);
@@ -837,7 +869,7 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
             }
           });
           if (alertCoord != null && !_isDefaultManila(alertCoord)) {
-            _focusRouteMapOnPoint(alertCoord, zoom: 16, force: true);
+            _focusRouteMapOnPoint(alertCoord, zoom: 18, force: true);
           }
           if (_alertsEnabled) {
             _showActionSnack('🚨 NEW EMERGENCY ALERT: $msg', isError: true);
@@ -884,6 +916,7 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
       });
       await _loadLinkedParent();
       await _loadLinkedDevice();
+      await _guardianService.syncRecipients(currentUser.uid);
       if (mounted &&
           _deviceCoordinates == null &&
           storedUserCoords != null &&
@@ -933,7 +966,7 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
 
     if (_deviceCoordinates != null &&
         (prevCoords == null || !_isSamePoint(prevCoords, _deviceCoordinates!))) {
-      _focusRouteMapOnPoint(_deviceCoordinates!, zoom: 16, force: true);
+      _focusRouteMapOnPoint(_deviceCoordinates!, zoom: 18, force: true);
     }
   }
 
@@ -1475,7 +1508,7 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
         if (_deviceCoordinates != null &&
             !_isDefaultManila(_deviceCoordinates)) {
           if (autoCenter) {
-            _focusRouteMapOnPoint(_deviceCoordinates!, zoom: 16, force: true);
+            _focusRouteMapOnPoint(_deviceCoordinates!, zoom: 18, force: true);
           }
           if (showFeedback) {
             _showActionSnack(
@@ -1489,6 +1522,18 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
       final exactPoint = LatLng(position.latitude, position.longitude);
       final label =
           '${exactPoint.latitude.toStringAsFixed(6)}, ${exactPoint.longitude.toStringAsFixed(6)}';
+
+      if (_hasLinkedHardwareDevice &&
+          _deviceCoordinates != null &&
+          !_isDefaultManila(_deviceCoordinates)) {
+        if (updateFirestore) {
+          await _syncLocationToFirestore(exactPoint, label);
+        }
+        if (autoCenter) {
+          _focusRouteMapOnPoint(_deviceCoordinates!, zoom: 18, force: true);
+        }
+        return _deviceCoordinates;
+      }
 
       if (!mounted) return exactPoint;
 
@@ -1504,15 +1549,11 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
       });
 
       if (autoCenter) {
-        _focusRouteMapOnPoint(exactPoint, zoom: 16, force: true);
+        _focusRouteMapOnPoint(exactPoint, zoom: 18, force: true);
       }
 
       if (updateFirestore) {
-        await _syncLocationToFirestore(
-          exactPoint,
-          label,
-          syncLinkedDevice: !isCoarseIpEstimate,
-        );
+        await _syncLocationToFirestore(exactPoint, label);
       }
 
       if (_locationSharingEnabled) {
@@ -1544,13 +1585,23 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
 
   Future<void> _setManualExactLocation(LatLng point) async {
     if (!_isValidLatLng(point.latitude, point.longitude)) return;
+    if (_hasLinkedHardwareDevice &&
+        _deviceCoordinates != null &&
+        !_isDefaultManila(_deviceCoordinates)) {
+      _focusRouteMapOnPoint(_deviceCoordinates!, zoom: 18, force: true);
+      if (mounted) {
+        _showActionSnack(
+          'Showing the exact location sent by the tracker.',
+        );
+      }
+      return;
+    }
     final label = _formatCoordinateLabel(point);
     if (!mounted) return;
     setState(() {
       _deviceCoordinates = point;
       _deviceLocation = label;
       _nextMapFocusPoint = point;
-      _hasManualPinOverride = true;
       _lastLocalLocationUpdateMs = DateTime.now().millisecondsSinceEpoch;
       if (_deviceId == 'Not linked') {
         _deviceId = 'Device GPS (Pinned)';
@@ -1558,8 +1609,8 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
         _deviceStatus = 'active';
       }
     });
-    _focusRouteMapOnPoint(point, zoom: 17, force: true);
-    await _syncLocationToFirestore(point, label, syncLinkedDevice: true);
+    _focusRouteMapOnPoint(point, zoom: 18, force: true);
+    await _syncLocationToFirestore(point, label);
     if (mounted) {
       _showActionSnack('Exact map pin updated: $label');
     }
@@ -1578,6 +1629,11 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
       ).listen(
         (Position position) {
           if (!mounted) return;
+          if (_hasLinkedHardwareDevice &&
+              _deviceCoordinates != null &&
+              !_isDefaultManila(_deviceCoordinates)) {
+            return;
+          }
           if (position.accuracy > 100 &&
               _deviceCoordinates != null &&
               !_isDefaultManila(_deviceCoordinates)) {
@@ -1590,11 +1646,7 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
             _deviceCoordinates = point;
             _deviceLocation = label;
           });
-          _syncLocationToFirestore(
-            point,
-            label,
-            syncLinkedDevice: position.accuracy <= 100,
-          );
+          _syncLocationToFirestore(point, label);
         },
         onError: (e) {
           debugPrint('Live location stream error: $e');
@@ -1605,19 +1657,15 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
     }
   }
 
-  Future<void> _syncLocationToFirestore(
-    LatLng point,
-    String label, {
-    bool syncLinkedDevice = true,
-  }) async {
+  Future<void> _syncLocationToFirestore(LatLng point, String label) async {
     try {
       final currentUser = FirebaseAuth.instance.currentUser;
       if (currentUser == null) return;
       final geo = GeoPoint(point.latitude, point.longitude);
-      final batch = _firestore.batch();
 
-      final userRef = _firestore.collection('users').doc(currentUser.uid);
-      batch.set(userRef, {
+      // Phone GPS stays on the student profile. The tracker document is only
+      // updated by the device, so the map pin matches the fix it sent.
+      await _firestore.collection('users').doc(currentUser.uid).set({
         'coordinates': geo,
         'location': geo,
         'latitude': point.latitude,
@@ -1625,59 +1673,6 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
         'locationText': label,
         'lastLocationUpdate': FieldValue.serverTimestamp(),
       }, SetOptions(merge: true));
-
-      if (syncLinkedDevice) {
-        final targetDeviceId =
-            (_linkedDeviceId.isNotEmpty && _linkedDeviceId != 'Not linked')
-            ? _linkedDeviceId
-            : 'safewalk_device_001';
-        final devRef = _firestore.collection('devices').doc(targetDeviceId);
-        batch.set(devRef, {
-          'deviceId': targetDeviceId,
-          'studentUid': currentUser.uid,
-          if (_fullName.isNotEmpty) 'studentName': _fullName,
-          'coordinates': geo,
-          'location': label,
-          'latitude': point.latitude,
-          'longitude': point.longitude,
-          'locationText': label,
-          'status': 'active',
-          'updatedAt': FieldValue.serverTimestamp(),
-        }, SetOptions(merge: true));
-      }
-
-      await batch.commit();
-
-      if (syncLinkedDevice) {
-        final recentAlertsSnap = await _firestore
-            .collection('emergency_alerts')
-            .orderBy('timestamp', descending: true)
-            .limit(40)
-            .get();
-        final alertBatch = _firestore.batch();
-        var hasAlertUpdates = false;
-        for (final doc in recentAlertsSnap.docs) {
-          final data = doc.data();
-          if (!_doesAlertMatchStudent(data, overrideUid: currentUser.uid)) {
-            continue;
-          }
-          final status = (data['status'] ?? '').toString().toLowerCase();
-          if (status == 'active' ||
-              status == 'verifying_speech' ||
-              status == 'acknowledged') {
-            alertBatch.set(doc.reference, {
-              'coordinates': geo,
-              'location': label,
-              'latitude': point.latitude,
-              'longitude': point.longitude,
-            }, SetOptions(merge: true));
-            hasAlertUpdates = true;
-          }
-        }
-        if (hasAlertUpdates) {
-          await alertBatch.commit();
-        }
-      }
     } catch (e) {
       debugPrint('Failed to sync location to Firestore: $e');
     }
@@ -1698,6 +1693,33 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
     return point;
   }
 
+  Future<void> _notifyGuardians(
+    String message, {
+    required String alertId,
+    required String triggeredBy,
+  }) async {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null || alertId.trim().isEmpty) return;
+    try {
+      final audience = await _guardianService.resolveAudience(uid);
+      final result = await _guardianService.notifyAudience(
+        audience: audience,
+        message: message,
+        triggeredBy: triggeredBy,
+        alertId: alertId,
+      );
+      await _firestore.collection('emergency_alerts').doc(alertId).set({
+        'guardianContacts': audience.contacts,
+        'guardianPhones': audience.phones,
+        'guardianPhonesCsv': audience.phonesCsv,
+        'recipientUids': audience.recipientUids,
+        'falseAlarmBroadcastStatus': result.status,
+      }, SetOptions(merge: true));
+    } catch (e) {
+      debugPrint('Guardian notification failed: $e');
+    }
+  }
+
   Future<void> _createSosAlert() async {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) {
@@ -1707,9 +1729,10 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
     try {
       await _loadLinkedParent();
       await _loadLinkedDevice();
-      if (_linkedParentUid.trim().isEmpty) {
+      final audience = await _guardianService.resolveAudience(user.uid);
+      if (audience.isEmpty) {
         _showActionSnack(
-          'No linked parent yet. Accept a parent invitation in Profile first.',
+          'Add a guardian in Profile, or accept a parent invitation, before sending SOS.',
           isError: true,
         );
         return;
@@ -1724,15 +1747,19 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
       final locationGeoPoint = GeoPoint(mapPoint.latitude, mapPoint.longitude);
       final locationLabel = _formatCoordinateLabel(mapPoint);
 
-      await _firestore.collection('emergency_alerts').add({
+      final alertRef = await _firestore.collection('emergency_alerts').add({
         'uid': user.uid,
         'studentUid': user.uid,
         'deviceId': _linkedDeviceId,
         'fullName': _fullName,
         'email': _email,
         'phoneNumber': _phoneNumber,
-        'parentUid': _linkedParentUid,
-        'parentPhoneNumber': _linkedParentPhone,
+        'parentUid': audience.primaryParentUid.isNotEmpty
+            ? audience.primaryParentUid
+            : _linkedParentUid,
+        'parentPhoneNumber': audience.primaryParentPhone.isNotEmpty
+            ? audience.primaryParentPhone
+            : _linkedParentPhone,
         'type': 'sos',
         'severity': 'high',
         'status': 'active',
@@ -1745,7 +1772,22 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
         'triggeredBy': 'student_dashboard',
         'clientTimestamp': Timestamp.now(),
         'timestamp': FieldValue.serverTimestamp(),
+        ..._guardianService.alertFields(audience),
       });
+      final broadcast = await _guardianService.notifyAudience(
+        audience: audience,
+        message:
+            'EMERGENCY ALERT: $_fullName needs help. Location: $locationLabel',
+        triggeredBy: 'student_dashboard',
+        alertId: alertRef.id,
+      );
+      await alertRef.set({
+        'broadcastStatus': broadcast.status,
+        'notifiedGuardianCount': audience.phones.length,
+        'broadcastSentCount': broadcast.sent,
+        'broadcastFailedCount': broadcast.failed,
+        'broadcastAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
       if (mounted) {
         setState(() {
           _selectedNavIndex = 0;
@@ -1755,10 +1797,13 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
           _avatarMood = 'angry';
         });
       }
+      final guardianLabel = audience.phones.isEmpty
+          ? 'linked guardians'
+          : '${audience.phones.length} guardian contact${audience.phones.length == 1 ? '' : 's'}';
       _showActionSnack(
         livePoint != null
-            ? 'SOS sent with your live phone location.'
-            : 'SOS sent using your last linked location.',
+            ? 'SOS sent to $guardianLabel with your live phone location.'
+            : 'SOS sent to $guardianLabel using your last linked location.',
       );
     } catch (e) {
       _showActionSnack('Failed to send SOS alert: $e', isError: true);
@@ -2151,7 +2196,7 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                                   key: const ValueKey('sheet-map-main'),
                                   initialCameraPosition: CameraPosition(
                                     target: center,
-                                    zoom: hasPoint ? 16 : 12,
+                                    zoom: hasPoint ? 18 : 12,
                                   ),
                                   liteModeEnabled: _mobileMapLiteMode,
                                   mapType: MapType.normal,
@@ -2166,7 +2211,7 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                                             ),
                                             position: center,
                                             anchor: _sosMarkerIcon != null
-                                                ? const Offset(0.5, 0.96)
+                                                ? const Offset(0.5, 0.98)
                                                 : const Offset(0.5, 1.0),
                                             draggable: true,
                                             onDragEnd: (newPoint) async {
@@ -3719,7 +3764,11 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
             .where((doc) => _doesAlertMatchStudent(doc.data()))
             .toList();
         final sosState = _resolveSosMapState(docs);
-        final isEmergency = sosState.isActive || sosState.isAcknowledged;
+        final isEmergency =
+            sosState.isActive ||
+            sosState.isAcknowledged ||
+            sosState.isNotResolved ||
+            sosState.isResponded;
         final hasLinkedDevice =
             _linkedDeviceId.isNotEmpty && _linkedDeviceId != 'Not linked';
 
@@ -3759,129 +3808,22 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             _buildHeroCard(),
-            if (sosState.isActive || sosState.isAcknowledged) ...[
-              const SizedBox(height: 14),
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: const Color(0xFFFFFBEB),
-                  borderRadius: BorderRadius.circular(18),
-                  border: Border.all(
-                    color: const Color(0xFFF59E0B),
-                    width: 1.2,
-                  ),
-                  boxShadow: [
-                    BoxShadow(
-                      color: const Color(0xFFF59E0B).withValues(alpha: 0.15),
-                      blurRadius: 14,
-                      offset: const Offset(0, 5),
-                    ),
-                  ],
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        Container(
-                          width: 36,
-                          height: 36,
-                          decoration: BoxDecoration(
-                            color: const Color(0xFFFEF3C7),
-                            borderRadius: BorderRadius.circular(10),
-                            border: Border.all(
-                              color: const Color(0xFFF59E0B).withValues(alpha: 0.5),
-                            ),
-                          ),
-                          child: const Icon(
-                            Icons.warning_amber_rounded,
-                            color: Color(0xFFB45309),
-                            size: 20,
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                sosState.isActive
-                                    ? 'EMERGENCY SOS IS ACTIVE'
-                                    : 'EMERGENCY SOS (ACKNOWLEDGED)',
-                                style: const TextStyle(
-                                  fontFamily: _bf,
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.w700,
-                                  letterSpacing: 1.5,
-                                  color: Color(0xFF92400E),
-                                ),
-                              ),
-                              const SizedBox(height: 2),
-                              Text(
-                                'Miss-clicked the device? Cancel it as a false alarm.',
-                                style: TextStyle(
-                                  fontFamily: _bf,
-                                  fontSize: 11,
-                                  color: const Color(0xFF78350F).withValues(alpha: 0.8),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 12),
-                    SizedBox(
-                      width: double.infinity,
-                      child: Material(
-                        color: const Color(0xFFB45309),
-                        borderRadius: BorderRadius.circular(10),
-                        child: InkWell(
-                          borderRadius: BorderRadius.circular(10),
-                          onTap: () {
-                            if (sosState.alertId.isNotEmpty) {
-                              _confirmAndReportFalseAlarm(sosState.alertId);
-                            }
-                          },
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(vertical: 12),
-                            alignment: Alignment.center,
-                            child: Row(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: const [
-                                Icon(
-                                  Icons.notifications_off_outlined,
-                                  color: Colors.white,
-                                  size: 16,
-                                ),
-                                SizedBox(width: 8),
-                                Text(
-                                  'FALSE ALARM (CANCEL ALERT)',
-                                  style: TextStyle(
-                                    fontFamily: _bf,
-                                    fontSize: 11,
-                                    letterSpacing: 2,
-                                    fontWeight: FontWeight.w700,
-                                    color: Colors.white,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
             const SizedBox(height: 16),
             _buildSectionLabel('LIVE MAP'),
             const SizedBox(height: 10),
             _buildRouteCard(
-              mapPoint: mapPoint,
-              sosIsActive: sosState.isActive,
+              mapPoint: sosState.hideMarker ? null : mapPoint,
+              sosIsActive: isEmergency,
+              hideMarker: sosState.hideMarker,
+              markerStatus: sosState.isNotResolved
+                  ? 'not_resolved'
+                  : sosState.isAcknowledged
+                  ? 'acknowledged'
+                  : sosState.isResponded
+                  ? 'responded'
+                  : sosState.isActive
+                  ? 'active'
+                  : 'tracking',
               areaLabel: mapAreaLabel,
               alertId: sosState.alertId,
             ),
@@ -3902,6 +3844,13 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                 _buildDeviceRow('Map Focus', mapAreaLabel),
                 const SizedBox(height: 8),
                 _buildDeviceRow('Device', _deviceName),
+                if (!(sosState.isActive || sosState.isAcknowledged)) ...[
+                  const SizedBox(height: 14),
+                  _buildPanelAction(
+                    label: 'SEND SOS',
+                    onTap: _createSosAlert,
+                  ),
+                ],
                 if (sosState.isActive || sosState.isAcknowledged) ...[
                   const SizedBox(height: 14),
                   Wrap(
@@ -4441,6 +4390,10 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
         _buildSectionLabel('PARENT INVITATIONS'),
         const SizedBox(height: 10),
         _buildParentInvitationsSection(),
+        const SizedBox(height: 18),
+        _buildSectionLabel('GUARDIANS'),
+        const SizedBox(height: 10),
+        GuardianContactsPanel(studentUid: _studentUid),
         const SizedBox(height: 20),
         _buildSectionLabel('DANGER ZONE'),
         const SizedBox(height: 10),
@@ -5110,6 +5063,8 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
   Widget _buildRouteCard({
     LatLng? mapPoint,
     bool sosIsActive = false,
+    bool hideMarker = false,
+    String markerStatus = 'active',
     String areaLabel = '',
     String alertId = '',
   }) {
@@ -5117,11 +5072,35 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
     final center = effectivePoint ?? _defaultMapCenter;
     final hasPoint = effectivePoint != null;
     final focusLabel = areaLabel.isEmpty ? _deviceLocation : areaLabel;
+    final isAcknowledged = markerStatus == 'acknowledged';
+    final isNotResolved = markerStatus == 'not_resolved';
+    final isResponded = markerStatus == 'responded';
+    final isActiveAlert = markerStatus == 'active';
+    final statusColor = isResponded
+        ? const Color(0xFF111827)
+        : isAcknowledged
+        ? const Color(0xFFEA580C)
+        : isNotResolved
+        ? const Color(0xFF6D28D9)
+        : isActiveAlert
+        ? const Color(0xFF7E1F14)
+        : const Color(0xFF0E5B3C);
+    final statusLabel = isResponded
+        ? 'ADMIN RESPONDED'
+        : isAcknowledged
+        ? 'ACKNOWLEDGED'
+        : isNotResolved
+        ? 'NOT RESOLVED'
+        : isActiveAlert
+        ? 'SOS ACTIVE'
+        : hasPoint
+        ? 'TRACKING'
+        : 'STANDBY';
     final requestedFocusPoint = _nextMapFocusPoint ?? effectivePoint;
     if (requestedFocusPoint != null && (sosIsActive || hasPoint)) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
-        _focusRouteMapOnPoint(requestedFocusPoint, zoom: hasPoint ? 16 : 12);
+        _focusRouteMapOnPoint(requestedFocusPoint, zoom: hasPoint ? 18 : 12);
       });
     }
     return Container(
@@ -5149,31 +5128,52 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                       key: const ValueKey('route-map-main'),
                       initialCameraPosition: CameraPosition(
                         target: center,
-                        zoom: hasPoint ? 16 : 12,
+                        zoom: hasPoint ? 18 : 12,
                       ),
                       liteModeEnabled: _mobileMapLiteMode,
                       mapType: MapType.normal,
                       gestureRecognizers: _mapGestureRecognizers,
                       zoomGesturesEnabled: true,
                       scrollGesturesEnabled: true,
-                      markers: hasPoint
+                      markers: hasPoint && !hideMarker
                           ? {
                               Marker(
                                 markerId: const MarkerId('route-device'),
                                 position: center,
-                                anchor: _sosMarkerIcon != null
-                                    ? const Offset(0.5, 0.96)
-                                    : const Offset(0.5, 1.0),
+                                anchor: const Offset(0.5, 0.98),
                                 draggable: true,
                                 onDragEnd: (newPoint) {
                                   _setManualExactLocation(newPoint);
                                 },
-                                icon: _sosMarkerIcon ??
-                                    BitmapDescriptor.defaultMarkerWithHue(
-                                      BitmapDescriptor.hueRed,
-                                    ),
+                                icon: isResponded
+                                    ? (_respondedMarkerIcon ??
+                                        BitmapDescriptor.defaultMarkerWithHue(
+                                          BitmapDescriptor.hueAzure,
+                                        ))
+                                    : isAcknowledged
+                                    ? BitmapDescriptor.defaultMarkerWithHue(
+                                        BitmapDescriptor.hueOrange,
+                                      )
+                                    : isNotResolved
+                                    ? BitmapDescriptor.defaultMarkerWithHue(
+                                        BitmapDescriptor.hueViolet,
+                                      )
+                                    : isActiveAlert
+                                    ? (_sosMarkerIcon ??
+                                        BitmapDescriptor.defaultMarkerWithHue(
+                                          BitmapDescriptor.hueRed,
+                                        ))
+                                    : BitmapDescriptor.defaultMarkerWithHue(
+                                        BitmapDescriptor.hueGreen,
+                                      ),
                                 infoWindow: InfoWindow(
-                                  title: sosIsActive
+                                  title: isResponded
+                                      ? 'Admin responded'
+                                      : isAcknowledged
+                                      ? 'Acknowledged'
+                                      : isNotResolved
+                                      ? 'Not resolved'
+                                      : isActiveAlert
                                       ? 'SOS Location'
                                       : _deviceName,
                                   snippet: focusLabel,
@@ -5192,11 +5192,28 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                               Circle(
                                 circleId: const CircleId('route-radius'),
                                 center: center,
-                                radius: sosIsActive ? 90 : 45,
-                                fillColor: sosIsActive
+                                radius: isActiveAlert ||
+                                        isAcknowledged ||
+                                        isNotResolved ||
+                                        isResponded
+                                    ? 90
+                                    : 45,
+                                fillColor: isResponded
+                                    ? const Color(0x55111827)
+                                    : isAcknowledged
+                                    ? const Color(0x55F97316)
+                                    : isNotResolved
+                                    ? const Color(0x557C3AED)
+                                    : isActiveAlert
                                     ? const Color(0x55CB392B)
                                     : const Color(0x331AA972),
-                                strokeColor: sosIsActive
+                                strokeColor: isResponded
+                                    ? const Color(0xFF111827)
+                                    : isAcknowledged
+                                    ? const Color(0xFFEA580C)
+                                    : isNotResolved
+                                    ? const Color(0xFF6D28D9)
+                                    : isActiveAlert
                                     ? const Color(0xFFCB392B)
                                     : const Color(0xFF1AA972),
                                 strokeWidth: 2,
@@ -5216,7 +5233,7 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                         if (focusPoint != null && (sosIsActive || hasPoint)) {
                           _focusRouteMapOnPoint(
                             focusPoint,
-                            zoom: hasPoint ? 16 : 12,
+                            zoom: hasPoint ? 18 : 12,
                             force: true,
                           );
                         }
@@ -5230,9 +5247,7 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
             child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
               decoration: BoxDecoration(
-                color: sosIsActive
-                    ? const Color(0xFF7E1F14)
-                    : const Color(0xFF0E5B3C),
+                color: statusColor,
                 borderRadius: BorderRadius.circular(999),
                 border: Border.all(
                   color: AppColors.gold.withOpacity(0.3),
@@ -5240,7 +5255,15 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                 ),
               ),
               child: Text(
-                sosIsActive ? 'SOS MAP' : 'LIVE MAP',
+                isResponded
+                    ? 'ADMIN RESPONDED'
+                    : isActiveAlert
+                    ? 'SOS MAP'
+                    : isAcknowledged
+                    ? 'ACKNOWLEDGED'
+                    : isNotResolved
+                    ? 'NOT RESOLVED'
+                    : 'LIVE MAP',
                 style: TextStyle(
                   fontFamily: _bf,
                   color: AppColors.gold,
@@ -5257,11 +5280,7 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
             child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
               decoration: BoxDecoration(
-                color: sosIsActive
-                    ? const Color(0xFF7E1F14)
-                    : hasPoint
-                    ? const Color(0xFF0F5A3E)
-                    : const Color(0xFF6C757D),
+                color: statusColor,
                 borderRadius: BorderRadius.circular(999),
                 border: Border.all(color: Colors.white.withOpacity(0.35)),
               ),
@@ -5271,19 +5290,21 @@ class _UserDashboardPageState extends State<UserDashboardPage> {
                   Icon(
                     Icons.circle,
                     size: 7,
-                    color: sosIsActive
+                    color: isResponded
+                        ? const Color(0xFFD1D5DB)
+                        : isActiveAlert
                         ? const Color(0xFFFF9F9F)
+                        : isAcknowledged
+                        ? const Color(0xFFFED7AA)
+                        : isNotResolved
+                        ? const Color(0xFFE9D5FF)
                         : hasPoint
                         ? const Color(0xFF5DF0A0)
                         : const Color(0xFFF6D38E),
                   ),
                   const SizedBox(width: 5),
                   Text(
-                    sosIsActive
-                        ? 'SOS ACTIVE'
-                        : hasPoint
-                        ? 'TRACKING'
-                        : 'STANDBY',
+                    statusLabel,
                     style: TextStyle(
                       fontFamily: _bf,
                       color: AppColors.white,
@@ -5896,7 +5917,10 @@ class _SosMapState {
   final LatLng? coordinate;
   final bool isActive;
   final bool isAcknowledged;
+  final bool isNotResolved;
+  final bool isResponded;
   final bool isFalseAlarm;
+  final bool hideMarker;
   final String alertId;
   final String timestampLabel;
   final String areaLabel;
@@ -5905,7 +5929,10 @@ class _SosMapState {
     this.coordinate,
     this.isActive = false,
     this.isAcknowledged = false,
+    this.isNotResolved = false,
+    this.isResponded = false,
     this.isFalseAlarm = false,
+    this.hideMarker = false,
     this.alertId = '',
     this.timestampLabel = '',
     this.areaLabel = '',

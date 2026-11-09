@@ -148,6 +148,272 @@ async function verifyVoiceDistressSpeech(base64Audio) {
   };
 }
 
+function normalizeGuardianPhone(raw) {
+  const cleaned = String(raw || "").trim().replace(/[\s\-().]/g, "");
+  if (!cleaned) return "";
+  if (cleaned.startsWith("+")) return cleaned;
+  if (cleaned.startsWith("09") && cleaned.length === 11) {
+    return `+63${cleaned.substring(1)}`;
+  }
+  if (cleaned.startsWith("639") && cleaned.length === 12) {
+    return `+${cleaned}`;
+  }
+  if (cleaned.startsWith("9") && cleaned.length === 10) {
+    return `+63${cleaned}`;
+  }
+  return cleaned;
+}
+
+function isValidGuardianPhone(raw) {
+  return /^\+?[0-9]{10,15}$/.test(normalizeGuardianPhone(raw));
+}
+
+function parsePhoneCsv(value) {
+  return String(value || "")
+    .split(/[,;]/)
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0);
+}
+
+async function resolveGuardianAudience(studentUid, alertData) {
+  const db = admin.firestore();
+  const contacts = [];
+  const phones = [];
+  const seenPhones = new Set();
+  const recipientUids = [];
+  const seenUids = new Set();
+  let primaryParentUid = String((alertData && alertData.parentUid) || "").trim();
+  let primaryParentPhone = String((alertData && alertData.parentPhoneNumber) || "").trim();
+
+  const addPhone = (raw) => {
+    const normalized = normalizeGuardianPhone(raw);
+    if (!isValidGuardianPhone(raw) || seenPhones.has(normalized) || phones.length >= 12) {
+      return;
+    }
+    seenPhones.add(normalized);
+    phones.push(String(raw).trim());
+  };
+  const addUid = (uid) => {
+    const cleaned = String(uid || "").trim();
+    if (!cleaned || seenUids.has(cleaned)) return;
+    seenUids.add(cleaned);
+    recipientUids.push(cleaned);
+  };
+
+  addUid(primaryParentUid);
+  addPhone(primaryParentPhone);
+  parsePhoneCsv(alertData && alertData.guardianPhonesCsv).forEach(addPhone);
+  if (Array.isArray(alertData && alertData.guardianPhones)) {
+    alertData.guardianPhones.forEach(addPhone);
+  }
+  if (Array.isArray(alertData && alertData.recipientUids)) {
+    alertData.recipientUids.forEach(addUid);
+  }
+
+  if (studentUid) {
+    const guardianSnap = await db.collection("users").doc(studentUid).collection("guardians").get();
+    guardianSnap.forEach((doc) => {
+      const data = doc.data() || {};
+      const phone = String(data.phoneNumber || "").trim();
+      contacts.push({
+        id: doc.id,
+        name: String(data.name || "Guardian"),
+        phoneNumber: phone,
+        phoneNormalized: normalizeGuardianPhone(phone),
+        relationship: String(data.relationship || "Guardian"),
+        source: "guardian",
+      });
+      addPhone(phone);
+    });
+
+    const linkSnap = await db.collection("parent_student_links")
+      .where("studentUid", "==", studentUid)
+      .limit(50)
+      .get();
+    linkSnap.forEach((doc) => {
+      const data = doc.data() || {};
+      const status = String(data.status || "accepted").toLowerCase();
+      if (status !== "accepted") return;
+      const parentUid = String(data.parentUid || "").trim();
+      const parentPhone = String(data.parentPhone || "").trim();
+      const parentName = String(data.parentName || "Parent").trim() || "Parent";
+      addUid(parentUid);
+      if (!primaryParentUid && parentUid) {
+        primaryParentUid = parentUid;
+        primaryParentPhone = parentPhone;
+      }
+      contacts.push({
+        id: `parent:${parentUid}`,
+        name: parentName,
+        phoneNumber: parentPhone,
+        phoneNormalized: normalizeGuardianPhone(parentPhone),
+        relationship: "Parent",
+        parentUid,
+        source: "parent_link",
+      });
+      addPhone(parentPhone);
+    });
+  }
+
+  return {
+    contacts,
+    phones,
+    phonesCsv: phones.join(","),
+    recipientUids,
+    primaryParentUid,
+    primaryParentPhone,
+  };
+}
+
+async function logGuardianSms(phone, message, status, extra) {
+  await admin.firestore().collection("sms_logs").add({
+    phoneNumber: phone,
+    message,
+    status,
+    error: (extra && extra.error) || "",
+    providerStatusCode: extra && extra.providerStatusCode ? extra.providerStatusCode : null,
+    providerResponse: (extra && extra.providerResponse) || "",
+    triggeredBy: "emergency_broadcast",
+    alertId: (extra && extra.alertId) || "",
+    timestamp: admin.firestore.FieldValue.serverTimestamp(),
+  });
+}
+
+async function sendGuardianSmsBatch(phones, message, alertId) {
+  const endpoint = process.env.SMS_GATEWAY_ENDPOINT || "";
+  const apiKey = process.env.SMS_GATEWAY_API_KEY || "";
+  const sender = process.env.SMS_GATEWAY_SENDER || "SAFEWALK";
+  if (!endpoint || !apiKey) {
+    for (const phone of phones) {
+      await logGuardianSms(phone, message, "not_configured", {
+        alertId,
+        error: "SMS gateway configuration is missing.",
+      });
+    }
+    return {status: "not_configured", sent: 0, failed: phones.length};
+  }
+
+  let sent = 0;
+  let failed = 0;
+  for (const phone of phones) {
+    try {
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({to: phone, message, sender}),
+      });
+      const body = await response.text();
+      const success = response.status >= 200 && response.status < 300;
+      await logGuardianSms(phone, message, success ? "sent" : "failed", {
+        alertId,
+        providerStatusCode: response.status,
+        providerResponse: body,
+        error: success ? "" : `SMS send failed (${response.status})`,
+      });
+      if (success) sent += 1;
+      else failed += 1;
+    } catch (error) {
+      failed += 1;
+      await logGuardianSms(phone, message, "failed", {
+        alertId,
+        error: error.message || String(error),
+      });
+    }
+  }
+  return {
+    status: sent === 0 ? "failed" : failed === 0 ? "sent" : "partial",
+    sent,
+    failed,
+  };
+}
+
+async function syncGuardianCsvToDevices(studentUid, deviceId, phonesCsv, primary) {
+  const db = admin.firestore();
+  const patch = {
+    guardianPhonesCsv: phonesCsv,
+    guardiansUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  };
+  if (primary.primaryParentUid) patch.parentUid = primary.primaryParentUid;
+  if (primary.primaryParentPhone) patch.parentPhoneNumber = primary.primaryParentPhone;
+
+  const refs = new Map();
+  if (studentUid) {
+    const snap = await db.collection("devices").where("studentUid", "==", studentUid).get();
+    snap.forEach((doc) => refs.set(doc.id, doc.ref));
+  }
+  if (deviceId) {
+    const directSnap = await db.collection("devices").doc(deviceId).get();
+    if (directSnap.exists) refs.set(directSnap.id, directSnap.ref);
+    const byField = await db.collection("devices").where("deviceId", "==", deviceId).limit(5).get();
+    byField.forEach((doc) => refs.set(doc.id, doc.ref));
+  }
+  if (refs.size === 0) return;
+  const batch = db.batch();
+  refs.forEach((ref) => batch.set(ref, patch, {merge: true}));
+  await batch.commit();
+}
+
+async function broadcastAlertToGuardians(snapshot, data, alertId) {
+  const studentUid = String((data && (data.studentUid || data.uid)) || "").trim();
+  const audience = await resolveGuardianAudience(studentUid, data || {});
+  const patch = {
+    guardianContacts: audience.contacts,
+    guardianPhones: audience.phones,
+    guardianPhonesCsv: audience.phonesCsv,
+    recipientUids: audience.recipientUids,
+    notifiedGuardianCount: audience.phones.length,
+  };
+  if (!data.parentUid && audience.primaryParentUid) {
+    patch.parentUid = audience.primaryParentUid;
+    patch.parentPhoneNumber = audience.primaryParentPhone;
+  }
+
+  const covered = new Set();
+  const deviceAlreadySent = data.triggeredBy === "iot_device" && data.smsSubmissionStatus === "submitted";
+  if (deviceAlreadySent) {
+    const parentPhone = normalizeGuardianPhone(data.parentPhoneNumber);
+    if (parentPhone) covered.add(parentPhone);
+    parsePhoneCsv(data.guardianPhonesCsv).forEach((phone) => {
+      const normalized = normalizeGuardianPhone(phone);
+      if (normalized) covered.add(normalized);
+    });
+  }
+
+  const phonesToSend = data.clientHandlesSms === true
+    ? []
+    : audience.phones.filter((phone) => !covered.has(normalizeGuardianPhone(phone)));
+
+  if (data.clientHandlesSms === true) {
+    await snapshot.ref.set(patch, {merge: true});
+  } else if (phonesToSend.length === 0) {
+    patch.broadcastStatus = deviceAlreadySent ? "device_sms" : "no_recipients";
+    patch.broadcastAt = admin.firestore.FieldValue.serverTimestamp();
+    await snapshot.ref.set(patch, {merge: true});
+  } else {
+    const studentName = String(data.fullName || "A SafeWalk student");
+    const location = String(data.location || "location pending");
+    const message = `EMERGENCY ALERT: ${studentName} needs help. Location: ${location}`;
+    const result = await sendGuardianSmsBatch(phonesToSend, message, alertId);
+    patch.broadcastStatus = deviceAlreadySent && result.status !== "sent"
+      ? `device_sms_${result.status}`
+      : result.status;
+    patch.notifiedGuardianCount = (deviceAlreadySent ? audience.phones.length - phonesToSend.length : 0) + result.sent;
+    patch.broadcastFailedCount = result.failed;
+    patch.broadcastAt = admin.firestore.FieldValue.serverTimestamp();
+    await snapshot.ref.set(patch, {merge: true});
+  }
+
+  await syncGuardianCsvToDevices(
+    studentUid,
+    String(data.deviceId || ""),
+    audience.phonesCsv,
+    audience
+  );
+}
+
 // Automatically update device live location & run Speech AI verification when an emergency alert is triggered
 exports.onEmergencyAlertCreated = functions.firestore
   .document("emergency_alerts/{alertId}")
@@ -198,7 +464,9 @@ exports.onEmergencyAlertCreated = functions.firestore
         Math.abs(coordLat) <= 90 &&
         Math.abs(coordLng) <= 180;
 
-      if (hasValidAlertCoords) {
+      const sentByDevice =
+        data.triggeredBy === "iot_device" || data.locationSource === "device_gps";
+      if (hasValidAlertCoords && sentByDevice) {
         if (data.location && !String(data.location).startsWith("0.0000")) {
           deviceUpdate.location = data.location;
         }
@@ -207,7 +475,7 @@ exports.onEmergencyAlertCreated = functions.firestore
         }
         deviceUpdate.latitude = coordLat;
         deviceUpdate.longitude = coordLng;
-      } else {
+      } else if (!hasValidAlertCoords) {
         try {
           const devSnap = await admin.firestore().collection("devices").doc(deviceId).get();
           const devData = devSnap.exists ? devSnap.data() : null;
@@ -245,6 +513,13 @@ exports.onEmergencyAlertCreated = functions.firestore
         } catch (error) {
           console.error(`Failed to update device ${deviceId}:`, error);
         }
+      }
+    }
+    if (alertUpdate.status !== "cancelled_false_trigger") {
+      try {
+        await broadcastAlertToGuardians(snapshot, data, alertId);
+      } catch (broadcastErr) {
+        console.error(`Guardian broadcast failed for ${alertId}:`, broadcastErr);
       }
     }
     return null;

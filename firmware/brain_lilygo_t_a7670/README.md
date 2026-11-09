@@ -8,7 +8,7 @@ Automatic emergency SMS when the spoken keywords **Help** or **Tabang** are dete
 |------|----------------|
 | Board | **LILYGO T-A7670 V3 4G** (ESP32-D0WD-V3 + SIMCom **A7670**) |
 | Mic | **INMP441** I2S MEMS microphone (external) |
-| SOS button | Tactile switch on **GPIO 14** (optional; voice path needs no button) |
+| SOS button | Tactile switch between **GPIO 14** and **GND**. One press sends one alert. |
 | SIM | Nano-SIM with SMS + data (Philippine carriers auto-APN) |
 
 The A7670 modem provides cellular data and SMS. It does **not** perform speech recognition. Keyword spotting runs on the ESP32 via **Edge Impulse**.
@@ -42,18 +42,49 @@ sequenceDiagram
 
 **Important:** `+CMGS` / `OK` means the carrier **accepted** the SMS. It is not a handset delivery receipt.
 
-## Wiring (INMP441 → T-A7670)
+## Wiring
 
-| INMP441 pin | ESP32 GPIO | Notes |
-|-------------|------------|--------|
-| VDD | 3V3 | 3.3 V only |
-| GND | GND | Common ground |
-| WS / LRCLK | **25** | Word select |
-| SD / DOUT | **32** | Data to ESP32 |
-| SCK / BCLK | **33** | Bit clock |
-| L/R | GND | Left channel (match firmware `i2sActiveChannel`) |
+This is the wiring already soldered on the board. Do not move those joints. Take the microSD card out before flashing and while the tracker is running.
 
-Modem UART (on-board, do not rewire): TX **26**, RX **27**, PWRKEY **4**, RESET **5**, POWERON **12**.
+### INMP441 microphone → header
+
+| INMP441 pin | Board header | Notes |
+|-------------|--------------|--------|
+| VDD | **3V3** | 3.3 V only. Not 5V, not VBAT. |
+| GND | **GND** | Common ground with the board |
+| SCK / BCLK | **IO33** | Bit clock |
+| WS / LRCLK | **IO25** | Word select |
+| SD / DOUT | **IO32** | Microphone data into the ESP32 |
+| L/R | **GND** | Firmware follows whichever stereo slot is louder |
+
+### SOS button
+
+| Switch leg | Board header | Notes |
+|------------|--------------|--------|
+| Leg 1 | **IO14** | Internal pull-up. Press connects the pin to ground. |
+| Leg 2 | **GND** | Do not connect the switch to 3V3. |
+
+The onboard BOOT button is the ESP32 download button. It is not the help switch. A help press is the switch between IO14 and GND, and each press sends one alert. The next press counts only after the switch is released.
+
+### Leave these header pins empty
+
+| Header | Why |
+|--------|-----|
+| IO4 | Modem PWRKEY |
+| IO5 | Modem reset |
+| IO12 | Modem power switch. Firmware holds this HIGH. |
+| IO26 | ESP32 TX to the modem |
+| IO27 | ESP32 RX from the modem |
+
+### Already on the board (do not rewire)
+
+| Function | GPIO |
+|----------|------|
+| Modem UART | TX 26, RX 27 |
+| Modem power / reset | PWRKEY 4, RESET 5, POWERON 12 |
+| External L76K GPS, GPS version only | ESP32 TX 21, ESP32 RX 22 |
+
+Power the board from USB-A to USB-C (not USB-C to USB-C). Insert the nano-SIM before power-on, and attach the LTE antenna. On a GPS version, attach the active GNSS antenna to the GNSS connector.
 
 ## Arduino IDE configuration
 
@@ -87,7 +118,7 @@ Set via parent–student link accept flow or admin device edit in the Flutter ap
 
 ## Deployment
 
-1. Insert SIM, attach antenna, wire INMP441, power board.
+1. Remove any microSD card. Insert the SIM, attach the antenna, wire the INMP441 and the button, then power the board.
 2. Install Edge Impulse library + TinyGSM.
 3. Set `DEVICE_ID` / phones / confirm API key.
 4. Flash sketch; open Serial Monitor at **115200**.
@@ -95,12 +126,18 @@ Set via parent–student link accept flow or admin device edit in the Flutter ap
 
 ## Testing procedures
 
+### Button
+
+1. After `System Ready`, the log prints `[BUTTON] GPIO14 is HIGH (open)`.
+2. Press the switch between IO14 and GND once. Serial prints `[BUTTON] Pressed once` and sends one location SMS.
+3. Holding the switch does not send another alert. Release it, then press again for a new alert.
+
 ### Keyword detection
 
-1. Quiet room; wait past 5 s boot grace.
-2. Say **“Help”** clearly once → Serial: `[EDGE IMPULSE CONFIRMED] ... HELP`.
-3. Say **“Tabang”** → confirmed TABANG.
-4. Casual speech should show `[FILTERED]` or no trigger.
+1. The microphone keeps listening in the background.
+2. Any sound above the noise floor prints `[INMP441] Voice activity detected (Peak: …, Avg: …)`. Silence prints nothing.
+3. Say **“Help”** or **“Tabang”** clearly once. Serial prints `VOICE DETECTED: HELP` or `VOICE DETECTED: TABANG`, then sends the location SMS.
+4. Other speech prints the activity line only. It does not send an alert.
 
 ### SMS transmission
 

@@ -14,6 +14,7 @@ import 'add_device_page.dart';
 import '../auth/auth_service.dart';
 import '../login_dashboard/login_page.dart';
 import '../utils/google_maps_web_guard.dart';
+import '../services/guardian_service.dart';
 import '../services/notification_service.dart';
 import '../services/print_service.dart';
 import '../services/system_admin_service.dart';
@@ -38,6 +39,7 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
   GoogleMapController? _adminMapController;
   LatLng? _lastFocusedAdminPoint;
   BitmapDescriptor? _sosMarkerIcon;
+  BitmapDescriptor? _respondedMarkerIcon;
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _devicesStreamSub;
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _usersStreamSub;
   final Map<String, Map<String, dynamic>> _devicesById =
@@ -111,7 +113,10 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
         }, onError: (_) {});
   }
 
-  Future<Uint8List> _buildSosMarkerBytes({int size = 96}) async {
+  Future<Uint8List> _buildSosMarkerBytes({
+    int size = 96,
+    Color color = const Color(0xFFE5192B),
+  }) async {
     final markerSize = size.toDouble();
     final recorder = ui.PictureRecorder();
     final canvas = Canvas(
@@ -121,7 +126,7 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
 
     final center = Offset(markerSize / 2, markerSize * 0.36);
     final topRadius = markerSize * 0.28;
-    const bodyColor = Color(0xFFE5192B);
+    final bodyColor = color;
     final shadowPaint = Paint()
       ..color = Colors.black.withOpacity(0.22)
       ..style = PaintingStyle.fill;
@@ -166,12 +171,34 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
 
   Future<void> _prepareMapMarkers() async {
     try {
-      final bytes = await _buildSosMarkerBytes();
-      if (bytes.isEmpty) return;
-      final icon = BitmapDescriptor.bytes(bytes, width: 38, height: 38);
+      final red = await _buildSosMarkerBytes(color: const Color(0xFFE5192B));
+      final dark = await _buildSosMarkerBytes(color: const Color(0xFF111827));
       if (!mounted) return;
-      setState(() => _sosMarkerIcon = icon);
+      setState(() {
+        if (red.isNotEmpty) {
+          _sosMarkerIcon = BitmapDescriptor.bytes(red, width: 38, height: 38);
+        }
+        if (dark.isNotEmpty) {
+          _respondedMarkerIcon =
+              BitmapDescriptor.bytes(dark, width: 38, height: 38);
+        }
+      });
     } catch (_) {}
+  }
+
+  BitmapDescriptor _markerIconForStatus(String status) {
+    if (status == 'responded') {
+      return _respondedMarkerIcon ??
+          BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueAzure);
+    }
+    if (status == 'acknowledged') {
+      return BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueOrange);
+    }
+    if (status == 'not_resolved') {
+      return BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueViolet);
+    }
+    return _sosMarkerIcon ??
+        BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueRed);
   }
 
   bool _isSamePoint(LatLng a, LatLng b) {
@@ -224,7 +251,9 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
       _showMessage("Student reported this alert as a false alarm (miss-clicked device).");
       return;
     }
-    if (status == 'acknowledged') {
+    if (status == 'responded' ||
+        status == 'acknowledged' ||
+        status == 'not_resolved') {
       try {
         await FirebaseFirestore.instance
             .collection('emergency_alerts')
@@ -242,7 +271,7 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
           'lng': FieldValue.delete(),
           'lon': FieldValue.delete(),
         }, SetOptions(merge: true));
-        _showMessage("The issue is already been fixed. Location removed.");
+        _showMessage('Done. Location marker removed from the map.');
       } catch (e) {
         _showMessage('Failed to resolve alert: $e', isError: true);
       }
@@ -254,22 +283,53 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
           .collection('emergency_alerts')
           .doc(alertId)
           .set({
-        'status': 'acknowledged',
-        'ackAt': FieldValue.serverTimestamp(),
-        'ackBy': FirebaseAuth.instance.currentUser?.uid ?? 'admin',
-        'locationCleared': true,
-        'location': 'Location removed',
-        'coordinates': FieldValue.delete(),
-        'latitude': FieldValue.delete(),
-        'longitude': FieldValue.delete(),
-        'lat': FieldValue.delete(),
-        'lng': FieldValue.delete(),
-        'lon': FieldValue.delete(),
+        'status': 'responded',
+        'respondedAt': FieldValue.serverTimestamp(),
+        'respondedBy': FirebaseAuth.instance.currentUser?.uid ?? 'admin',
+        'locationCleared': false,
       }, SetOptions(merge: true));
-      _showMessage('Alert acknowledged. SOS location removed from map.');
+      _showMessage('Issue responded. Marker is now dark.');
     } catch (e) {
-      _showMessage('Failed to acknowledge alert: $e', isError: true);
+      _showMessage('Failed to respond to alert: $e', isError: true);
     }
+  }
+
+  Widget _buildAdminMapActionChip({
+    required String label,
+    required Color color,
+    required VoidCallback onTap,
+  }) {
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(999),
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 6),
+          decoration: BoxDecoration(
+            color: color,
+            borderRadius: BorderRadius.circular(999),
+            border: Border.all(color: Colors.white.withOpacity(0.6)),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(0.35),
+                blurRadius: 8,
+                offset: const Offset(0, 2),
+              ),
+            ],
+          ),
+          child: Text(
+            label,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 10,
+              letterSpacing: 1.2,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ),
+      ),
+    );
   }
 
   double? _toDouble(dynamic value) {
@@ -365,14 +425,6 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
     return candidates.first;
   }
 
-  int _extractTimestampMs(Map<String, dynamic> data, List<String> keys) {
-    for (final k in keys) {
-      final v = data[k];
-      if (v is Timestamp) return v.millisecondsSinceEpoch;
-    }
-    return 0;
-  }
-
   LatLng? _extractAlertCoordinates(
     Map<String, dynamic> data, {
     String? alertId,
@@ -382,8 +434,7 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
         data['falseAlarm'] == true ||
         status == 'false_alarm' ||
         status == 'cancelled_false_trigger' ||
-        status == 'resolved' ||
-        status == 'acknowledged') {
+        status == 'resolved') {
       return null;
     }
 
@@ -425,44 +476,15 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
         ? _extractDirectCoordinatesFromMap(studentData)
         : null;
 
-    final alertMs = _extractTimestampMs(data, const [
-      'timestamp',
-      'clientTimestamp',
-    ]);
-    final deviceMs = deviceData != null
-        ? _extractTimestampMs(deviceData, const [
-            'updatedAt',
-            'lastSeen',
-            'createdAt',
-          ])
-        : 0;
-    final studentMs = studentData != null
-        ? _extractTimestampMs(studentData, const [
-            'lastLocationUpdate',
-            'updatedAt',
-          ])
-        : 0;
-
     LatLng? bestFallback;
-    int bestFallbackMs = 0;
     final deviceValid = devicePoint != null && !_isDefaultManila(devicePoint);
     final studentValid =
         studentPoint != null && !_isDefaultManila(studentPoint);
 
-    if (deviceValid && studentValid) {
-      if (studentMs > deviceMs && studentMs > 0) {
-        bestFallback = studentPoint;
-        bestFallbackMs = studentMs;
-      } else {
-        bestFallback = devicePoint;
-        bestFallbackMs = deviceMs;
-      }
-    } else if (deviceValid) {
+    if (deviceValid) {
       bestFallback = devicePoint;
-      bestFallbackMs = deviceMs;
     } else if (studentValid) {
       bestFallback = studentPoint;
-      bestFallbackMs = studentMs;
     } else {
       bestFallback = devicePoint ?? studentPoint;
     }
@@ -477,17 +499,13 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
       }
     }
 
-    LatLng? resolved;
-    if (directAlertPoint == null || _isDefaultManila(directAlertPoint)) {
-      resolved = bestFallback ?? directAlertPoint;
-    } else if (bestFallback != null &&
-        !_isDefaultManila(bestFallback) &&
-        bestFallbackMs > alertMs &&
-        alertMs > 0) {
-      resolved = bestFallback;
-    } else {
-      resolved = directAlertPoint;
-    }
+    // Live device coordinates move the existing pin. The alert document
+    // keeps the status and is only used when the tracker has no fix yet.
+    final LatLng? resolved = deviceValid
+        ? devicePoint
+        : ((directAlertPoint != null && !_isDefaultManila(directAlertPoint))
+            ? directAlertPoint
+            : (bestFallback ?? directAlertPoint));
 
     if (alertId != null &&
         alertId.isNotEmpty &&
@@ -1703,6 +1721,7 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
                               updateData['studentName'] = FieldValue.delete();
                               updateData['parentPhoneNumber'] = FieldValue.delete();
                               updateData['parentUid'] = FieldValue.delete();
+                              updateData['guardianPhonesCsv'] = '';
                             }
 
                             // 1. Update the device doc
@@ -1710,6 +1729,9 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
                                 .collection('devices')
                                 .doc(docId)
                                 .update(updateData);
+                            if (newStudentUid.isNotEmpty) {
+                              await GuardianService().syncRecipients(newStudentUid);
+                            }
 
                             // 2. Synchronize the student's linkedDeviceId
                             if (oldStudentUid != newStudentUid) {
@@ -1893,7 +1915,11 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
           final isEmergency =
               type == 'sos' || type == 'voice_help' || type == 'emergency';
           final isActiveEmergency =
-              (status == 'active' || status == 'verifying_speech') &&
+              (status == 'active' ||
+                  status == 'verifying_speech' ||
+                  status == 'responded' ||
+                  status == 'acknowledged' ||
+                  status == 'not_resolved') &&
               data['locationCleared'] != true;
           return isEmergency && isActiveEmergency;
         }).toList()..sort((a, b) {
@@ -1917,9 +1943,23 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
         <String, QueryDocumentSnapshot<Map<String, dynamic>>>{};
     for (final doc in sosDocs) {
       final data = doc.data();
-      final senderUid = (data['uid'] ?? data['studentUid'] ?? '').toString();
-      final key = senderUid.trim().isEmpty ? doc.id : senderUid.trim();
-      latestBySender.putIfAbsent(key, () => doc);
+      final deviceId = (data['deviceId'] ?? '').toString().trim();
+      final senderUid = (data['uid'] ?? data['studentUid'] ?? '').toString().trim();
+      final key = deviceId.isNotEmpty
+          ? deviceId
+          : (senderUid.isNotEmpty ? senderUid : doc.id);
+      final current = latestBySender[key];
+      if (current == null) {
+        latestBySender[key] = doc;
+        continue;
+      }
+      final currentTs = current.data()['timestamp'];
+      final nextTs = data['timestamp'];
+      final currentMs = currentTs is Timestamp ? currentTs.millisecondsSinceEpoch : 0;
+      final nextMs = nextTs is Timestamp ? nextTs.millisecondsSinceEpoch : 0;
+      if (nextMs >= currentMs) {
+        latestBySender[key] = doc;
+      }
     }
 
     final markers = <Marker>{};
@@ -1931,17 +1971,36 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
       if (point == null) continue;
       firstPoint ??= point;
       final sender = _resolveAlertSenderName(data);
+      final alertStatus = (data['status'] ?? '').toString().toLowerCase();
       final isActive =
-          (data['status'] ?? '').toString().toLowerCase() == 'active' ||
-          (data['status'] ?? '').toString().toLowerCase() == 'verifying_speech';
+          alertStatus == 'active' || alertStatus == 'verifying_speech';
       final pointLabel = _formatCoordinateValue(point);
+      final statusTitle = alertStatus == 'responded'
+          ? 'Responded'
+          : alertStatus == 'acknowledged'
+          ? 'Acknowledged'
+          : alertStatus == 'not_resolved'
+          ? 'Not resolved'
+          : 'SOS';
+      final circleFill = alertStatus == 'responded'
+          ? const Color(0x55111827)
+          : alertStatus == 'acknowledged'
+          ? const Color(0x55F97316)
+          : alertStatus == 'not_resolved'
+          ? const Color(0x557C3AED)
+          : const Color(0x55CB392B);
+      final circleStroke = alertStatus == 'responded'
+          ? const Color(0xFF111827)
+          : alertStatus == 'acknowledged'
+          ? const Color(0xFFEA580C)
+          : alertStatus == 'not_resolved'
+          ? const Color(0xFF6D28D9)
+          : const Color(0xFFCB392B);
       markers.add(
         Marker(
           markerId: MarkerId('admin-sos-${entry.key}'),
           position: point,
-          anchor: _sosMarkerIcon != null
-              ? const Offset(0.5, 0.96)
-              : const Offset(0.5, 1.0),
+          anchor: const Offset(0.5, 0.98),
           draggable: true,
           onDragEnd: (newPoint) async {
             final geo = GeoPoint(newPoint.latitude, newPoint.longitude);
@@ -1985,15 +2044,12 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
                     'updatedAt': FieldValue.serverTimestamp(),
                   }, SetOptions(merge: true));
             }
-            _focusAdminMapOnPoint(newPoint, zoom: 16, force: true);
+            _focusAdminMapOnPoint(newPoint, zoom: 18, force: true);
           },
-          icon: _sosMarkerIcon ??
-              BitmapDescriptor.defaultMarkerWithHue(
-                isActive ? BitmapDescriptor.hueRed : BitmapDescriptor.hueOrange,
-              ),
+          icon: _markerIconForStatus(alertStatus),
           infoWindow: InfoWindow(
-            title: '$sender - SOS ($pointLabel)',
-            snippet: 'Tap to Acknowledge & Remove Location',
+            title: '$sender - $statusTitle ($pointLabel)',
+            snippet: pointLabel,
             onTap: () => _handleAlertAction(entry.value.id, data['status'] ?? 'active'),
           ),
         ),
@@ -2003,12 +2059,8 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
           circleId: CircleId('admin-sos-circle-${entry.key}'),
           center: point,
           radius: isActive ? 90 : 60,
-          fillColor: isActive
-              ? const Color(0x55CB392B)
-              : const Color(0x35CB6D2B),
-          strokeColor: isActive
-              ? const Color(0xFFCB392B)
-              : const Color(0xFFCB6D2B),
+          fillColor: circleFill,
+          strokeColor: circleStroke,
           strokeWidth: 2,
         ),
       );
@@ -2035,7 +2087,7 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
             markerId: MarkerId('admin-dev-$dedupKey'),
             position: point,
             anchor: _sosMarkerIcon != null
-                ? const Offset(0.5, 0.96)
+                ? const Offset(0.5, 0.98)
                 : const Offset(0.5, 1.0),
             draggable: true,
             onDragEnd: (newPoint) async {
@@ -2067,7 +2119,7 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
                       'lastLocationUpdate': FieldValue.serverTimestamp(),
                     }, SetOptions(merge: true));
               }
-              _focusAdminMapOnPoint(newPoint, zoom: 16, force: true);
+              _focusAdminMapOnPoint(newPoint, zoom: 18, force: true);
             },
             icon: _sosMarkerIcon ??
                 BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueRed),
@@ -2106,7 +2158,7 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
     if (hasPoint) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
-        _focusAdminMapOnPoint(center, zoom: 16);
+        _focusAdminMapOnPoint(center, zoom: 18);
       });
     }
     final footerTitle = sosDocs.isNotEmpty && hasPoint
@@ -2117,6 +2169,37 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
     final footerLocation = hasPoint
         ? _formatCoordinateValue(latestPoint ?? firstPoint)
         : 'Waiting for SOS coordinates';
+    QueryDocumentSnapshot<Map<String, dynamic>>? actionDoc;
+    var actionMs = -1;
+    for (final doc in sosDocs) {
+      final ts = doc.data()['timestamp'];
+      final ms = ts is Timestamp ? ts.millisecondsSinceEpoch : 0;
+      if (actionDoc == null || ms >= actionMs) {
+        actionDoc = doc;
+        actionMs = ms;
+      }
+    }
+    final actionStatus =
+        (actionDoc?.data()['status'] ?? '').toString().toLowerCase();
+    final actionAlertId = actionDoc?.id ?? '';
+    final mapTagColor = actionStatus == 'responded'
+        ? const Color(0xFF111827)
+        : actionStatus == 'acknowledged'
+        ? const Color(0xFFEA580C)
+        : actionStatus == 'not_resolved'
+        ? const Color(0xFF6D28D9)
+        : const Color(0xFF7E1F14);
+    final mapTagLabel = markerCount == 0
+        ? 'NO SOS MARKERS'
+        : actionStatus == 'responded'
+        ? 'RESPONDED'
+        : actionStatus == 'acknowledged'
+        ? 'ACKNOWLEDGED'
+        : actionStatus == 'not_resolved'
+        ? 'NOT RESOLVED'
+        : markerCount > 1
+        ? '$markerCount SOS MARKERS'
+        : 'ACTIVE ALERT';
 
     return Container(
       height: 240,
@@ -2134,7 +2217,7 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
                       key: const ValueKey('admin-sos-map-main'),
                       initialCameraPosition: CameraPosition(
                         target: center,
-                        zoom: hasPoint ? 16 : 12,
+                        zoom: hasPoint ? 18 : 12,
                       ),
                       mapType: MapType.normal,
                       gestureRecognizers: _mapGestureRecognizers,
@@ -2154,7 +2237,7 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
                         if (hasPoint) {
                           _focusAdminMapOnPoint(
                             center,
-                            zoom: 16,
+                            zoom: 18,
                             force: true,
                           );
                         }
@@ -2168,11 +2251,11 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
             child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
               decoration: BoxDecoration(
-                color: const Color(0xFF7E1F14),
+                color: mapTagColor,
                 border: Border.all(color: AppColors.gold.withOpacity(0.3)),
               ),
               child: Text(
-                markerCount > 0 ? '$markerCount SOS MARKERS' : 'NO SOS MARKERS',
+                mapTagLabel,
                 style: const TextStyle(
                   color: AppColors.gold,
                   fontSize: 9,
@@ -2182,61 +2265,23 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
               ),
             ),
           ),
-          if (markerCount > 0 && sosDocs.isNotEmpty)
+          if (markerCount > 0 && actionAlertId.isNotEmpty)
             Positioned(
               top: 14,
               right: 14,
-              child: Material(
-                color: Colors.transparent,
-                child: InkWell(
-                  borderRadius: BorderRadius.circular(999),
-                  onTap: () {
-                    final firstDoc = sosDocs.first;
-                    final status = (firstDoc.data()['status'] ?? '').toString();
-                    _handleAlertAction(firstDoc.id, status);
-                  },
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 13,
-                      vertical: 6,
-                    ),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFFCB392B),
-                      borderRadius: BorderRadius.circular(999),
-                      border: Border.all(
-                        color: Colors.white.withOpacity(0.6),
-                        width: 1,
-                      ),
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.black.withOpacity(0.35),
-                          blurRadius: 8,
-                          offset: const Offset(0, 2),
-                        ),
-                      ],
-                    ),
-                    child: const Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(
-                          Icons.check_circle_outline,
-                          color: Colors.white,
-                          size: 14,
-                        ),
-                        SizedBox(width: 5),
-                        Text(
-                          'ACKNOWLEDGE',
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontSize: 10,
-                            letterSpacing: 1.2,
-                            fontWeight: FontWeight.w700,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
+              child: _buildAdminMapActionChip(
+                label: (actionStatus == 'active' ||
+                        actionStatus == 'verifying_speech')
+                    ? 'RESPOND'
+                    : 'DONE',
+                color: actionStatus == 'responded'
+                    ? const Color(0xFF111827)
+                    : actionStatus == 'acknowledged'
+                    ? const Color(0xFFEA580C)
+                    : actionStatus == 'not_resolved'
+                    ? const Color(0xFF6D28D9)
+                    : const Color(0xFFCB392B),
+                onTap: () => _handleAlertAction(actionAlertId, actionStatus),
               ),
             ),
           Positioned(
@@ -2475,7 +2520,8 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
                                 ),
                                 const SizedBox(height: 4),
                                 _AdminInfoRow('Time', timestamp),
-                                if (isActive) ...[
+                                if (isActive ||
+                                    status.toLowerCase() == 'verifying_speech') ...[
                                   const SizedBox(height: 10),
                                   Align(
                                     alignment: Alignment.centerRight,
@@ -2485,16 +2531,16 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
                                         data['status']?.toString() ?? 'active',
                                       ),
                                       icon: const Icon(
-                                        Icons.check_circle_outline,
+                                        Icons.reply_outlined,
                                         size: 14,
-                                        color: AppColors.green,
+                                        color: Color(0xFF111827),
                                       ),
                                       label: const Text(
-                                        'ACKNOWLEDGE',
+                                        'RESPOND',
                                         style: TextStyle(
                                           fontSize: 10,
                                           fontWeight: FontWeight.bold,
-                                          color: AppColors.green,
+                                          color: Color(0xFF111827),
                                           letterSpacing: 1,
                                         ),
                                       ),
@@ -2503,7 +2549,8 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
                                           horizontal: 12,
                                           vertical: 6,
                                         ),
-                                        backgroundColor: AppColors.green.withOpacity(0.08),
+                                        backgroundColor:
+                                            const Color(0xFF111827).withOpacity(0.08),
                                         shape: RoundedRectangleBorder(
                                           borderRadius: BorderRadius.circular(6),
                                         ),
@@ -2511,14 +2558,16 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
                                     ),
                                   ),
                                 ],
-                                if (status.toLowerCase() == 'acknowledged') ...[
+                                if (status.toLowerCase() == 'responded' ||
+                                    status.toLowerCase() == 'acknowledged' ||
+                                    status.toLowerCase() == 'not_resolved') ...[
                                   const SizedBox(height: 10),
                                   Align(
                                     alignment: Alignment.centerRight,
                                     child: TextButton.icon(
                                       onPressed: () => _handleAlertAction(
                                         docs[index].id,
-                                        data['status']?.toString() ?? 'acknowledged',
+                                        data['status']?.toString() ?? 'responded',
                                       ),
                                       icon: const Icon(
                                         Icons.check_circle_outline,
@@ -2539,7 +2588,8 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
                                           horizontal: 12,
                                           vertical: 6,
                                         ),
-                                        backgroundColor: const Color(0xFFCB392B).withOpacity(0.08),
+                                        backgroundColor:
+                                            const Color(0xFFCB392B).withOpacity(0.08),
                                         shape: RoundedRectangleBorder(
                                           borderRadius: BorderRadius.circular(6),
                                         ),

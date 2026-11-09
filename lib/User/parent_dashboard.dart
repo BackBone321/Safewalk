@@ -12,6 +12,7 @@ import 'package:google_maps_flutter/google_maps_flutter.dart';
 import '../auth/auth_service.dart';
 import '../login_dashboard/login_page.dart';
 import '../utils/google_maps_web_guard.dart';
+import 'guardian_contacts_panel.dart';
 
 class ParentDashboardPage extends StatefulWidget {
   const ParentDashboardPage({super.key});
@@ -62,6 +63,9 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
   String _deviceStatus = 'offline';
   LatLng? _childDeviceCoordinates;
   BitmapDescriptor? _sosMarkerIcon;
+  BitmapDescriptor? _ackMarkerIcon;
+  BitmapDescriptor? _unresolvedMarkerIcon;
+  BitmapDescriptor? _respondedMarkerIcon;
   GoogleMapController? _parentMapController;
   LatLng? _lastFocusedParentMapPoint;
   StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>?
@@ -183,8 +187,7 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
         data['falseAlarm'] == true ||
         (data['status'] ?? '').toString().toLowerCase() == 'false_alarm' ||
         (data['status'] ?? '').toString().toLowerCase() == 'cancelled_false_trigger' ||
-        (data['status'] ?? '').toString().toLowerCase() == 'resolved' ||
-        (data['status'] ?? '').toString().toLowerCase() == 'acknowledged') {
+        (data['status'] ?? '').toString().toLowerCase() == 'resolved') {
       return null;
     }
 
@@ -227,28 +230,6 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
       }
     }
 
-    final alertMs = _extractUpdateEpochMs(data, const [
-      'timestamp',
-      'clientTimestamp',
-    ]);
-    final childMs = _extractUpdateEpochMs(_latestChildDocData, const [
-      'lastLocationUpdate',
-      'updatedAt',
-    ]);
-    final devMs = _extractUpdateEpochMs(_latestDeviceDocData, const [
-      'updatedAt',
-      'lastSeen',
-      'createdAt',
-    ]);
-    final latestLiveMs = childMs > devMs ? childMs : devMs;
-
-    if (_childDeviceCoordinates != null &&
-        !_isDefaultManila(_childDeviceCoordinates) &&
-        (rawAlertPoint == null ||
-            (latestLiveMs > alertMs && alertMs > 0))) {
-      return _childDeviceCoordinates;
-    }
-
     if (rawAlertPoint != null) return rawAlertPoint;
     if (_childDeviceCoordinates != null &&
         !_isDefaultManila(_childDeviceCoordinates)) {
@@ -257,7 +238,10 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
     return candidates.isNotEmpty ? candidates.first : _childDeviceCoordinates;
   }
 
-  Future<Uint8List> _buildSosMarkerBytes({int size = 96}) async {
+  Future<Uint8List> _buildSosMarkerBytes({
+    int size = 96,
+    Color color = const Color(0xFFE5192B),
+  }) async {
     final markerSize = size.toDouble();
     final recorder = ui.PictureRecorder();
     final canvas = Canvas(
@@ -267,7 +251,7 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
 
     final center = Offset(markerSize / 2, markerSize * 0.36);
     final topRadius = markerSize * 0.28;
-    const bodyColor = Color(0xFFE5192B);
+    final bodyColor = color;
     final shadowPaint = Paint()
       ..color = Colors.black.withValues(alpha: 0.22)
       ..style = PaintingStyle.fill;
@@ -312,12 +296,86 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
 
   Future<void> _prepareMapMarkers() async {
     try {
-      final bytes = await _buildSosMarkerBytes();
-      if (bytes.isEmpty) return;
-      final icon = BitmapDescriptor.bytes(bytes, width: 38, height: 38);
+      final red = await _buildSosMarkerBytes(color: const Color(0xFFE5192B));
+      final orange = await _buildSosMarkerBytes(color: const Color(0xFFF97316));
+      final violet = await _buildSosMarkerBytes(color: const Color(0xFF7C3AED));
+      final dark = await _buildSosMarkerBytes(color: const Color(0xFF111827));
       if (!mounted) return;
-      setState(() => _sosMarkerIcon = icon);
+      setState(() {
+        if (red.isNotEmpty) {
+          _sosMarkerIcon = BitmapDescriptor.bytes(red, width: 38, height: 38);
+        }
+        if (orange.isNotEmpty) {
+          _ackMarkerIcon = BitmapDescriptor.bytes(orange, width: 38, height: 38);
+        }
+        if (violet.isNotEmpty) {
+          _unresolvedMarkerIcon = BitmapDescriptor.bytes(
+            violet,
+            width: 38,
+            height: 38,
+          );
+        }
+        if (dark.isNotEmpty) {
+          _respondedMarkerIcon = BitmapDescriptor.bytes(
+            dark,
+            width: 38,
+            height: 38,
+          );
+        }
+      });
     } catch (_) {}
+  }
+
+  bool _isOpenSosStatus(String status) {
+    return status == 'active' ||
+        status == 'verifying_speech' ||
+        status == 'responded' ||
+        status == 'acknowledged' ||
+        status == 'not_resolved';
+  }
+
+  String _stableStudentKey(Map<String, dynamic> data) {
+    final deviceId = (data['deviceId'] ?? '').toString().trim();
+    if (deviceId.isNotEmpty && deviceId != 'Not linked') return deviceId;
+    final uid = (data['studentUid'] ?? data['uid'] ?? '').toString().trim();
+    return uid;
+  }
+
+  int _alertTimeMs(Map<String, dynamic> data) {
+    final ts = data['timestamp'];
+    if (ts is Timestamp) return ts.millisecondsSinceEpoch;
+    final client = data['clientTimestamp'];
+    if (client is Timestamp) return client.millisecondsSinceEpoch;
+    return 0;
+  }
+
+  bool _alertIsSelectedChild(Map<String, dynamic> data) {
+    final uid = (data['studentUid'] ?? data['uid'] ?? '').toString().trim();
+    final deviceId = (data['deviceId'] ?? '').toString().trim();
+    if (_childUid.isNotEmpty && uid == _childUid) return true;
+    if (_deviceId.isNotEmpty &&
+        _deviceId != 'Not linked' &&
+        deviceId == _deviceId) {
+      return true;
+    }
+    return false;
+  }
+
+  BitmapDescriptor _markerIconForStatus(String status) {
+    if (status == 'responded') {
+      return _respondedMarkerIcon ??
+          BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueAzure);
+    }
+    if (status == 'acknowledged') {
+      return _ackMarkerIcon ??
+          BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueOrange);
+    }
+    if (status == 'not_resolved') {
+      return _unresolvedMarkerIcon ??
+          BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueViolet);
+    }
+    return _sosMarkerIcon ??
+        BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueRed);
   }
 
   LatLng get _childMapCenter => _childDeviceCoordinates ?? _defaultMapCenter;
@@ -438,40 +496,43 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
     );
   }
 
-  Future<void> _handleAlertAction(String alertId, String currentStatus) async {
-    final status = currentStatus.toLowerCase().trim();
-    if (status == 'resolved') {
-      _showActionSnack("The issue is already been fixed.");
-      return;
-    }
+  Future<void> _acknowledgeAlert(String alertId) async {
     final uid = FirebaseAuth.instance.currentUser?.uid ?? '';
-    if (status == 'acknowledged') {
-      try {
-        await _firestore.collection('emergency_alerts').doc(alertId).set({
-          'status': 'resolved',
-          'resolvedBy': uid,
-          'resolvedAt': FieldValue.serverTimestamp(),
-          'locationCleared': true,
-          'location': 'Location removed',
-          'coordinates': FieldValue.delete(),
-          'latitude': FieldValue.delete(),
-          'longitude': FieldValue.delete(),
-          'lat': FieldValue.delete(),
-          'lng': FieldValue.delete(),
-          'lon': FieldValue.delete(),
-        }, SetOptions(merge: true));
-        _showActionSnack("The issue is already been fixed. Location removed.");
-      } catch (e) {
-        _showActionSnack('Failed to resolve alert: $e', isError: true);
-      }
-      return;
-    }
-
     try {
       await _firestore.collection('emergency_alerts').doc(alertId).set({
         'status': 'acknowledged',
         'ackBy': uid,
         'ackAt': FieldValue.serverTimestamp(),
+        'locationCleared': false,
+      }, SetOptions(merge: true));
+      _showActionSnack('Alert acknowledged. Marker is now orange.');
+    } catch (e) {
+      _showActionSnack('Failed to acknowledge alert: $e', isError: true);
+    }
+  }
+
+  Future<void> _markAlertNotResolved(String alertId) async {
+    final uid = FirebaseAuth.instance.currentUser?.uid ?? '';
+    try {
+      await _firestore.collection('emergency_alerts').doc(alertId).set({
+        'status': 'not_resolved',
+        'notResolvedBy': uid,
+        'notResolvedAt': FieldValue.serverTimestamp(),
+        'locationCleared': false,
+      }, SetOptions(merge: true));
+      _showActionSnack('Student not found yet. Marker is now violet.');
+    } catch (e) {
+      _showActionSnack('Failed to update alert: $e', isError: true);
+    }
+  }
+
+  Future<void> _resolveAlertDone(String alertId) async {
+    final uid = FirebaseAuth.instance.currentUser?.uid ?? '';
+    try {
+      await _firestore.collection('emergency_alerts').doc(alertId).set({
+        'status': 'resolved',
+        'resolvedBy': uid,
+        'resolvedAt': FieldValue.serverTimestamp(),
         'locationCleared': true,
         'location': 'Location removed',
         'coordinates': FieldValue.delete(),
@@ -481,10 +542,81 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
         'lng': FieldValue.delete(),
         'lon': FieldValue.delete(),
       }, SetOptions(merge: true));
-      _showActionSnack('Alert acknowledged. SOS location removed from map.');
+      _showActionSnack('Done. Location marker removed from the map.');
     } catch (e) {
-      _showActionSnack('Failed to acknowledge alert: $e', isError: true);
+      _showActionSnack('Failed to resolve alert: $e', isError: true);
     }
+  }
+
+  Widget _buildAlertStatusActions(String alertId, String status) {
+    final normalized = status.toLowerCase().trim();
+    final isActive =
+        normalized == 'active' || normalized == 'verifying_speech';
+    if (isActive) {
+      return _buildFullWidthStatusButton(
+        label: 'ACKNOWLEDGE',
+        color: AppColors.green,
+        onTap: () => _acknowledgeAlert(alertId),
+      );
+    }
+    if (normalized == 'acknowledged' ||
+        normalized == 'not_resolved' ||
+        normalized == 'responded') {
+      return Column(
+        children: [
+          _buildFullWidthStatusButton(
+            label: 'DONE',
+            color: const Color(0xFFCB392B),
+            onTap: () => _resolveAlertDone(alertId),
+          ),
+          if (normalized == 'acknowledged') ...[
+            const SizedBox(height: 8),
+            _buildFullWidthStatusButton(
+              label: 'NOT RESOLVED',
+              color: const Color(0xFF6D28D9),
+              onTap: () => _markAlertNotResolved(alertId),
+            ),
+          ],
+        ],
+      );
+    }
+    return const SizedBox.shrink();
+  }
+
+  Widget _buildFullWidthStatusButton({
+    required String label,
+    required Color color,
+    required VoidCallback onTap,
+  }) {
+    return SizedBox(
+      width: double.infinity,
+      child: Material(
+        color: color,
+        borderRadius: BorderRadius.circular(8),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(8),
+          onTap: onTap,
+          child: Container(
+            padding: const EdgeInsets.symmetric(vertical: 10),
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: AppColors.gold.withValues(alpha: 0.4)),
+            ),
+            child: Text(
+              label,
+              style: const TextStyle(
+                fontFamily: _bf,
+                color: Colors.white,
+                letterSpacing: 3,
+                fontSize: 10,
+                fontWeight: FontWeight.w400,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
   }
 
   Widget _buildWebMapFallback({required String contextLabel}) {
@@ -561,10 +693,49 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
             (settingsDoc.data()?['emailAlertsEnabled'] as bool?) ?? true;
       });
 
-      final linkedStudents = await _fetchLinkedStudents(
+      var linkedStudents = await _fetchLinkedStudents(
         parentUid: currentUser.uid,
         normalizedParentPhone: normalizedParentPhone,
       );
+      if (linkedStudents.isEmpty) {
+        final configuredUid = (settingsDoc.data()?['childUid'] ?? '')
+            .toString()
+            .trim();
+        final device = await _findChildDevice(
+          childUid: configuredUid,
+          childDeviceId: '',
+          rawPhone: '',
+        );
+        if (device != null) {
+          final data = device.data;
+          final studentUid = (data['studentUid'] ?? configuredUid)
+              .toString()
+              .trim();
+          final deviceId = (data['deviceId'] ?? device.id).toString();
+          var studentName = (data['studentName'] ?? 'Student').toString();
+          var studentPhone = '';
+          if (studentUid.isNotEmpty) {
+            final studentDoc = await _firestore
+                .collection('users')
+                .doc(studentUid)
+                .get();
+            if (studentDoc.exists) {
+              studentName = (studentDoc.data()?['fullName'] ?? studentName)
+                  .toString();
+              studentPhone = (studentDoc.data()?['phoneNumber'] ?? '')
+                  .toString();
+            }
+          }
+          linkedStudents = [
+            _LinkedStudent(
+              uid: studentUid.isNotEmpty ? studentUid : device.id,
+              name: studentName.trim().isEmpty ? 'Student' : studentName,
+              phone: studentPhone,
+              deviceId: deviceId,
+            ),
+          ];
+        }
+      }
       if (!mounted) return;
       setState(() => _linkedStudents = linkedStudents);
 
@@ -768,14 +939,6 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
     }
   }
 
-  int _extractUpdateEpochMs(Map<String, dynamic> data, List<String> keys) {
-    for (final key in keys) {
-      final val = data[key];
-      if (val is Timestamp) return val.millisecondsSinceEpoch;
-    }
-    return 0;
-  }
-
   void _applyResolvedChildAndDeviceState({
     required String childUid,
     required Map<String, dynamic> childData,
@@ -796,28 +959,9 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
     final studentValid =
         studentCoords != null && !_isDefaultManila(studentCoords);
 
-    final deviceMs = deviceData != null
-        ? _extractUpdateEpochMs(deviceData, const [
-            'lastSeen',
-            'updatedAt',
-            'createdAt',
-          ])
-        : 0;
-    final studentMs = _extractUpdateEpochMs(childData, const [
-      'lastLocationUpdate',
-      'updatedAt',
-    ]);
-
     LatLng? bestCoords;
     bool useStudentSource = false;
-    if (deviceValid && studentValid) {
-      if (studentMs > deviceMs && studentMs > 0) {
-        bestCoords = studentCoords;
-        useStudentSource = true;
-      } else {
-        bestCoords = deviceCoords;
-      }
-    } else if (deviceValid) {
+    if (deviceValid) {
       bestCoords = deviceCoords;
     } else if (studentValid) {
       bestCoords = studentCoords;
@@ -873,7 +1017,7 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
     if (_childDeviceCoordinates != null &&
         (prevCoords == null ||
             !_isSamePoint(prevCoords, _childDeviceCoordinates!))) {
-      _focusParentMapOnPoint(_childDeviceCoordinates!, zoom: 16);
+      _focusParentMapOnPoint(_childDeviceCoordinates!, zoom: 18);
     }
   }
 
@@ -908,7 +1052,6 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
               childUid: childUid,
               childDeviceId: updatedDevId,
               rawPhone: rawPhone,
-              directDeviceDocId: updatedDevId,
             );
           }
         }, onError: (e) {
@@ -925,7 +1068,16 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
           .doc(resolvedDocId)
           .snapshots()
           .listen((docSnap) {
-            if (!docSnap.exists || docSnap.data() == null) return;
+            if (!docSnap.exists || docSnap.data() == null) {
+              if (childDeviceId.isNotEmpty && childDeviceId != resolvedDocId) {
+                _listenForDeviceByField(
+                  childUid: childUid,
+                  childDeviceId: childDeviceId,
+                  rawPhone: rawPhone,
+                );
+              }
+              return;
+            }
             _latestDeviceDocData = docSnap.data()!;
             _applyResolvedChildAndDeviceState(
               childUid: childUid,
@@ -935,83 +1087,162 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
             );
           }, onError: (e) {
             debugPrint('Parent child device doc stream error: $e');
+            _listenForDeviceByField(
+              childUid: childUid,
+              childDeviceId: childDeviceId,
+              rawPhone: rawPhone,
+            );
           });
-    } else if (childDeviceId.isNotEmpty || rawPhone.isNotEmpty) {
-      final devQuery = childDeviceId.isNotEmpty
-          ? _firestore
-                .collection('devices')
-                .where('deviceId', isEqualTo: childDeviceId)
-                .limit(1)
-          : _firestore
-                .collection('devices')
-                .where('phoneNumber', isEqualTo: rawPhone)
-                .limit(1);
-
-      _childDeviceStreamSub = devQuery.snapshots().listen((snap) {
-        if (snap.docs.isEmpty) return;
-        _latestDeviceDocData = snap.docs.first.data();
-        _applyResolvedChildAndDeviceState(
-          childUid: childUid,
-          childData: _latestChildDocData,
-          deviceData: _latestDeviceDocData,
-          deviceDocId: snap.docs.first.id,
-        );
-      }, onError: (e) {
-        debugPrint('Parent child device stream error: $e');
-      });
+    } else {
+      _listenForDeviceByField(
+        childUid: childUid,
+        childDeviceId: childDeviceId,
+        rawPhone: rawPhone,
+      );
     }
+  }
+
+  void _listenForDeviceByField({
+    required String childUid,
+    required String childDeviceId,
+    required String rawPhone,
+  }) {
+    _childDeviceStreamSub?.cancel();
+    final Query<Map<String, dynamic>> devQuery;
+    if (childDeviceId.isNotEmpty) {
+      devQuery = _firestore
+          .collection('devices')
+          .where('deviceId', isEqualTo: childDeviceId)
+          .limit(1);
+    } else if (childUid.isNotEmpty) {
+      devQuery = _firestore
+          .collection('devices')
+          .where('studentUid', isEqualTo: childUid)
+          .limit(1);
+    } else if (rawPhone.isNotEmpty) {
+      devQuery = _firestore
+          .collection('devices')
+          .where('phoneNumber', isEqualTo: rawPhone)
+          .limit(1);
+    } else if (_parentUid.isNotEmpty) {
+      devQuery = _firestore
+          .collection('devices')
+          .where('parentUid', isEqualTo: _parentUid)
+          .limit(1);
+    } else {
+      return;
+    }
+
+    _childDeviceStreamSub = devQuery.snapshots().listen((snap) {
+      if (snap.docs.isEmpty) return;
+      _latestDeviceDocData = snap.docs.first.data();
+      _applyResolvedChildAndDeviceState(
+        childUid: childUid,
+        childData: _latestChildDocData,
+        deviceData: _latestDeviceDocData,
+        deviceDocId: snap.docs.first.id,
+      );
+    }, onError: (e) {
+      debugPrint('Parent child device stream error: $e');
+    });
+  }
+
+  Future<({String id, Map<String, dynamic> data})?> _findChildDevice({
+    required String childUid,
+    required String childDeviceId,
+    required String rawPhone,
+  }) async {
+    Future<({String id, Map<String, dynamic> data})?> firstOf(
+      Query<Map<String, dynamic>> query,
+    ) async {
+      final snap = await query.limit(1).get();
+      if (snap.docs.isEmpty) return null;
+      return (id: snap.docs.first.id, data: snap.docs.first.data());
+    }
+
+    if (childDeviceId.isNotEmpty) {
+      final byField = await firstOf(
+        _firestore
+            .collection('devices')
+            .where('deviceId', isEqualTo: childDeviceId),
+      );
+      if (byField != null) return byField;
+      final direct = await _firestore
+          .collection('devices')
+          .doc(childDeviceId)
+          .get();
+      if (direct.exists && direct.data() != null) {
+        return (id: direct.id, data: direct.data()!);
+      }
+    }
+
+    if (childUid.isNotEmpty) {
+      final byStudent = await firstOf(
+        _firestore
+            .collection('devices')
+            .where('studentUid', isEqualTo: childUid),
+      );
+      if (byStudent != null) return byStudent;
+    }
+
+    final normalizedPhone = _normalizePhoneForLookup(rawPhone);
+    if (rawPhone.isNotEmpty) {
+      final byPhone = await firstOf(
+        _firestore
+            .collection('devices')
+            .where('phoneNumber', isEqualTo: rawPhone),
+      );
+      if (byPhone != null) return byPhone;
+    }
+    if (normalizedPhone.isNotEmpty && normalizedPhone != rawPhone) {
+      final byNorm = await firstOf(
+        _firestore
+            .collection('devices')
+            .where('phoneNumber', isEqualTo: normalizedPhone),
+      );
+      if (byNorm != null) return byNorm;
+    }
+
+    final parentUid = _parentUid.trim().isNotEmpty
+        ? _parentUid.trim()
+        : (FirebaseAuth.instance.currentUser?.uid ?? '');
+    if (parentUid.isNotEmpty) {
+      final byParent = await firstOf(
+        _firestore.collection('devices').where('parentUid', isEqualTo: parentUid),
+      );
+      if (byParent != null) return byParent;
+    }
+
+    final fallback = await _firestore
+        .collection('devices')
+        .doc('safewalk_device_001')
+        .get();
+    if (fallback.exists && fallback.data() != null) {
+      return (id: fallback.id, data: fallback.data()!);
+    }
+    return null;
   }
 
   Future<void> _loadChildData(String childUid) async {
     final childDoc = await _firestore.collection('users').doc(childUid).get();
-    if (!childDoc.exists) return;
-
     final childData = childDoc.data() ?? <String, dynamic>{};
     _latestChildDocData = childData;
     _latestDeviceDocData = const {};
     final childPhone = (childData['phoneNumber'] ?? '').toString();
     final rawPhone = childPhone.trim();
-    final normalizedPhone = _normalizePhoneForLookup(rawPhone);
     final childDeviceId = (childData['linkedDeviceId'] ?? '').toString().trim();
-
-    var deviceQuery = childDeviceId.isNotEmpty
-        ? await _firestore
-              .collection('devices')
-              .where('deviceId', isEqualTo: childDeviceId)
-              .limit(1)
-              .get()
-        : await _firestore
-              .collection('devices')
-              .where('phoneNumber', isEqualTo: rawPhone)
-              .limit(1)
-              .get();
-
-    if (deviceQuery.docs.isEmpty &&
-        childDeviceId.isEmpty &&
-        normalizedPhone != rawPhone) {
-      deviceQuery = await _firestore
-          .collection('devices')
-          .where('phoneNumber', isEqualTo: normalizedPhone)
-          .limit(1)
-          .get();
-    }
+    final resolvedDevice = await _findChildDevice(
+      childUid: childUid,
+      childDeviceId: childDeviceId,
+      rawPhone: rawPhone,
+    );
 
     Map<String, dynamic>? resolvedDeviceData;
     String? resolvedDeviceDocId;
-    if (deviceQuery.docs.isNotEmpty) {
-      resolvedDeviceData = deviceQuery.docs.first.data();
-      resolvedDeviceDocId = deviceQuery.docs.first.id;
+    if (resolvedDevice != null) {
+      resolvedDeviceData = resolvedDevice.data;
+      resolvedDeviceDocId = resolvedDevice.id;
       _latestDeviceDocData = resolvedDeviceData;
-    } else if (childDeviceId.isNotEmpty) {
-      final directDev = await _firestore
-          .collection('devices')
-          .doc(childDeviceId)
-          .get();
-      if (directDev.exists && directDev.data() != null) {
-        resolvedDeviceData = directDev.data()!;
-        resolvedDeviceDocId = directDev.id;
-        _latestDeviceDocData = resolvedDeviceData;
-      }
     }
 
     final walkQuery = await _firestore
@@ -1041,12 +1272,14 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
       deviceDocId: resolvedDeviceDocId,
     );
 
+    final trackedDeviceId = childDeviceId.isNotEmpty
+        ? childDeviceId
+        : (resolvedDeviceData?['deviceId'] ?? '').toString();
     _subscribeToChildRealtimeLocation(
       childUid: childUid,
-      childDeviceId: childDeviceId,
+      childDeviceId: trackedDeviceId,
       rawPhone: rawPhone,
-      directDeviceDocId: resolvedDeviceDocId ??
-          (childDeviceId.isNotEmpty ? childDeviceId : null),
+      directDeviceDocId: resolvedDeviceDocId,
     );
   }
 
@@ -1517,6 +1750,134 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
     );
   }
 
+  Stream<QuerySnapshot<Map<String, dynamic>>>? _guardianAlertStream(
+    String parentUid,
+    List<String> deviceIds,
+  ) {
+    if (parentUid.trim().isEmpty &&
+        _linkedStudents.isEmpty &&
+        deviceIds.every((id) => id.trim().isEmpty)) {
+      return null;
+    }
+    // Same read the student and admin dashboards use. Filtering happens
+    // afterwards so a tracker alert still shows when parentUid was not
+    // written on the document.
+    return _firestore
+        .collection('emergency_alerts')
+        .orderBy('timestamp', descending: true)
+        .limit(200)
+        .snapshots();
+  }
+
+  bool _doesAlertMatchParent(Map<String, dynamic> data) {
+    final parentUid = _parentUid.trim().isNotEmpty
+        ? _parentUid.trim()
+        : (FirebaseAuth.instance.currentUser?.uid ?? '');
+    final docUid = (data['uid'] ?? '').toString().trim();
+    final docStudentUid = (data['studentUid'] ?? '').toString().trim();
+    final docDeviceId = (data['deviceId'] ?? '').toString().trim();
+    final docParentUid = (data['parentUid'] ?? '').toString().trim();
+    final triggeredBy = (data['triggeredBy'] ?? '')
+        .toString()
+        .trim()
+        .toLowerCase();
+
+    final linkedUids = <String>{
+      for (final student in _linkedStudents)
+        if (student.uid.trim().isNotEmpty) student.uid.trim(),
+      if (_childUid.trim().isNotEmpty) _childUid.trim(),
+    };
+    final linkedDevices = <String>{
+      for (final student in _linkedStudents)
+        if (student.deviceId.trim().isNotEmpty &&
+            student.deviceId.trim() != 'Not linked')
+          student.deviceId.trim(),
+    };
+    final activeDevice = _deviceId.trim();
+    if (activeDevice.isNotEmpty &&
+        activeDevice != 'Not linked' &&
+        !activeDevice.startsWith('Student Device') &&
+        !activeDevice.startsWith('Device GPS')) {
+      linkedDevices.add(activeDevice);
+    }
+
+    if (parentUid.isNotEmpty &&
+        (docParentUid == parentUid ||
+            _recipientUidsOf(data).contains(parentUid))) {
+      return true;
+    }
+    if (docUid.isNotEmpty &&
+        (linkedUids.contains(docUid) || linkedDevices.contains(docUid))) {
+      return true;
+    }
+    if (docStudentUid.isNotEmpty &&
+        (linkedUids.contains(docStudentUid) ||
+            linkedDevices.contains(docStudentUid))) {
+      return true;
+    }
+    if (docDeviceId.isNotEmpty &&
+        (linkedDevices.contains(docDeviceId) ||
+            linkedUids.contains(docDeviceId))) {
+      return true;
+    }
+
+    const hardwareId = 'safewalk_device_001';
+    final isHardwareAlert =
+        docDeviceId == hardwareId ||
+        docUid == hardwareId ||
+        docStudentUid == hardwareId ||
+        triggeredBy == 'iot_device';
+    return isHardwareAlert && linkedUids.isNotEmpty;
+  }
+
+  Set<String> _recipientUidsOf(Map<String, dynamic> data) {
+    final raw = data['recipientUids'];
+    if (raw is! Iterable) return const <String>{};
+    return raw.map((value) => value.toString()).toSet();
+  }
+
+  Widget _buildGuardianManagement() {
+    final students = _linkedStudents.where((student) => student.uid.trim().isNotEmpty).toList();
+    if (students.isEmpty) {
+      return const GuardianContactsPanel(studentUid: '');
+    }
+    final selected = students.any((student) => student.uid == _childUid)
+        ? _childUid
+        : students.first.uid;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (students.length > 1) ...[
+          DropdownButtonFormField<String>(
+            key: ValueKey<String>(selected),
+            initialValue: selected,
+            decoration: const InputDecoration(
+              labelText: 'Student',
+              labelStyle: TextStyle(fontFamily: _bf),
+            ),
+            items: students
+                .map(
+                  (student) => DropdownMenuItem<String>(
+                    value: student.uid,
+                    child: Text(
+                      student.name.trim().isEmpty ? student.uid : student.name,
+                      style: const TextStyle(fontFamily: _bf),
+                    ),
+                  ),
+                )
+                .toList(),
+            onChanged: (value) {
+              if (value == null) return;
+              _switchActiveChild(value);
+            },
+          ),
+          const SizedBox(height: 12),
+        ],
+        GuardianContactsPanel(studentUid: selected),
+      ],
+    );
+  }
+
   Future<void> _showAlertHistorySheet() async {
     if (_linkedStudents.isEmpty) {
       _showActionSnack('No linked student account found.', isError: true);
@@ -1530,7 +1891,6 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
         .map((s) => s.deviceId.trim())
         .where((id) => id.isNotEmpty && id != 'Not linked')
         .toList();
-    final linkedUidSet = linkedNameByUid.keys.toSet();
     await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
@@ -1637,33 +1997,10 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                   const SizedBox(height: 10),
                   Expanded(
                     child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-                      stream: parentUidForAlerts.isEmpty
-                          ? null
-                          : linkedDeviceIds.isEmpty
-                          ? _firestore
-                                .collection('emergency_alerts')
-                                .where(
-                                  'parentUid',
-                                  isEqualTo: parentUidForAlerts,
-                                )
-                                .limit(200)
-                                .snapshots()
-                          : _firestore
-                                .collection('emergency_alerts')
-                                .where(
-                                  Filter.or(
-                                    Filter(
-                                      'parentUid',
-                                      isEqualTo: parentUidForAlerts,
-                                    ),
-                                    Filter(
-                                      'deviceId',
-                                      whereIn: linkedDeviceIds,
-                                    ),
-                                  ),
-                                )
-                                .limit(200)
-                                .snapshots(),
+                      stream: _guardianAlertStream(
+                        parentUidForAlerts,
+                        linkedDeviceIds,
+                      ),
                       builder: (context, snapshot) {
                         if (snapshot.hasError) {
                           return Center(
@@ -1681,20 +2018,11 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                           );
                         }
                         final docs =
-                            snapshot.data!.docs.where((doc) {
-                              final data = doc.data();
-                              final alertChildUid =
-                                  (data['uid'] ?? data['studentUid'] ?? '')
-                                      .toString()
-                                      .trim();
-                              final linkedDeviceIds = _linkedStudents
-                                  .map((s) => s.deviceId)
-                                  .where((id) => id.isNotEmpty)
-                                  .toSet();
-                              return linkedUidSet.isEmpty ||
-                                  linkedUidSet.contains(alertChildUid) ||
-                                  linkedDeviceIds.contains(alertChildUid);
-                            }).toList()..sort((a, b) {
+                            snapshot.data!.docs
+                                .where(
+                                  (doc) => _doesAlertMatchParent(doc.data()),
+                                )
+                                .toList()..sort((a, b) {
                               final aData = a.data();
                               final bData = b.data();
                               final aStatus = (aData['status'] ?? '').toString().toLowerCase();
@@ -1861,86 +2189,12 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                                       ),
                                     ],
                                   ),
-                                  if (isActive) ...[
+                                  if (isActive ||
+                                      status.toLowerCase() == 'acknowledged' ||
+                                      status.toLowerCase() == 'not_resolved' ||
+                                      status.toLowerCase() == 'responded') ...[
                                     const SizedBox(height: 10),
-                                    SizedBox(
-                                      width: double.infinity,
-                                      child: Material(
-                                        color: AppColors.green,
-                                        borderRadius: BorderRadius.circular(8),
-                                        child: InkWell(
-                                          borderRadius: BorderRadius.circular(
-                                            8,
-                                          ),
-                                          onTap: () => _handleAlertAction(docs[i].id, status),
-                                          child: Container(
-                                            padding: const EdgeInsets.symmetric(
-                                              vertical: 10,
-                                            ),
-                                            alignment: Alignment.center,
-                                            decoration: BoxDecoration(
-                                              borderRadius:
-                                                  BorderRadius.circular(8),
-                                              border: Border.all(
-                                                color: AppColors.gold
-                                                    .withValues(alpha: 0.4),
-                                              ),
-                                            ),
-                                            child: Text(
-                                              'ACKNOWLEDGE',
-                                              style: TextStyle(
-                                                fontFamily: _bf,
-                                                color: AppColors.white,
-                                                letterSpacing: 3,
-                                                fontSize: 10,
-                                                fontWeight: FontWeight.w400,
-                                              ),
-                                            ),
-                                          ),
-                                        ),
-                                      ),
-                                    ),
-                                  ],
-                                  if (status.toLowerCase() ==
-                                      'acknowledged') ...[
-                                    const SizedBox(height: 10),
-                                    SizedBox(
-                                      width: double.infinity,
-                                      child: Material(
-                                        color: const Color(0xFFCB392B),
-                                        borderRadius: BorderRadius.circular(8),
-                                        child: InkWell(
-                                          borderRadius: BorderRadius.circular(
-                                            8,
-                                          ),
-                                          onTap: () => _handleAlertAction(docs[i].id, status),
-                                          child: Container(
-                                            padding: const EdgeInsets.symmetric(
-                                              vertical: 10,
-                                            ),
-                                            alignment: Alignment.center,
-                                            decoration: BoxDecoration(
-                                              borderRadius:
-                                                  BorderRadius.circular(8),
-                                              border: Border.all(
-                                                color: AppColors.gold
-                                                    .withValues(alpha: 0.4),
-                                              ),
-                                            ),
-                                            child: Text(
-                                              'DONE',
-                                              style: TextStyle(
-                                                fontFamily: _bf,
-                                                color: AppColors.white,
-                                                letterSpacing: 3,
-                                                fontSize: 10,
-                                                fontWeight: FontWeight.w400,
-                                              ),
-                                            ),
-                                          ),
-                                        ),
-                                      ),
-                                    ),
+                                    _buildAlertStatusActions(docs[i].id, status),
                                   ],
                                   if (status.toLowerCase() == 'false_alarm' ||
                                       status.toLowerCase() ==
@@ -2544,7 +2798,6 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
         .map((s) => s.deviceId.trim())
         .where((id) => id.isNotEmpty && id != 'Not linked')
         .toList();
-    final linkedUidSet = linkedNameByUid.keys.toSet();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -2600,24 +2853,10 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
           subtitle: 'LOCATION WHERE SOS WAS SENT',
           children: [
             StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-              stream: parentUidForAlerts.isEmpty
-                  ? null
-                  : linkedDeviceIds.isEmpty
-                  ? _firestore
-                        .collection('emergency_alerts')
-                        .where('parentUid', isEqualTo: parentUidForAlerts)
-                        .limit(200)
-                        .snapshots()
-                  : _firestore
-                        .collection('emergency_alerts')
-                        .where(
-                          Filter.or(
-                            Filter('parentUid', isEqualTo: parentUidForAlerts),
-                            Filter('deviceId', whereIn: linkedDeviceIds),
-                          ),
-                        )
-                        .limit(200)
-                        .snapshots(),
+              stream: _guardianAlertStream(
+                parentUidForAlerts,
+                linkedDeviceIds,
+              ),
               builder: (context, snapshot) {
                 String sosStatus = 'NO SOS YET';
                 String sosTime = '-';
@@ -2633,28 +2872,11 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                         final alertType = (data['type'] ?? '')
                             .toString()
                             .toLowerCase();
-                        final alertParentUid = (data['parentUid'] ?? '')
-                            .toString();
-                        final alertChildUid =
-                            (data['uid'] ?? data['studentUid'] ?? '')
-                                .toString()
-                                .trim();
                         final isEmergency =
                             alertType == 'sos' ||
                             alertType == 'voice_help' ||
                             alertType == 'emergency';
-                        return isEmergency &&
-                            (_childUid.isNotEmpty
-                                ? (alertChildUid == _childUid ||
-                                      (_deviceId != 'Not linked' &&
-                                          alertChildUid == _deviceId))
-                                : (linkedUidSet.isEmpty ||
-                                      linkedUidSet.contains(alertChildUid) ||
-                                      _linkedStudents
-                                          .map((s) => s.deviceId)
-                                          .contains(alertChildUid))) &&
-                            (alertParentUid.isEmpty ||
-                                alertParentUid == parentUidForAlerts);
+                        return isEmergency && _doesAlertMatchParent(data);
                       }).toList()..sort((a, b) {
                         final aData = a.data();
                         final bData = b.data();
@@ -2662,7 +2884,11 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                         final bStatus = (bData['status'] ?? '').toString().toLowerCase();
                         int priority(String s) {
                           if (s == 'active' || s == 'verifying_speech') return 0;
-                          if (s == 'acknowledged') return 1;
+                          if (s == 'responded' ||
+                              s == 'acknowledged' ||
+                              s == 'not_resolved') {
+                            return 1;
+                          }
                           return 2;
                         }
                         final pA = priority(aStatus);
@@ -2711,11 +2937,25 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                           ? 'No SOS location yet'
                           : fallbackLocation;
                     } else if (isAck) {
-                      sosStatus = 'FINDING CHILD (ACKNOWLEDGED)';
+                      sosStatus = 'ACKNOWLEDGED';
                       sosLocation = latestSosCoordinate != null
                           ? _formatCoordinateValue(latestSosCoordinate)
                           : fallbackLocation.isEmpty
                           ? 'Tracking child...'
+                          : fallbackLocation;
+                    } else if (latestStatus == 'not_resolved') {
+                      sosStatus = 'NOT RESOLVED';
+                      sosLocation = latestSosCoordinate != null
+                          ? _formatCoordinateValue(latestSosCoordinate)
+                          : fallbackLocation.isEmpty
+                          ? 'Still searching...'
+                          : fallbackLocation;
+                    } else if (latestStatus == 'responded') {
+                      sosStatus = 'ADMIN RESPONDED';
+                      sosLocation = latestSosCoordinate != null
+                          ? _formatCoordinateValue(latestSosCoordinate)
+                          : fallbackLocation.isEmpty
+                          ? 'Admin responded...'
                           : fallbackLocation;
                     } else if (isResolved) {
                       sosStatus = 'RESOLVED';
@@ -2761,25 +3001,41 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                             onTap: _showAlertHistorySheet,
                           ),
                           if (latestAlertId.isNotEmpty) ...[
-                            if (latestAlertRawStatus == 'active' || latestAlertRawStatus == 'verifying_speech')
+                            if (latestAlertRawStatus == 'active' ||
+                                latestAlertRawStatus == 'verifying_speech')
                               _buildPanelAction(
                                 label: 'ACKNOWLEDGE',
-                                onTap: () => _handleAlertAction(latestAlertId, latestAlertRawStatus),
+                                onTap: () => _acknowledgeAlert(latestAlertId),
                               )
-                            else if (latestAlertRawStatus == 'acknowledged')
+                            else if (latestAlertRawStatus == 'acknowledged') ...[
                               _buildPanelAction(
                                 label: 'DONE',
-                                onTap: () => _handleAlertAction(latestAlertId, latestAlertRawStatus),
+                                onTap: () => _resolveAlertDone(latestAlertId),
+                              ),
+                              _buildPanelAction(
+                                label: 'NOT RESOLVED',
+                                onTap: () => _markAlertNotResolved(latestAlertId),
+                              ),
+                            ] else if (latestAlertRawStatus == 'not_resolved' ||
+                                latestAlertRawStatus == 'responded')
+                              _buildPanelAction(
+                                label: 'DONE',
+                                onTap: () => _resolveAlertDone(latestAlertId),
                               )
-                            else if (latestAlertRawStatus == 'false_alarm' || latestAlertRawStatus == 'cancelled_false_trigger')
+                            else if (latestAlertRawStatus == 'false_alarm' ||
+                                latestAlertRawStatus == 'cancelled_false_trigger')
                               _buildPanelAction(
                                 label: 'FALSE ALARM (SAFE)',
-                                onTap: () async => _showActionSnack("Student reported this alert as a false alarm (miss-clicked device)."),
+                                onTap: () async => _showActionSnack(
+                                  "Student reported this alert as a false alarm (miss-clicked device).",
+                                ),
                               )
                             else if (latestAlertRawStatus == 'resolved')
                               _buildPanelAction(
                                 label: 'DONE (FIXED)',
-                                onTap: () async => _showActionSnack("The issue is already been fixed."),
+                                onTap: () async => _showActionSnack(
+                                  "The issue is already been fixed.",
+                                ),
                               ),
                           ],
                         ],
@@ -2828,27 +3084,9 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
         .map((s) => s.deviceId.trim())
         .where((id) => id.isNotEmpty && id != 'Not linked')
         .toList();
-    final linkedUidSet = linkedNameByUid.keys.toSet();
 
     return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-      stream: parentUidForAlerts.isEmpty
-          ? null
-          : linkedDeviceIds.isEmpty
-          ? _firestore
-                .collection('emergency_alerts')
-                .where('parentUid', isEqualTo: parentUidForAlerts)
-                .limit(200)
-                .snapshots()
-          : _firestore
-                .collection('emergency_alerts')
-                .where(
-                  Filter.or(
-                    Filter('parentUid', isEqualTo: parentUidForAlerts),
-                    Filter('deviceId', whereIn: linkedDeviceIds),
-                  ),
-                )
-                .limit(200)
-                .snapshots(),
+      stream: _guardianAlertStream(parentUidForAlerts, linkedDeviceIds),
       builder: (context, snapshot) {
         if (snapshot.hasError) {
           return Center(
@@ -2870,19 +3108,9 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
           );
         }
         final docs =
-            snapshot.data!.docs.where((doc) {
-              final data = doc.data();
-              final alertChildUid = (data['uid'] ?? data['studentUid'] ?? '')
-                  .toString()
-                  .trim();
-              final linkedDeviceIds = _linkedStudents
-                  .map((s) => s.deviceId)
-                  .where((id) => id.isNotEmpty)
-                  .toSet();
-              return linkedUidSet.isEmpty ||
-                  linkedUidSet.contains(alertChildUid) ||
-                  linkedDeviceIds.contains(alertChildUid);
-            }).toList()..sort((a, b) {
+            snapshot.data!.docs
+                .where((doc) => _doesAlertMatchParent(doc.data()))
+                .toList()..sort((a, b) {
               final aData = a.data();
               final bData = b.data();
               final aStatus = (aData['status'] ?? '').toString().toLowerCase();
@@ -3045,73 +3273,12 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                       ),
                     ],
                   ),
-                  if (isActive) ...[
+                  if (isActive ||
+                      status.toLowerCase() == 'acknowledged' ||
+                      status.toLowerCase() == 'not_resolved' ||
+                      status.toLowerCase() == 'responded') ...[
                     const SizedBox(height: 10),
-                    SizedBox(
-                      width: double.infinity,
-                      child: Material(
-                        color: AppColors.green,
-                        borderRadius: BorderRadius.circular(8),
-                        child: InkWell(
-                          borderRadius: BorderRadius.circular(8),
-                          onTap: () => _handleAlertAction(docs[i].id, status),
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(vertical: 10),
-                            alignment: Alignment.center,
-                            decoration: BoxDecoration(
-                              borderRadius: BorderRadius.circular(8),
-                              border: Border.all(
-                                color: AppColors.gold.withValues(alpha: 0.4),
-                              ),
-                            ),
-                            child: Text(
-                              'ACKNOWLEDGE',
-                              style: TextStyle(
-                                fontFamily: _bf,
-                                color: AppColors.white,
-                                letterSpacing: 3,
-                                fontSize: 10,
-                                fontWeight: FontWeight.w400,
-                              ),
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-                  ],
-                  if (status.toLowerCase() == 'acknowledged') ...[
-                    const SizedBox(height: 10),
-                    SizedBox(
-                      width: double.infinity,
-                      child: Material(
-                        color: const Color(0xFFCB392B),
-                        borderRadius: BorderRadius.circular(8),
-                        child: InkWell(
-                          borderRadius: BorderRadius.circular(8),
-                          onTap: () => _handleAlertAction(docs[i].id, status),
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(vertical: 10),
-                            alignment: Alignment.center,
-                            decoration: BoxDecoration(
-                              borderRadius: BorderRadius.circular(8),
-                              border: Border.all(
-                                color: AppColors.gold.withValues(alpha: 0.4),
-                              ),
-                            ),
-                            child: Text(
-                              'DONE',
-                              style: TextStyle(
-                                fontFamily: _bf,
-                                color: AppColors.white,
-                                letterSpacing: 3,
-                                fontSize: 10,
-                                fontWeight: FontWeight.w400,
-                              ),
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
+                    _buildAlertStatusActions(docs[i].id, status),
                   ],
                   if (status.toLowerCase() == 'false_alarm' ||
                       status.toLowerCase() == 'cancelled_false_trigger') ...[
@@ -3225,30 +3392,12 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
         ? FirebaseAuth.instance.currentUser?.uid ?? ''
         : _parentUid;
     final linkedNameByUid = _linkedStudentNamesByUid;
-    final linkedUidSet = linkedNameByUid.keys.toSet();
     final linkedDeviceIds = _linkedStudents
         .map((s) => s.deviceId.trim())
         .where((id) => id.isNotEmpty && id != 'Not linked')
         .toList();
     return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-      stream: parentUidForAlerts.isEmpty
-          ? null
-          : linkedDeviceIds.isEmpty
-          ? _firestore
-                .collection('emergency_alerts')
-                .where('parentUid', isEqualTo: parentUidForAlerts)
-                .limit(200)
-                .snapshots()
-          : _firestore
-                .collection('emergency_alerts')
-                .where(
-                  Filter.or(
-                    Filter('parentUid', isEqualTo: parentUidForAlerts),
-                    Filter('deviceId', whereIn: linkedDeviceIds),
-                  ),
-                )
-                .limit(200)
-                .snapshots(),
+      stream: _guardianAlertStream(parentUidForAlerts, linkedDeviceIds),
       builder: (context, snapshot) {
         final sosDocs = <QueryDocumentSnapshot<Map<String, dynamic>>>[];
         if (snapshot.hasData && snapshot.data!.docs.isNotEmpty) {
@@ -3257,27 +3406,15 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
               final data = doc.data();
               final alertType = (data['type'] ?? '').toString().toLowerCase();
               final status = (data['status'] ?? '').toString().toLowerCase();
-              final alertChildUid = (data['uid'] ?? data['studentUid'] ?? '')
-                  .toString()
-                  .trim();
               final isEmergency =
                   alertType == 'sos' ||
                   alertType == 'voice_help' ||
-                  alertType == 'emergency';
-              final isActiveEmergency =
-                  (status == 'active' || status == 'verifying_speech') &&
-                  data['locationCleared'] != true;
-              return isEmergency &&
-                  isActiveEmergency &&
-                  (_childUid.isNotEmpty
-                      ? (alertChildUid == _childUid ||
-                            (_deviceId != 'Not linked' &&
-                                alertChildUid == _deviceId))
-                      : (linkedUidSet.isEmpty ||
-                            linkedUidSet.contains(alertChildUid) ||
-                            _linkedStudents
-                                .map((s) => s.deviceId)
-                                .contains(alertChildUid)));
+                  alertType == 'emergency' ||
+                  alertType == 'sos_update' ||
+                  alertType == 'voice_help_update';
+              final isOpen =
+                  _isOpenSosStatus(status) && data['locationCleared'] != true;
+              return isEmergency && isOpen && _doesAlertMatchParent(data);
             }),
           );
           sosDocs.sort((a, b) {
@@ -3315,10 +3452,6 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
         final latestSosStatus = (latestSosData?['status'] ?? '')
             .toString()
             .toLowerCase();
-        final latestSosIsActive = latestSosData == null
-            ? false
-            : (latestSosStatus == 'active' ||
-                  latestSosStatus == 'verifying_speech');
         final latestSosLocationText = latestSosPoint != null
             ? _formatCoordinateValue(latestSosPoint)
             : (latestSosData?['location'] ?? '').toString().trim().isEmpty
@@ -3329,19 +3462,23 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
             <String, QueryDocumentSnapshot<Map<String, dynamic>>>{};
         for (final doc in sosDocs) {
           final data = doc.data();
-          final childUid = (data['uid'] ?? data['studentUid'] ?? '')
-              .toString()
-              .trim();
-          if (childUid.isEmpty) continue;
-          latestByChild.putIfAbsent(childUid, () => doc);
+          final childKey = _stableStudentKey(data);
+          if (childKey.isEmpty) continue;
+          final current = latestByChild[childKey];
+          if (current == null ||
+              _alertTimeMs(data) >= _alertTimeMs(current.data())) {
+            latestByChild[childKey] = doc;
+          }
         }
 
         final markers = <Marker>{};
         final circles = <Circle>{};
         var sosMarkersWithPoint = 0;
         LatLng? firstSosMarkerPoint;
-        latestByChild.forEach((childUid, doc) {
+        latestByChild.forEach((childKey, doc) {
           final data = doc.data();
+          // Keep the pin on the coordinates the device sent with this help
+          // request. The saved child profile can be the phone or an older fix.
           final point = _extractAlertCoordinates(data);
           if (point == null) return;
           firstSosMarkerPoint ??= point;
@@ -3350,41 +3487,52 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
             linkedNameByUid: linkedNameByUid,
           );
           final alertStatus = (data['status'] ?? '').toString().toLowerCase();
-          final isActive =
-              alertStatus == 'active' || alertStatus == 'verifying_speech';
           final pointLabel = _formatCoordinateValue(point);
-          final colorHue = isActive
-              ? BitmapDescriptor.hueRed
-              : BitmapDescriptor.hueOrange;
+          final statusLabel = alertStatus == 'responded'
+              ? 'Admin responded'
+              : alertStatus == 'acknowledged'
+              ? 'Acknowledged'
+              : alertStatus == 'not_resolved'
+              ? 'Not resolved'
+              : 'Active alert';
+          final circleFill = alertStatus == 'responded'
+              ? const Color(0x55111827)
+              : alertStatus == 'acknowledged'
+              ? const Color(0x55F97316)
+              : alertStatus == 'not_resolved'
+              ? const Color(0x557C3AED)
+              : const Color(0x55CB392B);
+          final circleStroke = alertStatus == 'responded'
+              ? const Color(0xFF111827)
+              : alertStatus == 'acknowledged'
+              ? const Color(0xFFEA580C)
+              : alertStatus == 'not_resolved'
+              ? const Color(0xFF6D28D9)
+              : const Color(0xFFCB392B);
+          final markerId = _alertIsSelectedChild(data)
+              ? 'child-location'
+              : 'child-$childKey';
 
           markers.add(
             Marker(
-              markerId: MarkerId('sos-$childUid'),
+              markerId: MarkerId(markerId),
               position: point,
-              anchor: _sosMarkerIcon != null
-                  ? const Offset(0.5, 0.96)
-                  : const Offset(0.5, 1.0),
-              icon: _sosMarkerIcon ??
-                  BitmapDescriptor.defaultMarkerWithHue(colorHue),
+              anchor: const Offset(0.5, 0.98),
+              icon: _markerIconForStatus(alertStatus),
               infoWindow: InfoWindow(
-                title: '$sender - SOS',
-                snippet: '$pointLabel • Tap to Acknowledge & Remove Location',
-                onTap: () => _handleAlertAction(doc.id, alertStatus),
+                title: '$sender - $statusLabel',
+                snippet: pointLabel,
               ),
             ),
           );
 
           circles.add(
             Circle(
-              circleId: CircleId('sos-radius-$childUid'),
+              circleId: CircleId('sos-radius-$markerId'),
               center: point,
-              radius: isActive ? 90 : 60,
-              fillColor: isActive
-                  ? const Color(0x55CB392B)
-                  : const Color(0x35CB6D2B),
-              strokeColor: isActive
-                  ? const Color(0xFFCB392B)
-                  : const Color(0xFFCB6D2B),
+              radius: 90,
+              fillColor: circleFill,
+              strokeColor: circleStroke,
               strokeWidth: 2,
             ),
           );
@@ -3392,35 +3540,6 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
         });
 
         final hasSosPoints = sosMarkersWithPoint > 0;
-        if (!hasSosPoints && _childDeviceCoordinates != null) {
-          markers.add(
-            Marker(
-              markerId: const MarkerId('child-location'),
-              position: _childDeviceCoordinates!,
-              anchor: _sosMarkerIcon != null
-                  ? const Offset(0.5, 0.96)
-                  : const Offset(0.5, 1.0),
-              icon: _sosMarkerIcon ??
-                  BitmapDescriptor.defaultMarkerWithHue(
-                    BitmapDescriptor.hueRed,
-                  ),
-              infoWindow: InfoWindow(
-                title: '$_childName - Live Location',
-                snippet: _deviceLocation,
-              ),
-            ),
-          );
-          circles.add(
-            Circle(
-              circleId: const CircleId('child-radius'),
-              center: _childDeviceCoordinates!,
-              radius: 45,
-              fillColor: const Color(0x331AA972),
-              strokeColor: const Color(0xFF1AA972),
-              strokeWidth: 2,
-            ),
-          );
-        }
 
         final mapPoint = hasSosPoints
             ? (latestSosPoint ?? firstSosMarkerPoint)
@@ -3430,30 +3549,44 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
         if (hasPoint) {
           WidgetsBinding.instance.addPostFrameCallback((_) {
             if (!mounted) return;
-            _focusParentMapOnPoint(center, zoom: 16);
+            _focusParentMapOnPoint(center, zoom: 18);
           });
         }
 
         final tagLabel = hasSosPoints
             ? (sosMarkersWithPoint > 1
                   ? '$sosMarkersWithPoint SOS MARKERS'
-                  : latestSosIsActive
-                  ? 'SOS LOCATION'
-                  : 'FINDING CHILD')
+                  : latestSosStatus == 'responded'
+                  ? 'ADMIN RESPONDED'
+                  : latestSosStatus == 'acknowledged'
+                  ? 'ACKNOWLEDGED'
+                  : latestSosStatus == 'not_resolved'
+                  ? 'NOT RESOLVED'
+                  : 'SOS LOCATION')
             : hasPoint
-            ? 'LIVE TRACKING'
+            ? 'NO ACTIVE ALERT'
             : 'NO LOCATION YET';
-        final tagColor = hasSosPoints
+        final tagColor = latestSosStatus == 'responded'
+            ? const Color(0xFF111827)
+            : latestSosStatus == 'acknowledged'
+            ? const Color(0xFF9A3412)
+            : latestSosStatus == 'not_resolved'
+            ? const Color(0xFF5B21B6)
+            : hasSosPoints
             ? const Color(0xFF7E1F14)
             : const Color(0xFF0E5B3C);
         final footerTitle = hasSosPoints
-            ? (latestSosIsActive
-                ? 'SOS FROM $latestSosSender${latestSosLabel.isEmpty ? '' : ' | $latestSosLabel'}'
-                : 'FINDING $latestSosSender (ACKNOWLEDGED)')
-            : 'CHILD LAST LOCATION';
+            ? (latestSosStatus == 'responded'
+                ? 'ADMIN RESPONDED - $latestSosSender${latestSosLabel.isEmpty ? '' : ' | $latestSosLabel'}'
+                : latestSosStatus == 'acknowledged'
+                ? 'ACKNOWLEDGED - $latestSosSender${latestSosLabel.isEmpty ? '' : ' | $latestSosLabel'}'
+                : latestSosStatus == 'not_resolved'
+                ? 'NOT RESOLVED - $latestSosSender${latestSosLabel.isEmpty ? '' : ' | $latestSosLabel'}'
+                : 'SOS FROM $latestSosSender${latestSosLabel.isEmpty ? '' : ' | $latestSosLabel'}')
+            : 'NO ALERT MARKER';
         final footerLocation = hasSosPoints
             ? latestSosLocationText
-            : _deviceLocation;
+            : 'Marker appears when a help request is sent';
 
         return Container(
           height: 240,
@@ -3482,7 +3615,7 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                           key: const ValueKey('parent-map-main'),
                           initialCameraPosition: CameraPosition(
                             target: center,
-                            zoom: hasPoint ? 16 : 12,
+                            zoom: hasPoint ? 18 : 12,
                           ),
                           liteModeEnabled: _mobileMapLiteMode,
                           mapType: MapType.normal,
@@ -3491,8 +3624,8 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                           scrollGesturesEnabled: true,
                           markers: markers,
                           circles: circles,
-                          myLocationEnabled: true,
-                          myLocationButtonEnabled: true,
+                          myLocationEnabled: false,
+                          myLocationButtonEnabled: false,
                           zoomControlsEnabled: false,
                           mapToolbarEnabled: false,
                           compassEnabled: false,
@@ -3503,7 +3636,7 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                             if (hasPoint) {
                               _focusParentMapOnPoint(
                                 center,
-                                zoom: 16,
+                                zoom: 18,
                                 force: true,
                               );
                             }
@@ -3539,62 +3672,116 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
                   ),
                 ),
               ),
-              if (hasSosPoints || latestSosIsActive)
+              if (hasSosPoints && latestSosAlertId.isNotEmpty)
                 Positioned(
                   top: 14,
                   right: 14,
-                  child: Material(
-                    color: Colors.transparent,
-                    child: InkWell(
-                      borderRadius: BorderRadius.circular(999),
-                      onTap: () {
-                        if (latestSosAlertId.isNotEmpty) {
-                          _handleAlertAction(latestSosAlertId, latestSosStatus);
-                        }
-                      },
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 13,
-                          vertical: 6,
-                        ),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFFCB392B),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      Material(
+                        color: Colors.transparent,
+                        child: InkWell(
                           borderRadius: BorderRadius.circular(999),
-                          border: Border.all(
-                            color: Colors.white.withValues(alpha: 0.6),
-                            width: 1,
-                          ),
-                          boxShadow: [
-                            BoxShadow(
-                              color: Colors.black.withValues(alpha: 0.4),
-                              blurRadius: 8,
-                              offset: const Offset(0, 2),
+                          onTap: () {
+                            if (latestSosStatus == 'active' ||
+                                latestSosStatus == 'verifying_speech') {
+                              _acknowledgeAlert(latestSosAlertId);
+                            } else if (latestSosStatus == 'acknowledged' ||
+                                latestSosStatus == 'not_resolved' ||
+                                latestSosStatus == 'responded') {
+                              _resolveAlertDone(latestSosAlertId);
+                            }
+                          },
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 13,
+                              vertical: 6,
                             ),
-                          ],
-                        ),
-                        child: const Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(
-                              Icons.check_circle_outline,
-                              color: Colors.white,
-                              size: 14,
-                            ),
-                            SizedBox(width: 5),
-                            Text(
-                              'ACKNOWLEDGE',
-                              style: TextStyle(
-                                fontFamily: _bf,
-                                color: Colors.white,
-                                fontSize: 10,
-                                letterSpacing: 1.2,
-                                fontWeight: FontWeight.w700,
+                            decoration: BoxDecoration(
+                              color: latestSosStatus == 'responded'
+                                  ? const Color(0xFF111827)
+                                  : latestSosStatus == 'acknowledged'
+                                  ? const Color(0xFFEA580C)
+                                  : latestSosStatus == 'not_resolved'
+                                  ? const Color(0xFF6D28D9)
+                                  : const Color(0xFFCB392B),
+                              borderRadius: BorderRadius.circular(999),
+                              border: Border.all(
+                                color: Colors.white.withValues(alpha: 0.6),
+                                width: 1,
                               ),
+                              boxShadow: [
+                                BoxShadow(
+                                  color: Colors.black.withValues(alpha: 0.4),
+                                  blurRadius: 8,
+                                  offset: const Offset(0, 2),
+                                ),
+                              ],
                             ),
-                          ],
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                const Icon(
+                                  Icons.check_circle_outline,
+                                  color: Colors.white,
+                                  size: 14,
+                                ),
+                                const SizedBox(width: 5),
+                                Text(
+                                  (latestSosStatus == 'active' ||
+                                          latestSosStatus ==
+                                              'verifying_speech')
+                                      ? 'ACKNOWLEDGE'
+                                      : 'DONE',
+                                  style: const TextStyle(
+                                    fontFamily: _bf,
+                                    color: Colors.white,
+                                    fontSize: 10,
+                                    letterSpacing: 1.2,
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
                         ),
                       ),
-                    ),
+                      if (latestSosStatus == 'acknowledged') ...[
+                        const SizedBox(height: 6),
+                        Material(
+                          color: Colors.transparent,
+                          child: InkWell(
+                            borderRadius: BorderRadius.circular(999),
+                            onTap: () =>
+                                _markAlertNotResolved(latestSosAlertId),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 13,
+                                vertical: 6,
+                              ),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFF6D28D9),
+                                borderRadius: BorderRadius.circular(999),
+                                border: Border.all(
+                                  color: Colors.white.withValues(alpha: 0.6),
+                                ),
+                              ),
+                              child: const Text(
+                                'NOT RESOLVED',
+                                style: TextStyle(
+                                  fontFamily: _bf,
+                                  color: Colors.white,
+                                  fontSize: 10,
+                                  letterSpacing: 1.2,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ],
                   ),
                 )
               else
@@ -3846,6 +4033,10 @@ class _ParentDashboardPageState extends State<ParentDashboardPage> {
         _buildSectionLabel('LINK YOUR CHILD'),
         const SizedBox(height: 10),
         _buildLinkChildFeature(),
+        const SizedBox(height: 18),
+        _buildSectionLabel('GUARDIANS'),
+        const SizedBox(height: 10),
+        _buildGuardianManagement(),
         const SizedBox(height: 20),
         _buildSectionLabel('DANGER ZONE'),
         const SizedBox(height: 10),
@@ -4989,11 +5180,7 @@ class _StudentStatusCard extends StatelessWidget {
     final normalizedPhone = _normalizePhoneForLookup(rawPhone);
 
     return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-      stream: firestore
-          .collection('devices')
-          .where('phoneNumber', whereIn: [rawPhone, normalizedPhone])
-          .limit(1)
-          .snapshots(),
+      stream: firestore.collection('devices').limit(50).snapshots(),
       builder: (context, deviceSnapshot) {
         return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
           stream: firestore
@@ -5003,11 +5190,50 @@ class _StudentStatusCard extends StatelessWidget {
               .limit(1)
               .snapshots(),
           builder: (context, walkSnapshot) {
-            final hasDevice =
-                deviceSnapshot.hasData && deviceSnapshot.data!.docs.isNotEmpty;
-            final deviceData = hasDevice
-                ? deviceSnapshot.data!.docs.first.data()
-                : null;
+            Map<String, dynamic>? deviceData;
+            if (deviceSnapshot.hasData) {
+              final docs = deviceSnapshot.data!.docs;
+              QueryDocumentSnapshot<Map<String, dynamic>>? matched;
+              for (final doc in docs) {
+                final data = doc.data();
+                final devId = (data['deviceId'] ?? doc.id).toString().trim();
+                final ownerUid = (data['studentUid'] ?? '').toString().trim();
+                if (student.deviceId.trim().isNotEmpty &&
+                    (devId == student.deviceId.trim() ||
+                        doc.id == student.deviceId.trim())) {
+                  matched = doc;
+                  break;
+                }
+                if (ownerUid.isNotEmpty && ownerUid == student.uid) {
+                  matched = doc;
+                  break;
+                }
+              }
+              if (matched == null && rawPhone.isNotEmpty) {
+                for (final doc in docs) {
+                  final phone = (doc.data()['phoneNumber'] ?? '')
+                      .toString()
+                      .trim();
+                  if (phone.isEmpty) continue;
+                  if (phone == rawPhone ||
+                      _normalizePhoneForLookup(phone) == normalizedPhone) {
+                    matched = doc;
+                    break;
+                  }
+                }
+              }
+              if (matched == null) {
+                for (final doc in docs) {
+                  if (doc.id == 'safewalk_device_001' ||
+                      (doc.data()['deviceId'] ?? '').toString() ==
+                          'safewalk_device_001') {
+                    matched = doc;
+                    break;
+                  }
+                }
+              }
+              deviceData = matched?.data();
+            }
 
             final hasWalk =
                 walkSnapshot.hasData && walkSnapshot.data!.docs.isNotEmpty;
@@ -5029,11 +5255,26 @@ class _StudentStatusCard extends StatelessWidget {
                 : 0.0;
 
             final locationField = deviceData?['location'];
+            final coordinates = deviceData?['coordinates'];
+            final latitude = deviceData?['latitude'];
+            final longitude = deviceData?['longitude'];
             String locationStr = 'Unknown';
-            if (locationField is GeoPoint) {
+            if (coordinates is GeoPoint) {
+              locationStr =
+                  '${coordinates.latitude.toStringAsFixed(6)}, ${coordinates.longitude.toStringAsFixed(6)}';
+            } else if (latitude is num &&
+                longitude is num &&
+                (latitude.abs() > 0.0001 || longitude.abs() > 0.0001)) {
+              locationStr =
+                  '${latitude.toDouble().toStringAsFixed(6)}, ${longitude.toDouble().toStringAsFixed(6)}';
+            } else if (locationField is GeoPoint) {
               locationStr =
                   '${locationField.latitude.toStringAsFixed(6)}, ${locationField.longitude.toStringAsFixed(6)}';
-            } else if (locationField != null) {
+            } else if (deviceData?['locationText'] != null &&
+                deviceData!['locationText'].toString().trim().isNotEmpty) {
+              locationStr = deviceData['locationText'].toString();
+            } else if (locationField != null &&
+                locationField.toString().trim().isNotEmpty) {
               locationStr = locationField.toString();
             }
 

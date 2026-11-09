@@ -84,6 +84,7 @@ class NotificationService {
     required String phoneNumber,
     required String message,
     String triggeredBy = 'system',
+    String? alertId,
   }) async {
     final targetPhone = phoneNumber.trim();
 
@@ -94,6 +95,7 @@ class NotificationService {
         status: 'not_configured',
         error: 'SMS gateway configuration is missing.',
         triggeredBy: triggeredBy,
+        alertId: alertId,
       );
       throw StateError(
         'SMS notifications are not configured. Set lib/config/sms_config.dart first.',
@@ -126,6 +128,7 @@ class NotificationService {
       providerStatusCode: response.statusCode,
       providerResponse: response.body,
       triggeredBy: triggeredBy,
+      alertId: alertId,
       error: success ? null : 'SMS send failed (${response.statusCode})',
     );
 
@@ -134,6 +137,67 @@ class NotificationService {
         'SMS send failed with status ${response.statusCode}: ${response.body}',
       );
     }
+  }
+
+  /// Text every guardian. One failure does not stop the rest of the list.
+  Future<SmsBroadcastResult> broadcastSms({
+    required List<String> phoneNumbers,
+    required String message,
+    String triggeredBy = 'emergency_alert',
+    String? alertId,
+  }) async {
+    final targets = <String>[];
+    final seen = <String>{};
+    for (final raw in phoneNumbers) {
+      final phone = raw.trim();
+      if (phone.isEmpty || seen.contains(phone)) continue;
+      seen.add(phone);
+      targets.add(phone);
+    }
+    if (targets.isEmpty) {
+      return const SmsBroadcastResult(
+        status: 'no_recipients',
+        sent: 0,
+        failed: 0,
+      );
+    }
+
+    var sent = 0;
+    var failed = 0;
+    for (final phone in targets) {
+      if (!isSmsConfigured) {
+        await _logSms(
+          phoneNumber: phone,
+          message: message,
+          status: 'not_configured',
+          error: 'SMS gateway configuration is missing.',
+          triggeredBy: triggeredBy,
+          alertId: alertId,
+        );
+        failed++;
+        continue;
+      }
+      try {
+        await sendSmsNotification(
+          phoneNumber: phone,
+          message: message,
+          triggeredBy: triggeredBy,
+          alertId: alertId,
+        );
+        sent++;
+      } catch (_) {
+        failed++;
+      }
+    }
+
+    final status = !isSmsConfigured
+        ? 'not_configured'
+        : sent == 0
+        ? 'failed'
+        : failed == 0
+        ? 'sent'
+        : 'partial';
+    return SmsBroadcastResult(status: status, sent: sent, failed: failed);
   }
 
   Future<void> _logEmail({
@@ -165,6 +229,7 @@ class NotificationService {
     int? providerStatusCode,
     String? providerResponse,
     required String triggeredBy,
+    String? alertId,
   }) {
     return _firestore.collection('sms_logs').add({
       'phoneNumber': phoneNumber,
@@ -174,7 +239,20 @@ class NotificationService {
       'providerStatusCode': providerStatusCode,
       'providerResponse': providerResponse ?? '',
       'triggeredBy': triggeredBy,
+      'alertId': alertId ?? '',
       'timestamp': FieldValue.serverTimestamp(),
     });
   }
+}
+
+class SmsBroadcastResult {
+  final String status;
+  final int sent;
+  final int failed;
+
+  const SmsBroadcastResult({
+    required this.status,
+    required this.sent,
+    required this.failed,
+  });
 }

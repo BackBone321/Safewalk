@@ -4,8 +4,8 @@
  * Hardware Details:
  * - Microcontroller: ESP32-D0WD-V3
  * - Cellular Module: A7670 4G LTE + GNSS (UART TX=26, RX=27)
- * - Tactile Button: GPIO 14 to GND (INPUT_PULLUP)
- * - Microphone: INMP441 I2S (WS=25, SD=32, SCK=33)
+ * - Tactile Button: GPIO 14 to GND (INPUT_PULLUP). One press sends one alert.
+ * - Microphone: INMP441 I2S already soldered as SCK=33, WS=25, SD=32, L/R=GND
  *
  * Emergency voice path (no button required):
  *   1. Edge Impulse on-device keyword spotting for "HELP" / "TABANG"
@@ -28,16 +28,16 @@
 #define BOARD_PWRKEY    4
 #define BOARD_RESET     5
 #define BOARD_POWERON   12  // Enables onboard voltage regulator for cellular module
-#define BOARD_PIN_DTR   13
-#define BOARD_PIN_RI    15
+#define BOARD_PIN_DTR   25  // Modem DTR. Held LOW until the microphone takes this pin as I2S WS.
+#define BOARD_PIN_RI    33  // Modem RING. Microphone SCK uses this same header pin after boot.
 
-// Tactile Button Pin
+// Tactile Button Pin (header IO14 to GND). GPIO 32 is the microphone data pin.
 #define BUTTON_PIN      14
 
-// INMP441 I2S Microphone Pin Definitions
-#define I2S_WS          25  // Word Select / LRCLK
-#define I2S_SD          32  // Serial Data Out (ESP32 Data In)
-#define I2S_SCK         33  // Serial Clock / BCLK
+// INMP441 I2S — matches the soldered wiring on this board.
+#define I2S_WS          25  // Word Select / LRCLK  -> header IO25
+#define I2S_SD          32  // Serial Data          -> header IO32
+#define I2S_SCK         33  // Bit Clock / BCLK     -> header IO33
 #define I2S_PORT        I2S_NUM_0
 #define SAMPLE_RATE     EI_CLASSIFIER_FREQUENCY // Matches Edge Impulse trained sample rate (8kHz / 16kHz)
 
@@ -55,16 +55,18 @@ const char FIREBASE_API_KEY[] = "AIzaSyDaNNEfa8wqUZbfcsvhThuFo6MDDyTql5k"; // An
 // Device Registration Info
 const char DEVICE_ID[] = "safewalk_device_001";
 const char DEVICE_NAME[] = "LilyGo Tracker 001";
-const char DEVICE_PHONE[] = "+639129457063"; // LilyGo SIM card number (09129457063)
-
-// Alert Details & Parent SMS Fallback Info
-// The target parent's phone number to send the SMS to (Philippine format, e.g. "+639xxxxxxxxx")
-const char PARENT_PHONE[] = "=639568165326"; // Parent mobile phone number (09568165326)
+// Deprecated. Leave empty so SMS recipients come only from Firestore.
+// DEVICE_PHONE used to lock the LilyGo SIM number into the device document.
+const char DEVICE_PHONE[] = "";
+// PARENT_PHONE used to lock a parent number (the old value also had a stray '=').
+// Emergency SMS now uses devices/{id}.parentPhoneNumber and guardianPhonesCsv.
+const char PARENT_PHONE[] = "";
 const char PARENT_UID[] = "parent_mock_uid_123"; // Handled in DB linking
 
 // Dynamic variables populated at runtime from SIM (AT+CNUM) and Firestore
 String devicePhoneNumber = "";
 String dynamicParentPhone = "";
+String dynamicGuardianPhonesCsv = "";
 String dynamicStudentName = "";
 String dynamicParentUid = "";
 String dynamicStudentUid = "";
@@ -92,11 +94,8 @@ String gpsNmeaLineBuffer = "";
 // TinyGSM instance (used for GPRS connection only)
 TinyGsm modem(modemSerial);
 
-// Button variables for debouncing
-int buttonState = HIGH;
-int lastButtonState = HIGH;
-unsigned long lastDebounceTime = 0;
-const unsigned long DEBOUNCE_DELAY = 50; // milliseconds
+// SOS buttons. serviceSosButtons() latches one press; loop() sends the alert.
+static bool sosPressPending = false;
 
 // Duplicate-alert prevention: cooldown + re-arm only after keyword ends
 unsigned long lastVoiceTriggerTime = 0;
@@ -150,6 +149,7 @@ String detectAPN();
 // INMP441 Audio Prototypes
 bool initI2SMicrophone();
 bool checkVoiceHelpTrigger();
+void serviceSosButtons();
 String recordAndEncodeAudioClip(size_t durationSeconds = 3);
 String encodeBase64(const uint8_t* input, size_t inputLen);
 void createWavHeader(uint8_t* header, uint32_t pcmDataSize, uint32_t sampleRate = 8000, uint16_t numChannels = 1, uint16_t bitsPerSample = 16);
@@ -162,7 +162,9 @@ void setup() {
   Serial.println("   Safewalk Tracker starting up...       ");
   Serial.println("=========================================");
 
-  // Set up button pin
+  // GPIO 14 is the wired help switch to GND.
+  // GPIO 0 (BOOT) is not an alert button. On this board it sits low beside the modem
+  // and was sending a new alert on every twitch.
   pinMode(BUTTON_PIN, INPUT_PULLUP);
 
   // Initialize hardware serial for modem
@@ -184,31 +186,68 @@ void setup() {
   initI2SMicrophone();
 
   systemBootReadyTime = millis();
-  Serial.println("System Ready. Edge Impulse AI listening for 'HELP' or 'TABANG', or tactile button on GPIO 14.");
+  Serial.println("System Ready. Button and microphone run separately.");
+  Serial.println("[WIRE] INMP441  VDD->3V3  GND->GND  SCK->IO33  WS->IO25  SD->IO32  L/R->GND");
+  Serial.println("[WIRE] Help button: one leg->IO14  other leg->GND. One press sends one alert.");
+  Serial.println("[WIRE] Leave IO4, IO5, IO12, IO26, and IO27 empty. Remove any microSD card.");
+  Serial.printf("[BUTTON] GPIO14 is %s.\n",
+                digitalRead(BUTTON_PIN) == LOW ? "LOW (held or shorted to GND)" : "HIGH (open)");
+}
+
+// One alert per press of GPIO 14. The pin must be released before the next press counts.
+void serviceSosButtons() {
+  static int lastRaw = HIGH;
+  static unsigned long changeMs = 0;
+  static bool pressed = false;
+  static bool armed = false;
+  static bool inited = false;
+
+  if (sosPressPending) return;
+
+  unsigned long now = millis();
+  if (!inited) {
+    lastRaw = digitalRead(BUTTON_PIN);
+    changeMs = now;
+    pressed = (lastRaw == LOW);
+    armed = !pressed;
+    inited = true;
+  }
+
+  int raw = digitalRead(BUTTON_PIN);
+  if (raw != lastRaw) {
+    lastRaw = raw;
+    changeMs = now;
+  }
+  if ((now - changeMs) < 80) return;
+
+  if (raw == LOW) {
+    if (!pressed && armed) {
+      pressed = true;
+      armed = false;
+      sosPressPending = true;
+      lastVoiceKeyword = "SOS BUTTON";
+      Serial.println("\n[BUTTON] Pressed once. Sending location and SMS.");
+      return;
+    }
+    pressed = true;
+  } else {
+    if (pressed) {
+      Serial.println("[BUTTON] Released. Press again for one new alert.");
+    }
+    pressed = false;
+    armed = true;
+  }
 }
 
 void loop() {
-  // 1. Read state of the tactile button (active LOW)
-  int reading = digitalRead(BUTTON_PIN);
-
-  if (reading != lastButtonState) {
-    lastDebounceTime = millis();
+  // Button is sampled here and also inside the microphone capture, so a press
+  // is not lost while a keyword recording is in progress.
+  serviceSosButtons();
+  if (sosPressPending) {
+    sosPressPending = false;
+    triggerEmergencyAlertProcess("sos");
+    return;
   }
-
-  if ((millis() - lastDebounceTime) > DEBOUNCE_DELAY) {
-    if (reading != buttonState) {
-      buttonState = reading;
-
-      // Detect button pressed (transition from HIGH to LOW)
-      if (buttonState == LOW) {
-        lastVoiceKeyword = "SOS BUTTON";
-        Serial.println("\n[ALERT] Tactile Button Pressed! Triggering SOS Alert...");
-        triggerEmergencyAlertProcess("sos");
-      }
-    }
-  }
-
-  lastButtonState = reading;
 
   // 2. Check INMP441 audio for voice 'Help' or 'Tabang' distress trigger
   //    Cooldown blocks repeats; detector re-arms only after keyword ends AND cooldown elapses.
@@ -218,23 +257,28 @@ void loop() {
     if (voiceDetectorArmed && (millis() - lastVoiceTriggerTime > VOICE_COOLDOWN_MS)) {
       voiceDetectorArmed = false;
       lastVoiceTriggerTime = millis();
-      Serial.printf("\n[ALERT] Voice '%s' distress keyword confirmed by Edge Impulse AI!\n", lastVoiceKeyword.c_str());
-      Serial.println("[ALERT] Detector disarmed until keyword ends and cooldown expires.");
+      Serial.println();
+      Serial.println("=========================================");
+      Serial.printf("  VOICE DETECTED: %s\n", lastVoiceKeyword.c_str());
+      Serial.println("=========================================");
       triggerEmergencyAlertProcess("voice_help");
-    } else if (!voiceDetectorArmed) {
-      Serial.println("[ALERT] Keyword still audible — duplicate SMS suppressed (waiting for quiet + cooldown).");
     }
   } else {
     if (voiceKeywordCurrentlyActive) {
       voiceKeywordCurrentlyActive = false;
-      Serial.println("[ALERT] Keyword ended. Waiting for cooldown before re-arm...");
     }
     if (!voiceDetectorArmed &&
         !voiceKeywordCurrentlyActive &&
         (millis() - lastVoiceTriggerTime > VOICE_COOLDOWN_MS)) {
       voiceDetectorArmed = true;
-      Serial.println("[ALERT] Voice detector re-armed.");
     }
+  }
+
+  serviceSosButtons();
+  if (sosPressPending) {
+    sosPressPending = false;
+    triggerEmergencyAlertProcess("sos");
+    return;
   }
 
   // 3. Process continuous GPS serial stream to maintain exact real-time coordinates
@@ -291,6 +335,7 @@ void initializeA7670() {
   pinMode(BOARD_PWRKEY, OUTPUT);
   pinMode(BOARD_RESET, OUTPUT);
   pinMode(BOARD_PIN_DTR, OUTPUT);
+  pinMode(BOARD_PIN_RI, INPUT);
 
   // 1. Turn on the power regulator/LDO to the cellular modem
   digitalWrite(BOARD_POWERON, HIGH);
@@ -299,7 +344,8 @@ void initializeA7670() {
   // 2. Release reset pin (keep high)
   digitalWrite(BOARD_RESET, HIGH);
 
-  // 3. Deassert sleep pin (DTR low wakes up module)
+  // 3. Hold DTR low so the modem stays awake through startup.
+  //    GPIO 25 is then handed to the INMP441 word-select in initI2SMicrophone().
   digitalWrite(BOARD_PIN_DTR, LOW);
 
   Serial.println("[MODEM] Checking modem communication...");
@@ -759,25 +805,27 @@ bool syncDeviceCoordinatesToFirestore(double lat, double lon) {
   // If it's Manila (14.5995, 120.9842), do NOT sync Manila!
   if (abs(lat - 14.5995) < 0.005 && abs(lon - 120.9842) < 0.005) return false;
 
-  Serial.printf("[DEVICE SYNC] Updating live coordinates in Firestore: Lat: %.6f, Lon: %.6f\n", lat, lon);
+  Serial.printf("[DEVICE SYNC] Updating live coordinates in Firestore: Lat: %.7f, Lon: %.7f\n", lat, lon);
   String response;
   flushModemBuffer();
 
   String rfcTimestamp = getNetworkTimeRFC3339();
   String jsonBody = "{\"fields\":{";
-  jsonBody += "\"location\":{\"stringValue\":\"" + String(lat, 6) + ", " + String(lon, 6) + "\"},";
-  jsonBody += "\"coordinates\":{\"geoPointValue\":{\"latitude\":" + String(lat, 6) + ",\"longitude\":" + String(lon, 6) + "}},";
-  jsonBody += "\"latitude\":{\"doubleValue\":" + String(lat, 6) + "},";
-  jsonBody += "\"longitude\":{\"doubleValue\":" + String(lon, 6) + "},";
+  jsonBody += "\"location\":{\"stringValue\":\"" + String(lat, 7) + ", " + String(lon, 7) + "\"},";
+  jsonBody += "\"coordinates\":{\"geoPointValue\":{\"latitude\":" + String(lat, 7) + ",\"longitude\":" + String(lon, 7) + "}},";
+  jsonBody += "\"latitude\":{\"doubleValue\":" + String(lat, 7) + "},";
+  jsonBody += "\"longitude\":{\"doubleValue\":" + String(lon, 7) + "},";
+  jsonBody += "\"locationSource\":{\"stringValue\":\"device_gps\"},";
   jsonBody += "\"status\":{\"stringValue\":\"active\"},";
-  jsonBody += "\"lastSeen\":{\"timestampValue\":\"" + rfcTimestamp + "\"}";
+  jsonBody += "\"lastSeen\":{\"timestampValue\":\"" + rfcTimestamp + "\"},";
+  jsonBody += "\"updatedAt\":{\"timestampValue\":\"" + rfcTimestamp + "\"}";
   jsonBody += "}}";
 
   String url = "https://firestore.googleapis.com/v1/projects/";
   url += FIREBASE_PROJECT_ID;
   url += "/databases/(default)/documents/devices/";
   url += DEVICE_ID;
-  url += "?updateMask.fieldPaths=location&updateMask.fieldPaths=coordinates&updateMask.fieldPaths=latitude&updateMask.fieldPaths=longitude&updateMask.fieldPaths=status&updateMask.fieldPaths=lastSeen&key=";
+  url += "?updateMask.fieldPaths=location&updateMask.fieldPaths=coordinates&updateMask.fieldPaths=latitude&updateMask.fieldPaths=longitude&updateMask.fieldPaths=locationSource&updateMask.fieldPaths=status&updateMask.fieldPaths=lastSeen&updateMask.fieldPaths=updatedAt&key=";
   url += FIREBASE_API_KEY;
 
   sendATCommand("AT+HTTPTERM", response, 2000);
@@ -972,9 +1020,18 @@ bool triggerFirebaseAlert(double lat, double lon, const String& triggerType, con
   jsonBody += "\"uid\":{\"stringValue\":\"" + (dynamicStudentUid.length() > 0 ? dynamicStudentUid : String(DEVICE_ID)) + "\"},";
   jsonBody += "\"studentUid\":{\"stringValue\":\"" + (dynamicStudentUid.length() > 0 ? dynamicStudentUid : String(DEVICE_ID)) + "\"},";
   jsonBody += "\"fullName\":{\"stringValue\":\"" + String(DEVICE_NAME) + "\"},";
-  jsonBody += "\"phoneNumber\":{\"stringValue\":\"" + (devicePhoneNumber.length() > 0 ? devicePhoneNumber : String(DEVICE_PHONE)) + "\"},";
-  jsonBody += "\"parentUid\":{\"stringValue\":\"" + (dynamicParentUid.length() > 0 ? dynamicParentUid : String(PARENT_UID)) + "\"},";
-  jsonBody += "\"parentPhoneNumber\":{\"stringValue\":\"" + (dynamicParentPhone.length() > 0 ? dynamicParentPhone : String(PARENT_PHONE)) + "\"},";
+  if (devicePhoneNumber.length() > 0) {
+    jsonBody += "\"phoneNumber\":{\"stringValue\":\"" + devicePhoneNumber + "\"},";
+  }
+  if (dynamicParentUid.length() > 0) {
+    jsonBody += "\"parentUid\":{\"stringValue\":\"" + dynamicParentUid + "\"},";
+  }
+  if (dynamicParentPhone.length() > 0) {
+    jsonBody += "\"parentPhoneNumber\":{\"stringValue\":\"" + dynamicParentPhone + "\"},";
+  }
+  if (dynamicGuardianPhonesCsv.length() > 0) {
+    jsonBody += "\"guardianPhonesCsv\":{\"stringValue\":\"" + dynamicGuardianPhonesCsv + "\"},";
+  }
   String initialStatus = "active";
   jsonBody += "\"type\":{\"stringValue\":\"" + triggerType + "\"},";
   jsonBody += "\"severity\":{\"stringValue\":\"high\"},";
@@ -983,10 +1040,10 @@ bool triggerFirebaseAlert(double lat, double lon, const String& triggerType, con
   if (audioBase64.length() > 0) {
     jsonBody += "\"audioClip\":{\"stringValue\":\"data:audio/wav;base64," + audioBase64 + "\"},";
   }
-  jsonBody += "\"location\":{\"stringValue\":\"" + String(lat, 6) + ", " + String(lon, 6) + "\"},";
+  jsonBody += "\"location\":{\"stringValue\":\"" + String(lat, 7) + ", " + String(lon, 7) + "\"},";
   jsonBody += "\"coordinates\":{\"geoPointValue\":{";
-  jsonBody += "\"latitude\":" + String(lat, 6) + ",";
-  jsonBody += "\"longitude\":" + String(lon, 6);
+  jsonBody += "\"latitude\":" + String(lat, 7) + ",";
+  jsonBody += "\"longitude\":" + String(lon, 7);
   jsonBody += "}},";
   jsonBody += "\"timestamp\":{\"timestampValue\":\"" + rfcTimestamp + "\"},";
   jsonBody += "\"locationSource\":{\"stringValue\":\"device_gps\"},";
@@ -1361,20 +1418,61 @@ bool sendSMSViaModemWithFallbacks(const String& recipientIntl, const String& mes
   return false;
 }
 
-// Main high-level emergency SMS function: formats concise message with coordinates link and sends to parent
+// Main high-level emergency SMS function: formats concise message with coordinates link and sends to all linked/added guardians
 bool sendSMSAlert(double lat, double lon, const String& triggerType) {
   Serial.println("\n[SMS] =========================================");
-  Serial.println("[SMS] Preparing emergency SMS alert to parent...");
+  Serial.println("[SMS] Preparing emergency SMS alert to guardian(s)...");
   Serial.println("[SMS] =========================================");
 
   logSmsDiagnostics();
 
-  String targetParentPhone = (dynamicParentPhone.length() > 0 ? dynamicParentPhone : String(PARENT_PHONE));
-  targetParentPhone = formatPhoneNumberForSMS(targetParentPhone);
-  targetParentPhone.trim();
+  // Build deduplicated list of guardian phone numbers (supports up to 12 dynamic guardian numbers)
+  String recipients[12];
+  int recipientCount = 0;
 
-  if (targetParentPhone.length() < 7) {
-    Serial.printf("[SMS] ERROR: Invalid parent phone '%s'.\n", targetParentPhone.c_str());
+  auto addUniqueRecipient = [&](const String& rawNum) {
+    if (recipientCount >= 12) return;
+    String formatted = formatPhoneNumberForSMS(rawNum);
+    formatted.trim();
+    if (formatted.length() < 7) return;
+    for (int i = 0; i < recipientCount; i++) {
+      if (recipients[i] == formatted) return;
+    }
+    recipients[recipientCount++] = formatted;
+  };
+
+  if (dynamicParentPhone.length() > 0) {
+    addUniqueRecipient(dynamicParentPhone);
+  }
+
+  if (dynamicGuardianPhonesCsv.length() > 0) {
+    int startIdx = 0;
+    int len = dynamicGuardianPhonesCsv.length();
+    while (startIdx < len) {
+      int commaIdx = dynamicGuardianPhonesCsv.indexOf(',', startIdx);
+      int semiIdx = dynamicGuardianPhonesCsv.indexOf(';', startIdx);
+      int splitIdx = -1;
+      if (commaIdx != -1 && semiIdx != -1) {
+        splitIdx = (commaIdx < semiIdx) ? commaIdx : semiIdx;
+      } else if (commaIdx != -1) {
+        splitIdx = commaIdx;
+      } else if (semiIdx != -1) {
+        splitIdx = semiIdx;
+      }
+
+      if (splitIdx == -1) {
+        addUniqueRecipient(dynamicGuardianPhonesCsv.substring(startIdx));
+        break;
+      } else {
+        addUniqueRecipient(dynamicGuardianPhonesCsv.substring(startIdx, splitIdx));
+        startIdx = splitIdx + 1;
+      }
+    }
+  }
+
+  if (recipientCount == 0) {
+    Serial.println("[SMS] WARNING: No parent or guardian numbers found in Firebase. SMS not sent.");
+    Serial.println("[SMS] Add devices/{id}.parentPhoneNumber and guardianPhonesCsv (or guardianPhones / additionalGuardians).");
     return false;
   }
 
@@ -1397,14 +1495,27 @@ bool sendSMSAlert(double lat, double lon, const String& triggerType) {
     shortMsg += String(lon, 5);
   }
 
-  Serial.printf("[SMS] Recipient (intl): %s\n", targetParentPhone.c_str());
+  Serial.printf("[SMS] Total Guardian Recipients: %d\n", recipientCount);
   Serial.println("[SMS] Message (" + String(shortMsg.length()) + " chars):\n" + shortMsg);
 
-  bool success = sendSMSViaModemWithFallbacks(targetParentPhone, shortMsg);
+  bool anySuccess = false;
+  for (int r = 0; r < recipientCount; r++) {
+    Serial.printf("\n[SMS] Dispatching to Guardian %d/%d: %s\n", r + 1, recipientCount, recipients[r].c_str());
+    if (sendSMSViaModemWithFallbacks(recipients[r], shortMsg)) {
+      anySuccess = true;
+      Serial.printf("[SMS] [SUCCESS] Guardian %d (%s) SMS submitted to carrier.\n", r + 1, recipients[r].c_str());
+    } else {
+      Serial.printf("[SMS] [WARNING] Failed to submit SMS to Guardian %d (%s).\n", r + 1, recipients[r].c_str());
+    }
+    if (r + 1 < recipientCount) {
+      delay(1500);
+      flushModemBuffer();
+    }
+  }
 
-  if (success) {
+  if (anySuccess) {
     lastSmsSubmissionStatus = "submitted";
-    Serial.println("[SMS] [SUCCESS] SMS submitted to carrier (+CMGS). Not a handset delivery receipt.");
+    Serial.println("[SMS] [SUCCESS] Emergency SMS submitted to carrier (+CMGS). Not a handset delivery receipt.");
   } else {
     lastSmsSubmissionStatus = "failed";
     Serial.println("[SMS] [FAILED] All SMS strategies failed.");
@@ -1416,7 +1527,7 @@ bool sendSMSAlert(double lat, double lon, const String& triggerType) {
     Serial.println("  5) Module is not A7670E-LNXY-UBL (no SMS hardware support)");
   }
 
-  return success;
+  return anySuccess;
 }
 
 // Monitors modem serial UART stream for unsolicited result codes (URCs), such as incoming SMS (+CMTI)
@@ -1500,10 +1611,14 @@ void handleIncomingSMS(int smsIndex) {
       reply += "GPS: Acquiring fix (indoors)";
     }
 
-    String destination = senderPhone.length() > 0 ? senderPhone : (dynamicParentPhone.length() > 0 ? dynamicParentPhone : String(PARENT_PHONE));
+    String destination = senderPhone.length() > 0 ? senderPhone : dynamicParentPhone;
     destination = formatPhoneNumberForSMS(destination);
-    Serial.printf("[SMS] Replying to %s with coordinates (%d chars)...\n", destination.c_str(), reply.length());
-    sendSMSViaModemWithFallbacks(destination, reply);
+    if (destination.length() < 7) {
+      Serial.println("[SMS] WARNING: No Firestore parent number to reply to. Status SMS skipped.");
+    } else {
+      Serial.printf("[SMS] Replying to %s with coordinates (%d chars)...\n", destination.c_str(), reply.length());
+      sendSMSViaModemWithFallbacks(destination, reply);
+    }
   }
 
   // Delete message from SIM card storage to prevent memory overflow (SIM holds ~25-30 messages)
@@ -1575,6 +1690,94 @@ double parseJsonDoubleField(const String& json, const String& fieldName) {
   return 0.0;
 }
 
+// Returns the stringValue, or every stringValue inside an arrayValue, for one Firestore field.
+// Accepts a CSV string or a list such as guardianPhones / additionalGuardians.
+String parseFirestorePhoneList(const String& json, const String& fieldName) {
+  String key = "\"" + fieldName + "\"";
+  int keyIndex = -1;
+  int searchFrom = 0;
+  while (searchFrom < json.length()) {
+    int found = json.indexOf(key, searchFrom);
+    if (found == -1) break;
+    int after = found + key.length();
+    while (after < json.length() && (json.charAt(after) == ' ' || json.charAt(after) == '\r' || json.charAt(after) == '\n' || json.charAt(after) == '\t')) {
+      after++;
+    }
+    if (after < json.length() && json.charAt(after) == ':') {
+      keyIndex = found;
+      break;
+    }
+    searchFrom = found + key.length();
+  }
+  if (keyIndex == -1) return "";
+  int openBrace = json.indexOf("{", keyIndex);
+  if (openBrace == -1) return "";
+
+  int depth = 0;
+  bool inString = false;
+  int endBrace = -1;
+  for (int i = openBrace; i < json.length(); i++) {
+    char c = json.charAt(i);
+    if (c == '\\' && inString) {
+      i++;
+      continue;
+    }
+    if (c == '"') {
+      inString = !inString;
+      continue;
+    }
+    if (inString) continue;
+    if (c == '{') depth++;
+    else if (c == '}') {
+      depth--;
+      if (depth == 0) {
+        endBrace = i;
+        break;
+      }
+    }
+  }
+  if (endBrace == -1) return "";
+  String region = json.substring(openBrace, endBrace + 1);
+
+  String csv = "";
+  int search = 0;
+  while (search < region.length()) {
+    int marker = region.indexOf("\"stringValue\"", search);
+    if (marker == -1) break;
+    int colon = region.indexOf(":", marker);
+    if (colon == -1) break;
+    int openQuote = region.indexOf("\"", colon);
+    if (openQuote == -1) break;
+    int closeQuote = region.indexOf("\"", openQuote + 1);
+    if (closeQuote == -1) break;
+    String value = region.substring(openQuote + 1, closeQuote);
+    value.trim();
+    if (value.length() > 0) {
+      if (csv.length() > 0) csv += ",";
+      csv += value;
+    }
+    search = closeQuote + 1;
+  }
+  return csv;
+}
+
+String resolveGuardianPhonesCsv(const String& httpData) {
+  const char* fields[] = {
+    "guardianPhonesCsv",
+    "guardianPhones",
+    "additionalGuardians"
+  };
+  String merged = "";
+  for (size_t i = 0; i < sizeof(fields) / sizeof(fields[0]); i++) {
+    String part = parseFirestorePhoneList(httpData, fields[i]);
+    part.trim();
+    if (part.length() == 0) continue;
+    if (merged.length() > 0) merged += ",";
+    merged += part;
+  }
+  return merged;
+}
+
 // Automatically creates/registers devices/safewalk_device_001 if it doesn't exist in Firestore (404 fix)
 bool autoRegisterDeviceInFirestore() {
   Serial.println("[CONFIG] Auto-registering safewalk_device_001 in Firestore...");
@@ -1585,9 +1788,15 @@ bool autoRegisterDeviceInFirestore() {
   String jsonBody = "{\"fields\":{";
   jsonBody += "\"deviceId\":{\"stringValue\":\"" + String(DEVICE_ID) + "\"},";
   jsonBody += "\"deviceName\":{\"stringValue\":\"" + String(DEVICE_NAME) + "\"},";
-  jsonBody += "\"phoneNumber\":{\"stringValue\":\"" + String(DEVICE_PHONE) + "\"},";
-  jsonBody += "\"parentPhoneNumber\":{\"stringValue\":\"" + String(PARENT_PHONE) + "\"},";
-  jsonBody += "\"parentUid\":{\"stringValue\":\"" + String(PARENT_UID) + "\"},";
+  if (strlen(DEVICE_PHONE) > 0) {
+    jsonBody += "\"phoneNumber\":{\"stringValue\":\"" + String(DEVICE_PHONE) + "\"},";
+  }
+  if (strlen(PARENT_PHONE) > 0) {
+    jsonBody += "\"parentPhoneNumber\":{\"stringValue\":\"" + String(PARENT_PHONE) + "\"},";
+  }
+  if (strlen(PARENT_UID) > 0) {
+    jsonBody += "\"parentUid\":{\"stringValue\":\"" + String(PARENT_UID) + "\"},";
+  }
   jsonBody += "\"status\":{\"stringValue\":\"online\"},";
   jsonBody += "\"updatedAt\":{\"timestampValue\":\"" + rfcTimestamp + "\"}";
   jsonBody += "}}";
@@ -1677,165 +1886,190 @@ String getNetworkTimeRFC3339() {
 bool fetchDeviceConfig() {
   Serial.println("[CONFIG] Fetching device registration config from Firestore...");
   String response;
-  
-  // Build URL for the device document
+
+  // Parentheses in "(default)" make the A7670 reject AT+HTTPPARA. Percent-encoding is valid for this API.
   String url = "https://firestore.googleapis.com/v1/projects/";
   url += FIREBASE_PROJECT_ID;
-  url += "/databases/(default)/documents/devices/";
+  url += "/databases/%28default%29/documents/devices/";
   url += DEVICE_ID;
   url += "?key=";
   url += FIREBASE_API_KEY;
 
-  flushModemBuffer();
+  for (int attempt = 1; attempt <= 2; attempt++) {
+    flushModemBuffer();
+    sendATCommand("AT+HTTPTERM", response, 3000);
+    delay(300);
 
-  // Terminate previous sessions
-  sendATCommand("AT+HTTPTERM", response, 3000);
-  delay(500);
+    sendATCommand("AT+CSSLCFG=\"authmode\",0,0", response, 3000);
+    sendATCommand("AT+CSSLCFG=\"sslversion\",0,4", response, 3000);
+    sendATCommand("AT+CSSLCFG=\"ignorelocaltime\",0,1", response, 3000);
+    sendATCommand("AT+CSSLCFG=\"enableSNI\",0,1", response, 3000);
 
-  // Configure SSL (authmode=0 to skip certificate check) BEFORE HTTP SSL activation
-  sendATCommand("AT+CSSLCFG=\"authmode\",0,0", response, 3000);
-  sendATCommand("AT+CSSLCFG=\"sslversion\",0,4", response, 3000);
-  sendATCommand("AT+CSSLCFG=\"ignorelocaltime\",0,1", response, 3000);
-  sendATCommand("AT+CSSLCFG=\"enableSNI\",0,1", response, 3000);
-
-  // Init HTTP service
-  if (!sendATCommand("AT+HTTPINIT", response, 5000)) {
-    Serial.println("[CONFIG] AT+HTTPINIT failed: " + response);
-    return false;
-  }
-
-  // Enable SSL
-  sendATCommand("AT+HTTPSSL=1", response, 3000);
-  
-  // Bearer CID and SSL association
-  sendATCommand("AT+HTTPPARA=\"CID\",1", response, 3000);
-  sendATCommand("AT+HTTPPARA=\"SSLCFG\",0", response, 3000);
-
-  // Set URL
-  sendATCommand("AT+HTTPPARA=\"URL\",\"" + url + "\"", response, 3000);
-
-  // Execute GET (0 = GET)
-  modemSerial.println("AT+HTTPACTION=0");
-
-  // Wait for response
-  unsigned long start = millis();
-  String atResp = "";
-  bool gotAction = false;
-  int responseCode = -1;
-  int dataSize = 0;
-
-  while (millis() - start < 15000) {
-    while (modemSerial.available()) {
-      char c = modemSerial.read();
-      atResp += c;
+    if (!sendATCommand("AT+HTTPINIT", response, 5000)) {
+      Serial.println("[CONFIG] AT+HTTPINIT failed: " + response);
+      continue;
     }
-    int actionIdx = atResp.indexOf("+HTTPACTION:");
-    if (actionIdx != -1) {
-      int endLineIdx = atResp.indexOf("\n", actionIdx);
-      if (endLineIdx != -1) {
-        String urc = atResp.substring(actionIdx, endLineIdx);
-        int comma1 = urc.indexOf(",");
-        int comma2 = urc.indexOf(",", comma1 + 1);
+
+    sendATCommand("AT+HTTPSSL=1", response, 3000);
+    sendATCommand("AT+HTTPPARA=\"CID\",1", response, 3000);
+    sendATCommand("AT+HTTPPARA=\"SSLCFG\",0", response, 3000);
+
+    if (!sendATCommand("AT+HTTPPARA=\"URL\",\"" + url + "\"", response, 5000)) {
+      Serial.println("[CONFIG] Modem rejected Firestore URL: " + response);
+      sendATCommand("AT+HTTPTERM", response, 2000);
+      continue;
+    }
+
+    modemSerial.println("AT+HTTPACTION=0");
+
+    unsigned long start = millis();
+    String atResp = "";
+    bool gotAction = false;
+    int responseCode = -1;
+    int dataSize = 0;
+
+    while (millis() - start < 45000) {
+      while (modemSerial.available()) {
+        char c = modemSerial.read();
+        atResp += c;
+      }
+      int actionIdx = atResp.indexOf("+HTTPACTION:");
+      if (actionIdx != -1) {
+        int comma1 = atResp.indexOf(",", actionIdx);
+        int comma2 = comma1 == -1 ? -1 : atResp.indexOf(",", comma1 + 1);
         if (comma1 != -1 && comma2 != -1) {
-          responseCode = urc.substring(comma1 + 1, comma2).toInt();
-          dataSize = urc.substring(comma2 + 1).toInt();
+          responseCode = atResp.substring(comma1 + 1, comma2).toInt();
+          int endNum = comma2 + 1;
+          while (endNum < atResp.length() && isDigit(atResp.charAt(endNum))) endNum++;
+          dataSize = atResp.substring(comma2 + 1, endNum).toInt();
+          gotAction = true;
+          break;
         }
-        gotAction = true;
+      }
+      bool commandError = atResp.indexOf("+CME ERROR") != -1 || atResp.indexOf("\r\nERROR") != -1 || atResp.indexOf("\nERROR") != -1;
+      if (commandError && (millis() - start) > 1500) {
         break;
       }
+      delay(50);
     }
-    delay(100);
-  }
 
-  if (!gotAction || responseCode != 200 || dataSize <= 0) {
-    Serial.printf("[CONFIG] HTTP GET failed. Code: %d, Size: %d. Falling back to default settings.\n", responseCode, dataSize);
-    sendATCommand("AT+HTTPTERM", response, 3000);
-    // If document is missing in Firestore (404), automatically initialize it so it can be linked
-    if (responseCode == 404) {
-      autoRegisterDeviceInFirestore();
+    if (!gotAction || responseCode != 200 || dataSize <= 0) {
+      String preview = atResp;
+      preview.replace("\r", " ");
+      preview.replace("\n", " ");
+      if (preview.length() > 180) preview = preview.substring(0, 180);
+      Serial.printf("[CONFIG] HTTP GET failed (attempt %d). Code: %d, Size: %d. Modem: %s\n",
+                    attempt, responseCode, dataSize, preview.c_str());
+      sendATCommand("AT+HTTPTERM", response, 3000);
+      if (responseCode == 404) {
+        autoRegisterDeviceInFirestore();
+        return false;
+      }
+      continue;
     }
-    return false;
-  }
 
-  // Read response buffer using AT+HTTPREAD
-  modemSerial.println("AT+HTTPREAD=0," + String(dataSize));
-  
-  // Read response from serial
-  start = millis();
-  String httpData = "";
-  while (millis() - start < 5000) {
-    while (modemSerial.available()) {
-      char c = modemSerial.read();
-      httpData += c;
+    modemSerial.println("AT+HTTPREAD=0," + String(dataSize));
+
+    start = millis();
+    String httpData = "";
+    while (millis() - start < 12000) {
+      while (modemSerial.available()) {
+        char c = modemSerial.read();
+        httpData += c;
+      }
+      int readIdx = httpData.indexOf("+HTTPREAD:");
+      if (readIdx != -1) {
+        int payloadStart = httpData.indexOf('\n', readIdx);
+        if (payloadStart != -1 && (httpData.length() - (payloadStart + 1)) >= dataSize) {
+          break;
+        }
+      }
+      if (httpData.indexOf("+CME ERROR") != -1 || httpData.indexOf("\r\nERROR") != -1) break;
+      delay(20);
     }
-    if (httpData.indexOf("OK") != -1) {
-      break;
-    }
-    delay(50);
-  }
 
-  // Terminate HTTP
-  sendATCommand("AT+HTTPTERM", response, 3000);
-
-  // Parse fields
-  String parsedParentUid = parseJsonStringField(httpData, "parentUid");
-  String parsedParentPhone = parseJsonStringField(httpData, "parentPhoneNumber");
-  if (parsedParentPhone.length() == 0) {
-    parsedParentPhone = parseJsonStringField(httpData, "parentPhone");
-  }
-  String parsedStudentUid = parseJsonStringField(httpData, "studentUid");
-  String parsedStudentName = parseJsonStringField(httpData, "studentName");
-
-  if (parsedParentUid.length() > 0) {
-    dynamicParentUid = parsedParentUid;
-  }
-  if (parsedParentPhone.length() > 0) {
-    dynamicParentPhone = parsedParentPhone;
-  }
-  if (parsedStudentUid.length() > 0) {
-    dynamicStudentUid = parsedStudentUid;
-  }
-  if (parsedStudentName.length() > 0) {
-    dynamicStudentName = parsedStudentName;
-  }
-  
-  String parsedPhone = parseJsonStringField(httpData, "phoneNumber");
-  if (parsedPhone.length() > 0) {
-    devicePhoneNumber = parsedPhone;
-  }
-
-  // Only use stored Firestore coordinates as a last-resort fallback when no live satellite fix exists
-  double storedLat = parseJsonDoubleField(httpData, "latitude");
-  double storedLon = parseJsonDoubleField(httpData, "longitude");
-  if ((storedLat == 0.0 || storedLon == 0.0) && httpData.indexOf("\"geoPointValue\"") != -1) {
-    int geoIdx = httpData.indexOf("\"geoPointValue\"");
-    int latIdx = httpData.indexOf("\"latitude\"", geoIdx);
-    int lonIdx = httpData.indexOf("\"longitude\"", geoIdx);
-    if (latIdx != -1 && lonIdx != -1) {
-      int latCol = httpData.indexOf(":", latIdx);
-      int lonCol = httpData.indexOf(":", lonIdx);
-      if (latCol != -1 && lonCol != -1) {
-        storedLat = httpData.substring(latCol + 1, httpData.indexOf(",", latCol)).toDouble();
-        storedLon = httpData.substring(lonCol + 1, httpData.indexOf("}", lonCol)).toDouble();
+    int payloadIdx = httpData.indexOf("+HTTPREAD:");
+    if (payloadIdx != -1) {
+      int payloadStart = httpData.indexOf('\n', payloadIdx);
+      if (payloadStart != -1 && (httpData.length() - (payloadStart + 1)) < dataSize) {
+        Serial.printf("[CONFIG] Firestore body was cut off (%d of %d bytes). Retrying.\n",
+                      httpData.length() - (payloadStart + 1), dataSize);
+        sendATCommand("AT+HTTPTERM", response, 3000);
+        continue;
       }
     }
-  }
-  if (!globalHasGPSFix && globalCurrentLat == 0.0 && globalCurrentLon == 0.0 &&
-      storedLat != 0.0 && storedLon != 0.0) {
-    if (!((abs(storedLat - 14.5995) < 0.005) && (abs(storedLon - 120.9842) < 0.005))) {
-      globalCurrentLat = storedLat;
-      globalCurrentLon = storedLon;
-      Serial.printf("[CONFIG] Stored fallback location loaded from Firestore: Lat: %.6f, Lon: %.6f\n",
-                    storedLat, storedLon);
+
+    sendATCommand("AT+HTTPTERM", response, 3000);
+
+    String parsedParentUid = parseJsonStringField(httpData, "parentUid");
+    String parsedParentPhone = parseFirestorePhoneList(httpData, "parentPhoneNumber");
+    if (parsedParentPhone.length() == 0) {
+      parsedParentPhone = parseFirestorePhoneList(httpData, "parentPhone");
     }
+    String parsedGuardianCsv = resolveGuardianPhonesCsv(httpData);
+    String parsedStudentUid = parseJsonStringField(httpData, "studentUid");
+    String parsedStudentName = parseJsonStringField(httpData, "studentName");
+
+    if (parsedParentUid.length() > 0) {
+      dynamicParentUid = parsedParentUid;
+    }
+    // A short body can contain parentUid and omit the phone fields. Do not wipe numbers we already have.
+    bool sawParentPhone = httpData.indexOf("\"parentPhoneNumber\"") != -1 || httpData.indexOf("\"parentPhone\"") != -1;
+    bool sawGuardians = httpData.indexOf("\"guardianPhonesCsv\"") != -1 || httpData.indexOf("\"guardianPhones\"") != -1 || httpData.indexOf("\"additionalGuardians\"") != -1;
+    if (parsedParentPhone.length() > 0 || sawParentPhone) {
+      dynamicParentPhone = parsedParentPhone;
+    }
+    if (parsedGuardianCsv.length() > 0 || sawGuardians) {
+      dynamicGuardianPhonesCsv = parsedGuardianCsv;
+    }
+    if (parsedStudentUid.length() > 0) {
+      dynamicStudentUid = parsedStudentUid;
+    }
+    if (parsedStudentName.length() > 0) {
+      dynamicStudentName = parsedStudentName;
+    }
+
+    String parsedPhone = parseJsonStringField(httpData, "phoneNumber");
+    if (parsedPhone.length() > 0) {
+      devicePhoneNumber = parsedPhone;
+    }
+
+    double storedLat = parseJsonDoubleField(httpData, "latitude");
+    double storedLon = parseJsonDoubleField(httpData, "longitude");
+    if ((storedLat == 0.0 || storedLon == 0.0) && httpData.indexOf("\"geoPointValue\"") != -1) {
+      int geoIdx = httpData.indexOf("\"geoPointValue\"");
+      int latIdx = httpData.indexOf("\"latitude\"", geoIdx);
+      int lonIdx = httpData.indexOf("\"longitude\"", geoIdx);
+      if (latIdx != -1 && lonIdx != -1) {
+        int latCol = httpData.indexOf(":", latIdx);
+        int lonCol = httpData.indexOf(":", lonIdx);
+        if (latCol != -1 && lonCol != -1) {
+          storedLat = httpData.substring(latCol + 1, httpData.indexOf(",", latCol)).toDouble();
+          storedLon = httpData.substring(lonCol + 1, httpData.indexOf("}", lonCol)).toDouble();
+        }
+      }
+    }
+    if (!globalHasGPSFix && globalCurrentLat == 0.0 && globalCurrentLon == 0.0 &&
+        storedLat != 0.0 && storedLon != 0.0) {
+      if (!((abs(storedLat - 14.5995) < 0.005) && (abs(storedLon - 120.9842) < 0.005))) {
+        globalCurrentLat = storedLat;
+        globalCurrentLon = storedLon;
+        Serial.printf("[CONFIG] Stored fallback location loaded from Firestore: Lat: %.6f, Lon: %.6f\n",
+                      storedLat, storedLon);
+      }
+    }
+
+    Serial.printf("[CONFIG] Loaded: Parent Phone: %s, Guardian Phones CSV: %s, Parent UID: %s, Student UID: %s\n",
+      dynamicParentPhone.c_str(), dynamicGuardianPhonesCsv.c_str(), dynamicParentUid.c_str(), dynamicStudentUid.c_str());
+    if (dynamicParentPhone.length() == 0 && dynamicGuardianPhonesCsv.length() == 0) {
+      Serial.println("[CONFIG] WARNING: Firestore document has no parentPhoneNumber or guardian phones.");
+    }
+    return true;
   }
-  
-  Serial.printf("[CONFIG] Loaded: Parent Phone: %s, Parent UID: %s, Student UID: %s\n", 
-    dynamicParentPhone.c_str(), dynamicParentUid.c_str(), dynamicStudentUid.c_str());
 
-  return true;
+  Serial.println("[CONFIG] Firestore config unavailable. SOS will have no SMS recipients until the document can be read.");
+  return false;
 }
-
 // Queries the SIM card's IMSI (Mobile Country + Mobile Network Code) and dynamically resolves the APN.
 // This allows plug-and-play across different carriers (Globe, Smart, TNT, Dito) without re-coding.
 String detectAPN() {
@@ -1886,19 +2120,24 @@ String detectAPN() {
 // INMP441 I2S Microphone Driver & Voice Trigger Helper Routines
 // ============================================================================
 
-// Detected microphone channel in stereo frame: 0 for Left, 1 for Right
-static int i2sActiveChannel = 0;
-
 // DC-blocking high-pass filter state
 static float dc_x1 = 0.0f;
 static float dc_y1 = 0.0f;
+
+// INMP441 puts audio on one slot. The other slot stays near zero.
+// L/R to GND fills the left slot; L/R to 3V3 fills the right slot.
+static inline int32_t louderMicRaw(int32_t left, int32_t right) {
+  int32_t leftAbs = left < 0 ? -left : left;
+  int32_t rightAbs = right < 0 ? -right : right;
+  return (leftAbs >= rightAbs) ? left : right;
+}
 
 // Process 32-bit raw sample from active I2S channel:
 // - Shifts 24-bit MSB-aligned data with gain
 // - Clamps to int16 range to prevent overflow / wrap-around distortion
 // - Removes DC offset with a high-pass filter (~30 Hz cutoff at 16kHz)
 static inline int16_t processMicSample(int32_t raw32) {
-  int32_t s32 = raw32 >> 14; // +12 dB digital gain for clear speech pickup
+  int32_t s32 = raw32 >> 14; // level that produced real HELP/TABANG scores on this mic
   if (s32 > 32767) s32 = 32767;
   if (s32 < -32768) s32 = -32768;
 
@@ -1985,11 +2224,19 @@ bool initI2SMicrophone() {
   }
 
   if (rightEnergy > leftEnergy * 2) {
-    i2sActiveChannel = 1;
-    Serial.printf("[I2S] Active Channel: RIGHT (L-Energy: %llu, R-Energy: %llu)\n", leftEnergy, rightEnergy);
+    Serial.printf("[I2S] Louder slot at boot: RIGHT (L-Energy: %llu, R-Energy: %llu). L/R pin looks tied high.\n", leftEnergy, rightEnergy);
+  } else if (leftEnergy > rightEnergy * 2) {
+    Serial.printf("[I2S] Louder slot at boot: LEFT (L-Energy: %llu, R-Energy: %llu). L/R pin looks tied to GND.\n", leftEnergy, rightEnergy);
   } else {
-    i2sActiveChannel = 0;
-    Serial.printf("[I2S] Active Channel: LEFT (L-Energy: %llu, R-Energy: %llu)\n", leftEnergy, rightEnergy);
+    Serial.printf("[I2S] Both slots similar (L-Energy: %llu, R-Energy: %llu). Live reads follow the louder slot.\n", leftEnergy, rightEnergy);
+  }
+
+  if (leftEnergy < 8000 && rightEnergy < 8000) {
+    Serial.println("[I2S] WARNING: Microphone looks silent.");
+    Serial.println("[I2S] Soldered wiring is VDD->3V3, GND->GND, SCK->IO33, WS->IO25, SD->IO32, L/R->GND.");
+    Serial.println("[I2S] Check those six joints. A peak that stays 0 means one of them is open.");
+  } else {
+    Serial.println("[I2S] Microphone is producing audio.");
   }
 
   // Reset filter state & clear DMA buffer
@@ -2015,13 +2262,8 @@ static int microphone_audio_signal_get_data(size_t offset, size_t length, float 
 // Tuned to recognize genuine 'HELP' (>= 75%) and 'TABANG' (>= 55%)
 // Casual chatter and random speech are safely filtered out!
 bool checkVoiceHelpTrigger() {
-  // Boot grace period: ignore all voice triggers during the first 5 seconds after startup
-  if (millis() - systemBootReadyTime < BOOT_GRACE_PERIOD_MS) {
-    int32_t discardBuffer[64];
-    size_t discarded = 0;
-    i2s_read(I2S_PORT, discardBuffer, sizeof(discardBuffer), &discarded, pdMS_TO_TICKS(10));
-    return false;
-  }
+  serviceSosButtons();
+  if (sosPressPending) return false;
 
   static unsigned long lastCheck = 0;
   if (millis() - lastCheck < 80) return false;
@@ -2031,7 +2273,9 @@ bool checkVoiceHelpTrigger() {
   int32_t quickBuffer[128]; // 64 stereo frames
   size_t bytesRead = 0;
   esp_err_t err = i2s_read(I2S_PORT, quickBuffer, sizeof(quickBuffer), &bytesRead, pdMS_TO_TICKS(10));
-  if (err != ESP_OK || bytesRead == 0) return false;
+  if (err != ESP_OK || bytesRead == 0) {
+    return false;
+  }
 
   size_t framesRead = (bytesRead / sizeof(int32_t)) / 2;
   int32_t peak = 0;
@@ -2039,7 +2283,7 @@ bool checkVoiceHelpTrigger() {
   int16_t quickMono[64];
 
   for (size_t f = 0; f < framesRead; f++) {
-    int32_t raw = quickBuffer[f * 2 + i2sActiveChannel];
+    int32_t raw = louderMicRaw(quickBuffer[f * 2], quickBuffer[f * 2 + 1]);
     int16_t sample = processMicSample(raw);
     quickMono[f] = sample;
     int32_t val = abs((int32_t)sample);
@@ -2049,15 +2293,17 @@ bool checkVoiceHelpTrigger() {
 
   int32_t avgEnergy = (framesRead > 0) ? (sumEnergy / (int32_t)framesRead) : 0;
 
-  // Dual-condition sound energy gate:
-  // In quiet surroundings, baseline noise peaks around 3000-4500, but average energy is < 900.
-  // Genuine human voice speech ("TABANG" / "HELP") produces peak >= 5500 AND sustained energy >= 1300.
-  if (peak < 5500 || avgEnergy < 1300) {
+  // Quiet audio stays off the log. A real sound prints so the microphone can be checked.
+  if (peak < 2800 || avgEnergy < 700) {
     return false;
   }
 
-  // 2. Sound/Voice detected! Collect the full audio frame required by Edge Impulse model
-  Serial.printf("\n[INMP441] Voice activity detected (Peak: %d, Avg: %d). Feeding audio to Edge Impulse AI...\n", peak, avgEnergy);
+  Serial.printf("[INMP441] Voice activity detected (Peak: %d, Avg: %d). Feeding audio to check the microphone.\n", peak, avgEnergy);
+
+  if (millis() - systemBootReadyTime < BOOT_GRACE_PERIOD_MS) {
+    return false;
+  }
+
   size_t totalSamples = EI_CLASSIFIER_RAW_SAMPLE_COUNT;
   size_t samplesCollected = 0;
 
@@ -2069,23 +2315,40 @@ bool checkVoiceHelpTrigger() {
   unsigned long startCapture = millis();
   unsigned long maxTimeout = (EI_CLASSIFIER_RAW_SAMPLE_COUNT * 1000 / EI_CLASSIFIER_FREQUENCY) + 400;
 
-  // Capture the remaining samples from the active microphone channel (stereo demuxed)
+  // Capture the remaining samples from whichever stereo slot is actually live.
   while (samplesCollected < totalSamples && (millis() - startCapture < maxTimeout)) {
+    serviceSosButtons();
+    if (sosPressPending) {
+      return false;
+    }
     int32_t chunk[128]; // 64 stereo frames
     size_t chunkBytes = 0;
     i2s_read(I2S_PORT, chunk, sizeof(chunk), &chunkBytes, pdMS_TO_TICKS(20));
     size_t framesInChunk = (chunkBytes / sizeof(int32_t)) / 2;
 
     for (size_t f = 0; f < framesInChunk && samplesCollected < totalSamples; f++) {
-      int32_t raw = chunk[f * 2 + i2sActiveChannel];
+      int32_t raw = louderMicRaw(chunk[f * 2], chunk[f * 2 + 1]);
       inference_buffer[samplesCollected++] = processMicSample(raw);
     }
   }
 
   if (samplesCollected < totalSamples) {
-    Serial.println("[INMP441] Audio capture timeout. Skipping inference.");
     return false;
   }
+
+  size_t clipped = 0;
+  int32_t clipPeak = 0;
+  int64_t clipSum = 0;
+  for (size_t i = 0; i < totalSamples; i++) {
+    int32_t a = inference_buffer[i];
+    if (a < 0) a = -a;
+    if (a > clipPeak) clipPeak = a;
+    clipSum += a;
+    if (a >= 30000) clipped++;
+  }
+  int32_t clipAvg = (int32_t)(clipSum / (int64_t)totalSamples);
+  // A real word still has quiet gaps. A roar pinned at the top of the scale does not.
+  bool overloaded = (clipped * 5 > totalSamples) || (clipPeak >= 30000 && clipAvg >= 8000);
 
   // 3. Prepare signal for Edge Impulse
   signal_t signal;
@@ -2104,13 +2367,10 @@ bool checkVoiceHelpTrigger() {
   float helpScore = 0.0f;
   float tabangScore = 0.0f;
   float noiseScore = 0.0f;
-  float otherScore = 0.0f;
 
-  Serial.print("[AI PREDICTION] ");
   for (size_t ix = 0; ix < EI_CLASSIFIER_LABEL_COUNT; ix++) {
     const char* label = result.classification[ix].label;
     float score = result.classification[ix].value;
-    Serial.printf("%s: %.1f%%  ", label, score * 100.0f);
 
     if (strcasecmp(label, "tabang") == 0) {
       tabangScore = score;
@@ -2118,11 +2378,12 @@ bool checkVoiceHelpTrigger() {
       helpScore = score;
     } else if (strcasecmp(label, "noise") == 0 || strcasecmp(label, "noice") == 0) {
       noiseScore = score;
-    } else {
-      if (score > otherScore) otherScore = score;
     }
   }
-  Serial.println();
+
+  if (overloaded) {
+    return false;
+  }
 
   // 6. Tuned Keyword Confirmation:
   // - TABANG: requires >= 45% confidence and must exceed noise
@@ -2133,22 +2394,12 @@ bool checkVoiceHelpTrigger() {
   if (isTabangConfirmed || isHelpConfirmed) {
     const char* matchedWord = isTabangConfirmed ? "TABANG" : "HELP";
     lastVoiceKeyword = matchedWord;
-    float confidence = isTabangConfirmed ? tabangScore : helpScore;
-    Serial.println("\n***************************************************");
-    Serial.printf("[EDGE IMPULSE CONFIRMED] Genuine '%s' recognized with %.1f%% confidence!\n", matchedWord, confidence * 100.0f);
-    Serial.println("***************************************************");
     return true;
-  }
-
-  // Filtered out: Any casual word, chatter, or unconfirmed speech is safely ignored!
-  if (helpScore >= 0.35f || tabangScore >= 0.35f) {
-    Serial.printf("[FILTERED] Word '%s' ignored (help: %.1f%%, tabang: %.1f%%, noise: %.1f%%). Unconfirmed speech.\n",
-                  (helpScore >= tabangScore) ? "help-like" : "tabang-like",
-                  helpScore * 100.0f, tabangScore * 100.0f, noiseScore * 100.0f);
   }
 
   return false;
 }
+
 
 // Constructs standard 44-byte PCM WAV Header
 void createWavHeader(uint8_t* header, uint32_t pcmDataSize, uint32_t sampleRate, uint16_t numChannels, uint16_t bitsPerSample) {
@@ -2217,8 +2468,6 @@ String recordAndEncodeAudioClip(size_t durationSeconds) {
   size_t pcmDataSize = CLIP_RATE * sizeof(int16_t) * clipDuration;
   size_t totalWavSize = 44 + pcmDataSize;
 
-  Serial.printf("[INMP441] Recording %d-second audio clip at %u Hz...\n", clipDuration, CLIP_RATE);
-
   uint8_t* wavBuffer = (uint8_t*) malloc(totalWavSize);
   if (!wavBuffer) {
     Serial.println("[INMP441] ERROR: Out of memory for audio clip buffer!");
@@ -2247,7 +2496,7 @@ String recordAndEncodeAudioClip(size_t durationSeconds) {
     for (size_t f = 0; f < framesRead; f++) {
       if ((frameCounter % frameStep) == 0) {
         if (bytesReadTotal + sizeof(int16_t) <= pcmDataSize) {
-          int32_t raw = i2sChunk[f * 2 + i2sActiveChannel];
+          int32_t raw = louderMicRaw(i2sChunk[f * 2], i2sChunk[f * 2 + 1]);
           int16_t sampleVal = processMicSample(raw);
           memcpy(pcmPtr + bytesReadTotal, &sampleVal, sizeof(int16_t));
           bytesReadTotal += sizeof(int16_t);
@@ -2257,13 +2506,8 @@ String recordAndEncodeAudioClip(size_t durationSeconds) {
     }
   }
 
-  Serial.printf("[INMP441] Recorded %d bytes of audio data.\n", bytesReadTotal);
-
-  // Encode to Base64
   String base64Wav = encodeBase64(wavBuffer, 44 + bytesReadTotal);
   free(wavBuffer);
-
-  Serial.printf("[INMP441] Audio clip encoded to Base64 (%d chars).\n", base64Wav.length());
   return base64Wav;
 }
 
