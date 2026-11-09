@@ -1,25 +1,15 @@
 /*
- * Safewalk IoT Tracker - Board 1 (LILYGO T-A7670 V3 4G)
- *
- * Hardware Details:
- * - Microcontroller: ESP32-D0WD-V3
- * - Cellular Module: A7670 4G LTE + GNSS (UART TX=26, RX=27)
- * - Tactile Button: GPIO 14 to GND (INPUT_PULLUP). One press sends one alert.
- * - Microphone: INMP441 I2S already soldered as SCK=33, WS=25, SD=32, L/R=GND
- *
- * Emergency voice path (no button required):
- *   1. Edge Impulse on-device keyword spotting for "HELP" / "TABANG"
- *   2. Resolve parent phone from Firestore devices/{DEVICE_ID}.parentPhoneNumber
- *   3. Send cellular SMS via A7670 AT+CMGS (submission confirmed by +CMGS/OK)
- *   4. Upload emergency_alerts document over HTTPS (cellular data)
- *
- * NOTE: +CMGS OK means the carrier accepted the SMS for routing.
- *       It is NOT a handset delivery receipt (that requires SMS status reports).
+ * Safewalk IoT Tracker - LILYGO T-A7670 V3
+ * Button SOS + Edge Impulse "help"/"Tabang" keyword SOS + GPS/SMS/Firestore.
  */
+
+// Saves ~10KB RAM for the Edge Impulse MFCC path (required on ESP32 + modem stack).
+#define EIDSP_QUANTIZE_FILTERBANK 0
 
 #include <HardwareSerial.h>
 #include <driver/i2s.h>
 #include <driver/gpio.h>
+#include <string.h>
 #include <safewalk-voice-help_inferencing.h>
 
 // Board Pin Definitions (LILYGO T-A7670 V3)
@@ -55,13 +45,6 @@ const char FIREBASE_API_KEY[] = "AIzaSyDaNNEfa8wqUZbfcsvhThuFo6MDDyTql5k"; // An
 // Device Registration Info
 const char DEVICE_ID[] = "safewalk_device_001";
 const char DEVICE_NAME[] = "LilyGo Tracker 001";
-// Deprecated. Leave empty so SMS recipients come only from Firestore.
-// DEVICE_PHONE used to lock the LilyGo SIM number into the device document.
-const char DEVICE_PHONE[] = "";
-// PARENT_PHONE used to lock a parent number (the old value also had a stray '=').
-// Emergency SMS now uses devices/{id}.parentPhoneNumber and guardianPhonesCsv.
-const char PARENT_PHONE[] = "";
-const char PARENT_UID[] = "parent_mock_uid_123"; // Handled in DB linking
 
 // Dynamic variables populated at runtime from SIM (AT+CNUM) and Firestore
 String devicePhoneNumber = "";
@@ -97,18 +80,24 @@ TinyGsm modem(modemSerial);
 // SOS buttons. serviceSosButtons() latches one press; loop() sends the alert.
 static bool sosPressPending = false;
 
-// Duplicate-alert prevention: cooldown + re-arm only after keyword ends
+// Duplicate-alert prevention: cooldown starts AFTER the alert finishes, then quiet audio is required.
 unsigned long lastVoiceTriggerTime = 0;
-const unsigned long VOICE_COOLDOWN_MS = 30000; // Configurable: block repeat SMS for this long
-bool voiceDetectorArmed = true;               // Disarmed on fire; re-armed after quiet + cooldown
-bool voiceKeywordCurrentlyActive = false;     // True while consecutive frames still match keyword
+const unsigned long VOICE_COOLDOWN_MS = 30000;
+bool voiceDetectorArmed = true;
+bool voiceKeywordCurrentlyActive = false;
+bool voiceSliceWasQuiet = true;               // Last classified slice was silence / Noise
 String lastVoiceKeyword = "TABANG";
 String lastSmsSubmissionStatus = "none";      // "submitted" | "failed" | "none" (modem accept, not delivery)
 
-// Privacy: set to 0 to skip recording/uploading WAV clips (keyword detection still runs on-device)
-#ifndef ENABLE_VOICE_AUDIO_CLIP
-#define ENABLE_VOICE_AUDIO_CLIP 1
-#endif
+// Edge Impulse continuous keyword spotting (official slice API).
+// Model window = 2.0s @ 16 kHz (32000 samples). Each slice = 0.5s (8000 samples).
+// Labels in the deployed model: "Noise", "Tabang", "help"
+const float HELP_SCORE_MIN = 0.70f;            // Previous working firmware used ~0.75
+const float TABANG_SCORE_MIN = 0.55f;          // Previous working firmware used ~0.55
+const float KEYWORD_OVER_NOISE = 0.15f;        // Keyword must beat Noise, not merely match it
+const int32_t VOICE_SLICE_PEAK_MIN = 2200;     // INMP441 must actually hear speech
+const int32_t VOICE_SLICE_AVG_MIN = 500;
+const uint8_t VOICE_HITS_REQUIRED = 2;         // Two consecutive 0.5s slices before SOS
 
 // Boot grace period: prevents any false triggers during startup while hardware/network stabilizes
 unsigned long systemBootReadyTime = 0;
@@ -127,7 +116,7 @@ bool syncDeviceCoordinatesToFirestore(double lat, double lon);
 bool getGPSLocation(double& lat, double& lon); 
 String getField(const String& data, char separator, int index);
 bool setupNetwork();
-bool triggerFirebaseAlert(double lat, double lon, const String& triggerType = "sos", const String& audioBase64 = "");
+bool triggerFirebaseAlert(double lat, double lon, const String& triggerType = "sos");
 bool setupSMS();
 void logSmsDiagnostics();
 bool sendSMSAlert(double lat, double lon, const String& triggerType = "sos");
@@ -148,11 +137,9 @@ String detectAPN();
 
 // INMP441 Audio Prototypes
 bool initI2SMicrophone();
+void recoverMicrophoneListening();
 bool checkVoiceHelpTrigger();
 void serviceSosButtons();
-String recordAndEncodeAudioClip(size_t durationSeconds = 3);
-String encodeBase64(const uint8_t* input, size_t inputLen);
-void createWavHeader(uint8_t* header, uint32_t pcmDataSize, uint32_t sampleRate = 8000, uint16_t numChannels = 1, uint16_t bitsPerSample = 16);
 void triggerEmergencyAlertProcess(const String& triggerSource);
 
 void setup() {
@@ -182,16 +169,20 @@ void setup() {
   // Initialize Cellular SMS Subsystem (Text mode, GSM charset, SMS parameters)
   setupSMS();
 
-  // Initialize INMP441 I2S Microphone
+  // Initialize INMP441 I2S Microphone + Edge Impulse continuous classifier
   initI2SMicrophone();
+  recoverMicrophoneListening();
 
   systemBootReadyTime = millis();
-  Serial.println("System Ready. Button and microphone run separately.");
-  Serial.println("[WIRE] INMP441  VDD->3V3  GND->GND  SCK->IO33  WS->IO25  SD->IO32  L/R->GND");
-  Serial.println("[WIRE] Help button: one leg->IO14  other leg->GND. One press sends one alert.");
-  Serial.println("[WIRE] Leave IO4, IO5, IO12, IO26, and IO27 empty. Remove any microSD card.");
-  Serial.printf("[BUTTON] GPIO14 is %s.\n",
-                digitalRead(BUTTON_PIN) == LOW ? "LOW (held or shorted to GND)" : "HIGH (open)");
+  Serial.println("System Ready. Button SOS + voice HELP/TABANG active.");
+  Serial.printf("[VOICE] Model %s v%d @ %d Hz | labels:",
+                EI_CLASSIFIER_PROJECT_NAME,
+                EI_CLASSIFIER_PROJECT_DEPLOY_VERSION,
+                EI_CLASSIFIER_FREQUENCY);
+  for (size_t i = 0; i < EI_CLASSIFIER_LABEL_COUNT; i++) {
+    Serial.printf(" [%s]", ei_classifier_inferencing_categories[i]);
+  }
+  Serial.println();
 }
 
 // One alert per press of GPIO 14. The pin must be released before the next press counts.
@@ -249,18 +240,14 @@ void loop() {
     return;
   }
 
-  // 2. Check INMP441 audio for voice 'Help' or 'Tabang' distress trigger
-  //    Cooldown blocks repeats; detector re-arms only after keyword ends AND cooldown elapses.
+  // Continuous Help/Tabang listening. SOS only after a confirmed keyword while armed.
   bool voiceTriggerDetected = checkVoiceHelpTrigger();
   if (voiceTriggerDetected) {
     voiceKeywordCurrentlyActive = true;
     if (voiceDetectorArmed && (millis() - lastVoiceTriggerTime > VOICE_COOLDOWN_MS)) {
       voiceDetectorArmed = false;
       lastVoiceTriggerTime = millis();
-      Serial.println();
-      Serial.println("=========================================");
-      Serial.printf("  VOICE DETECTED: %s\n", lastVoiceKeyword.c_str());
-      Serial.println("=========================================");
+      Serial.printf("[VOICE] DETECTED: %s\n", lastVoiceKeyword.c_str());
       triggerEmergencyAlertProcess("voice_help");
     }
   } else {
@@ -269,8 +256,10 @@ void loop() {
     }
     if (!voiceDetectorArmed &&
         !voiceKeywordCurrentlyActive &&
+        voiceSliceWasQuiet &&
         (millis() - lastVoiceTriggerTime > VOICE_COOLDOWN_MS)) {
       voiceDetectorArmed = true;
+      Serial.println("[VOICE] Re-armed. Say HELP or TABANG.");
     }
   }
 
@@ -997,7 +986,7 @@ bool setupNetwork() {
 
 // Sends the SOS alert metadata directly to Firestore via HTTPS REST API
 // Uses the SIMCom A7670 native AT+HTTP stack (correct command set for this modem)
-bool triggerFirebaseAlert(double lat, double lon, const String& triggerType, const String& audioBase64) {
+bool triggerFirebaseAlert(double lat, double lon, const String& triggerType) {
   // Refresh configuration dynamically before sending alert to use the latest linking details
   fetchDeviceConfig();
 
@@ -1037,9 +1026,6 @@ bool triggerFirebaseAlert(double lat, double lon, const String& triggerType, con
   jsonBody += "\"severity\":{\"stringValue\":\"high\"},";
   jsonBody += "\"status\":{\"stringValue\":\"" + initialStatus + "\"},";
   jsonBody += "\"message\":{\"stringValue\":\"" + alertMsg + "\"},";
-  if (audioBase64.length() > 0) {
-    jsonBody += "\"audioClip\":{\"stringValue\":\"data:audio/wav;base64," + audioBase64 + "\"},";
-  }
   jsonBody += "\"location\":{\"stringValue\":\"" + String(lat, 7) + ", " + String(lon, 7) + "\"},";
   jsonBody += "\"coordinates\":{\"geoPointValue\":{";
   jsonBody += "\"latitude\":" + String(lat, 7) + ",";
@@ -1788,15 +1774,6 @@ bool autoRegisterDeviceInFirestore() {
   String jsonBody = "{\"fields\":{";
   jsonBody += "\"deviceId\":{\"stringValue\":\"" + String(DEVICE_ID) + "\"},";
   jsonBody += "\"deviceName\":{\"stringValue\":\"" + String(DEVICE_NAME) + "\"},";
-  if (strlen(DEVICE_PHONE) > 0) {
-    jsonBody += "\"phoneNumber\":{\"stringValue\":\"" + String(DEVICE_PHONE) + "\"},";
-  }
-  if (strlen(PARENT_PHONE) > 0) {
-    jsonBody += "\"parentPhoneNumber\":{\"stringValue\":\"" + String(PARENT_PHONE) + "\"},";
-  }
-  if (strlen(PARENT_UID) > 0) {
-    jsonBody += "\"parentUid\":{\"stringValue\":\"" + String(PARENT_UID) + "\"},";
-  }
   jsonBody += "\"status\":{\"stringValue\":\"online\"},";
   jsonBody += "\"updatedAt\":{\"timestampValue\":\"" + rfcTimestamp + "\"}";
   jsonBody += "}}";
@@ -2124,12 +2101,15 @@ String detectAPN() {
 static float dc_x1 = 0.0f;
 static float dc_y1 = 0.0f;
 
+// Locked once at boot. Per-sample "louder slot" hops onto I2S garbage and
+// makes Edge Impulse classify silence as HELP.
+static int i2sActiveChannel = 0; // 0 = left, 1 = right
+static bool i2sPausedForAlert = false;
+
 // INMP441 puts audio on one slot. The other slot stays near zero.
 // L/R to GND fills the left slot; L/R to 3V3 fills the right slot.
-static inline int32_t louderMicRaw(int32_t left, int32_t right) {
-  int32_t leftAbs = left < 0 ? -left : left;
-  int32_t rightAbs = right < 0 ? -right : right;
-  return (leftAbs >= rightAbs) ? left : right;
+static inline int32_t selectedMicRaw(int32_t left, int32_t right) {
+  return (i2sActiveChannel == 0) ? left : right;
 }
 
 // Process 32-bit raw sample from active I2S channel:
@@ -2223,12 +2203,14 @@ bool initI2SMicrophone() {
     }
   }
 
+  i2sActiveChannel = (rightEnergy > leftEnergy) ? 1 : 0;
   if (rightEnergy > leftEnergy * 2) {
-    Serial.printf("[I2S] Louder slot at boot: RIGHT (L-Energy: %llu, R-Energy: %llu). L/R pin looks tied high.\n", leftEnergy, rightEnergy);
+    Serial.printf("[I2S] Locked RIGHT slot (L-Energy: %llu, R-Energy: %llu). L/R pin looks tied high.\n", leftEnergy, rightEnergy);
   } else if (leftEnergy > rightEnergy * 2) {
-    Serial.printf("[I2S] Louder slot at boot: LEFT (L-Energy: %llu, R-Energy: %llu). L/R pin looks tied to GND.\n", leftEnergy, rightEnergy);
+    Serial.printf("[I2S] Locked LEFT slot (L-Energy: %llu, R-Energy: %llu). L/R pin looks tied to GND.\n", leftEnergy, rightEnergy);
   } else {
-    Serial.printf("[I2S] Both slots similar (L-Energy: %llu, R-Energy: %llu). Live reads follow the louder slot.\n", leftEnergy, rightEnergy);
+    Serial.printf("[I2S] Slots similar; locked %s (L-Energy: %llu, R-Energy: %llu).\n",
+                  i2sActiveChannel ? "RIGHT" : "LEFT", leftEnergy, rightEnergy);
   }
 
   if (leftEnergy < 8000 && rightEnergy < 8000) {
@@ -2247,123 +2229,167 @@ bool initI2SMicrophone() {
   return true;
 }
 
-// Static inference buffer for Edge Impulse AI
-static int16_t inference_buffer[EI_CLASSIFIER_RAW_SAMPLE_COUNT];
+// Edge Impulse continuous classifier state.
+// IMPORTANT: do NOT allocate EI_CLASSIFIER_RAW_SAMPLE_COUNT (32000) here — that is 64KB
+// and can starve the ESP32 when TinyGSM/HTTP are also loaded. Use slice buffers only.
+static int16_t ei_slice_buffer[EI_CLASSIFIER_SLICE_SIZE];
+static size_t ei_slice_fill = 0;
+static bool ei_classifier_ready = false;
+static uint8_t ei_consecutive_i2s_fails = 0;
+static uint8_t ei_warmup_slices = 0;
+static uint8_t ei_keyword_hits = 0;
+static int32_t ei_slice_peak = 0;
+static int32_t ei_slice_avg = 0;
+static float voiceAmbientAvg = 400.0f;
 
-// Callback function for Edge Impulse to read raw audio data
-static int microphone_audio_signal_get_data(size_t offset, size_t length, float *out_ptr) {
-  for (size_t i = 0; i < length; i++) {
-    out_ptr[i] = (float)inference_buffer[offset + i];
+static bool labelMentions(const char* label, const char* needle) {
+  if (label == nullptr || needle == nullptr) return false;
+  size_t nLen = strlen(needle);
+  if (nLen == 0) return false;
+  for (const char* p = label; *p; ++p) {
+    size_t i = 0;
+    while (i < nLen) {
+      char a = p[i];
+      char b = needle[i];
+      if (a >= 'A' && a <= 'Z') a = (char)(a - 'A' + 'a');
+      if (b >= 'A' && b <= 'Z') b = (char)(b - 'A' + 'a');
+      if (a != b) break;
+      i++;
+    }
+    if (i == nLen) return true;
   }
+  return false;
+}
+
+// Callback used by run_classifier_continuous() — one slice of raw audio.
+static int microphone_audio_signal_get_data(size_t offset, size_t length, float *out_ptr) {
+  numpy::int16_to_float(&ei_slice_buffer[offset], out_ptr, length);
   return 0;
 }
 
-// Samples INMP441 audio and runs Edge Impulse TinyML Neural Network
-// Tuned to recognize genuine 'HELP' (>= 75%) and 'TABANG' (>= 55%)
-// Casual chatter and random speech are safely filtered out!
+static void pauseMicrophoneForAlert() {
+  if (!i2sPausedForAlert) {
+    i2s_stop(I2S_PORT);
+    i2sPausedForAlert = true;
+  }
+  ei_classifier_ready = false;
+  ei_slice_fill = 0;
+  ei_keyword_hits = 0;
+}
+
+// Clear DMA / classifier state so listening never stays stuck after SOS or a failed classify.
+void recoverMicrophoneListening() {
+  dc_x1 = 0.0f;
+  dc_y1 = 0.0f;
+  ei_slice_fill = 0;
+  ei_consecutive_i2s_fails = 0;
+  ei_warmup_slices = 0;
+  ei_keyword_hits = 0;
+  ei_slice_peak = 0;
+  ei_slice_avg = 0;
+  voiceSliceWasQuiet = true;
+
+  if (i2sPausedForAlert) {
+    i2s_start(I2S_PORT);
+    i2sPausedForAlert = false;
+  }
+
+  i2s_zero_dma_buffer(I2S_PORT);
+
+  // Drain stale DMA so Edge Impulse does not classify leftover SOS-period garbage.
+  for (int i = 0; i < 24; i++) {
+    int32_t dump[128];
+    size_t dumped = 0;
+    i2s_read(I2S_PORT, dump, sizeof(dump), &dumped, pdMS_TO_TICKS(10));
+  }
+
+  run_classifier_init();
+  ei_classifier_ready = true;
+}
+
+// Official Edge Impulse continuous path:
+// fill EI_CLASSIFIER_SLICE_SIZE samples -> run_classifier_continuous() -> check Help/Tabang.
 bool checkVoiceHelpTrigger() {
   serviceSosButtons();
   if (sosPressPending) return false;
 
-  static unsigned long lastCheck = 0;
-  if (millis() - lastCheck < 80) return false;
-  lastCheck = millis();
+  if (!ei_classifier_ready) {
+    recoverMicrophoneListening();
+  }
 
-  // 1. Sound energy gate: sample 64 stereo frames (~4ms @ 16kHz)
-  int32_t quickBuffer[128]; // 64 stereo frames
-  size_t bytesRead = 0;
-  esp_err_t err = i2s_read(I2S_PORT, quickBuffer, sizeof(quickBuffer), &bytesRead, pdMS_TO_TICKS(10));
-  if (err != ESP_OK || bytesRead == 0) {
+  if (ei_consecutive_i2s_fails >= 12) {
+    recoverMicrophoneListening();
+  }
+
+  // Drain I2S into the current 0.5s slice. Cap time so GPS/modem still get CPU,
+  // but read enough each pass that the DMA buffers do not overrun.
+  {
+    unsigned long fillStart = millis();
+    while (ei_slice_fill < EI_CLASSIFIER_SLICE_SIZE && (millis() - fillStart) < 45) {
+      serviceSosButtons();
+      if (sosPressPending) return false;
+
+      int32_t quickBuffer[256]; // 128 stereo frames
+      size_t bytesRead = 0;
+      esp_err_t err = i2s_read(I2S_PORT, quickBuffer, sizeof(quickBuffer), &bytesRead, pdMS_TO_TICKS(15));
+      if (err != ESP_OK || bytesRead == 0) {
+        ei_consecutive_i2s_fails++;
+        break;
+      }
+
+      ei_consecutive_i2s_fails = 0;
+      size_t framesRead = (bytesRead / sizeof(int32_t)) / 2;
+      for (size_t f = 0; f < framesRead && ei_slice_fill < EI_CLASSIFIER_SLICE_SIZE; f++) {
+        int32_t raw = selectedMicRaw(quickBuffer[f * 2], quickBuffer[f * 2 + 1]);
+        ei_slice_buffer[ei_slice_fill++] = processMicSample(raw);
+      }
+    }
+  }
+
+  if (ei_slice_fill < EI_CLASSIFIER_SLICE_SIZE) {
     return false;
   }
 
-  size_t framesRead = (bytesRead / sizeof(int32_t)) / 2;
+  int64_t absSum = 0;
   int32_t peak = 0;
-  int32_t sumEnergy = 0;
-  int16_t quickMono[64];
-
-  for (size_t f = 0; f < framesRead; f++) {
-    int32_t raw = louderMicRaw(quickBuffer[f * 2], quickBuffer[f * 2 + 1]);
-    int16_t sample = processMicSample(raw);
-    quickMono[f] = sample;
-    int32_t val = abs((int32_t)sample);
-    if (val > peak) peak = val;
-    sumEnergy += val;
+  for (size_t i = 0; i < EI_CLASSIFIER_SLICE_SIZE; i++) {
+    int32_t v = ei_slice_buffer[i];
+    if (v < 0) v = -v;
+    if (v > peak) peak = v;
+    absSum += v;
   }
+  ei_slice_peak = peak;
+  ei_slice_avg = (int32_t)(absSum / (int64_t)EI_CLASSIFIER_SLICE_SIZE);
 
-  int32_t avgEnergy = (framesRead > 0) ? (sumEnergy / (int32_t)framesRead) : 0;
-
-  // Quiet audio stays off the log. A real sound prints so the microphone can be checked.
-  if (peak < 2800 || avgEnergy < 700) {
-    return false;
-  }
-
-  Serial.printf("[INMP441] Voice activity detected (Peak: %d, Avg: %d). Feeding audio to check the microphone.\n", peak, avgEnergy);
-
-  if (millis() - systemBootReadyTime < BOOT_GRACE_PERIOD_MS) {
-    return false;
-  }
-
-  size_t totalSamples = EI_CLASSIFIER_RAW_SAMPLE_COUNT;
-  size_t samplesCollected = 0;
-
-  // Preserve the initial samples that triggered the peak so the start of the word is NOT lost!
-  for (size_t f = 0; f < framesRead && samplesCollected < totalSamples; f++) {
-    inference_buffer[samplesCollected++] = quickMono[f];
-  }
-
-  unsigned long startCapture = millis();
-  unsigned long maxTimeout = (EI_CLASSIFIER_RAW_SAMPLE_COUNT * 1000 / EI_CLASSIFIER_FREQUENCY) + 400;
-
-  // Capture the remaining samples from whichever stereo slot is actually live.
-  while (samplesCollected < totalSamples && (millis() - startCapture < maxTimeout)) {
-    serviceSosButtons();
-    if (sosPressPending) {
-      return false;
-    }
-    int32_t chunk[128]; // 64 stereo frames
-    size_t chunkBytes = 0;
-    i2s_read(I2S_PORT, chunk, sizeof(chunk), &chunkBytes, pdMS_TO_TICKS(20));
-    size_t framesInChunk = (chunkBytes / sizeof(int32_t)) / 2;
-
-    for (size_t f = 0; f < framesInChunk && samplesCollected < totalSamples; f++) {
-      int32_t raw = louderMicRaw(chunk[f * 2], chunk[f * 2 + 1]);
-      inference_buffer[samplesCollected++] = processMicSample(raw);
-    }
-  }
-
-  if (samplesCollected < totalSamples) {
-    return false;
-  }
-
-  size_t clipped = 0;
-  int32_t clipPeak = 0;
-  int64_t clipSum = 0;
-  for (size_t i = 0; i < totalSamples; i++) {
-    int32_t a = inference_buffer[i];
-    if (a < 0) a = -a;
-    if (a > clipPeak) clipPeak = a;
-    clipSum += a;
-    if (a >= 30000) clipped++;
-  }
-  int32_t clipAvg = (int32_t)(clipSum / (int64_t)totalSamples);
-  // A real word still has quiet gaps. A roar pinned at the top of the scale does not.
-  bool overloaded = (clipped * 5 > totalSamples) || (clipPeak >= 30000 && clipAvg >= 8000);
-
-  // 3. Prepare signal for Edge Impulse
+  // Slice complete — classify continuously (model keeps a rolling 2s feature window).
   signal_t signal;
-  signal.total_length = EI_CLASSIFIER_RAW_SAMPLE_COUNT;
+  signal.total_length = EI_CLASSIFIER_SLICE_SIZE;
   signal.get_data = &microphone_audio_signal_get_data;
 
-  // 4. Run Edge Impulse Neural Network Inference
   ei_impulse_result_t result = { 0 };
-  EI_IMPULSE_ERROR r = run_classifier(&signal, &result, false);
+  EI_IMPULSE_ERROR r = run_classifier_continuous(&signal, &result, false);
+  ei_slice_fill = 0; // start collecting the next slice immediately
+
   if (r != EI_IMPULSE_OK) {
-    Serial.printf("[EDGE IMPULSE ERROR] run_classifier failed (code: %d)\n", r);
+    Serial.printf("[VOICE] run_classifier_continuous failed (%d). Recovering.\n", r);
+    recoverMicrophoneListening();
     return false;
   }
 
-  // 5. Inspect AI classification predictions (dynamically reads all labels)
+  // First full window needs ~4 slices (~2s). Extra slices after SOS flush stale DMA.
+  const uint8_t warmupNeeded = (uint8_t)(EI_CLASSIFIER_SLICES_PER_MODEL_WINDOW + 2);
+  if (ei_warmup_slices < warmupNeeded) {
+    ei_warmup_slices++;
+    voiceSliceWasQuiet = true;
+    ei_keyword_hits = 0;
+    return false;
+  }
+
+  if (millis() - systemBootReadyTime < BOOT_GRACE_PERIOD_MS) {
+    voiceSliceWasQuiet = true;
+    return false;
+  }
+
   float helpScore = 0.0f;
   float tabangScore = 0.0f;
   float noiseScore = 0.0f;
@@ -2372,168 +2398,86 @@ bool checkVoiceHelpTrigger() {
     const char* label = result.classification[ix].label;
     float score = result.classification[ix].value;
 
-    if (strcasecmp(label, "tabang") == 0) {
+    if (labelMentions(label, "tabang")) {
       tabangScore = score;
-    } else if (strcasecmp(label, "help") == 0) {
+    } else if (labelMentions(label, "help")) {
       helpScore = score;
-    } else if (strcasecmp(label, "noise") == 0 || strcasecmp(label, "noice") == 0) {
+    } else if (labelMentions(label, "noise") || labelMentions(label, "unknown") ||
+               labelMentions(label, "silence")) {
       noiseScore = score;
     }
   }
 
-  if (overloaded) {
+  const int32_t energyFloor = (int32_t)(voiceAmbientAvg * 2.4f);
+  const bool energyOk =
+      (ei_slice_peak >= VOICE_SLICE_PEAK_MIN) &&
+      (ei_slice_avg >= VOICE_SLICE_AVG_MIN) &&
+      (ei_slice_avg >= energyFloor);
+
+  if (!energyOk) {
+    voiceAmbientAvg = (voiceAmbientAvg * 0.90f) + ((float)ei_slice_avg * 0.10f);
+    voiceSliceWasQuiet = true;
+    ei_keyword_hits = 0;
+
+    static unsigned long lastQuietLog = 0;
+    if (millis() - lastQuietLog > 4000) {
+      lastQuietLog = millis();
+      Serial.printf("[VOICE] Silence (peak=%d avg=%d floor=%.0f help=%.2f Tabang=%.2f Noise=%.2f)\n",
+                    ei_slice_peak, ei_slice_avg, voiceAmbientAvg,
+                    helpScore, tabangScore, noiseScore);
+    }
     return false;
   }
 
-  // 6. Tuned Keyword Confirmation:
-  // - TABANG: requires >= 45% confidence and must exceed noise
-  // - HELP: requires >= 50% confidence and must exceed noise
-  bool isTabangConfirmed = (tabangScore >= 0.45f) && (tabangScore > noiseScore);
-  bool isHelpConfirmed   = (helpScore >= 0.50f) && (helpScore > noiseScore);
+  const bool tabangOk =
+      (tabangScore >= TABANG_SCORE_MIN) &&
+      (tabangScore > (noiseScore + KEYWORD_OVER_NOISE));
+  const bool helpOk =
+      (helpScore >= HELP_SCORE_MIN) &&
+      (helpScore > (noiseScore + KEYWORD_OVER_NOISE));
 
-  if (isTabangConfirmed || isHelpConfirmed) {
-    const char* matchedWord = isTabangConfirmed ? "TABANG" : "HELP";
-    lastVoiceKeyword = matchedWord;
-    return true;
-  }
-
-  return false;
-}
-
-
-// Constructs standard 44-byte PCM WAV Header
-void createWavHeader(uint8_t* header, uint32_t pcmDataSize, uint32_t sampleRate, uint16_t numChannels, uint16_t bitsPerSample) {
-  uint32_t totalFileSize = pcmDataSize + 36;
-  uint32_t byteRate = sampleRate * numChannels * (bitsPerSample / 8);
-  uint16_t blockAlign = numChannels * (bitsPerSample / 8);
-
-  header[0] = 'R'; header[1] = 'I'; header[2] = 'F'; header[3] = 'F';
-  header[4] = (uint8_t)(totalFileSize & 0xFF);
-  header[5] = (uint8_t)((totalFileSize >> 8) & 0xFF);
-  header[6] = (uint8_t)((totalFileSize >> 16) & 0xFF);
-  header[7] = (uint8_t)((totalFileSize >> 24) & 0xFF);
-  header[8] = 'W'; header[9] = 'A'; header[10] = 'V'; header[11] = 'E';
-
-  header[12] = 'f'; header[13] = 'm'; header[14] = 't'; header[15] = ' ';
-  header[16] = 16; header[17] = 0; header[18] = 0; header[19] = 0;
-  header[20] = 1; header[21] = 0;
-  header[22] = (uint8_t)numChannels; header[23] = 0;
-  header[24] = (uint8_t)(sampleRate & 0xFF);
-  header[25] = (uint8_t)((sampleRate >> 8) & 0xFF);
-  header[26] = (uint8_t)((sampleRate >> 16) & 0xFF);
-  header[27] = (uint8_t)((sampleRate >> 24) & 0xFF);
-  header[28] = (uint8_t)(byteRate & 0xFF);
-  header[29] = (uint8_t)((byteRate >> 8) & 0xFF);
-  header[30] = (uint8_t)((byteRate >> 16) & 0xFF);
-  header[31] = (uint8_t)((byteRate >> 24) & 0xFF);
-  header[32] = (uint8_t)blockAlign; header[33] = 0;
-  header[34] = (uint8_t)bitsPerSample; header[35] = 0;
-
-  header[36] = 'd'; header[37] = 'a'; header[38] = 't'; header[39] = 'a';
-  header[40] = (uint8_t)(pcmDataSize & 0xFF);
-  header[41] = (uint8_t)((pcmDataSize >> 8) & 0xFF);
-  header[42] = (uint8_t)((pcmDataSize >> 16) & 0xFF);
-  header[43] = (uint8_t)((pcmDataSize >> 24) & 0xFF);
-}
-
-// Encodes raw byte buffer into Base64 String
-String encodeBase64(const uint8_t* input, size_t inputLen) {
-  static const char b64_table[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-  String output = "";
-  size_t expectedLen = ((inputLen + 2) / 3) * 4;
-  if (!output.reserve(expectedLen + 16)) {
-    Serial.println("[INMP441] WARNING: Failed to reserve heap memory for Base64 string!");
-    return "";
-  }
-
-  for (size_t i = 0; i < inputLen; i += 3) {
-    uint32_t b0 = input[i];
-    uint32_t b1 = (i + 1 < inputLen) ? input[i + 1] : 0;
-    uint32_t b2 = (i + 2 < inputLen) ? input[i + 2] : 0;
-    uint32_t triple = (b0 << 16) | (b1 << 8) | b2;
-
-    output += b64_table[(triple >> 18) & 0x3F];
-    output += b64_table[(triple >> 12) & 0x3F];
-    output += (i + 1 < inputLen) ? b64_table[(triple >> 6) & 0x3F] : '=';
-    output += (i + 2 < inputLen) ? b64_table[triple & 0x3F] : '=';
-  }
-  return output;
-}
-
-// Records an audio clip from INMP441 and returns Base64 WAV string
-// Uses telephony-standard 8000 Hz to prevent ESP32 heap exhaustion & Firebase HTTP 400
-String recordAndEncodeAudioClip(size_t durationSeconds) {
-  const uint32_t CLIP_RATE = 8000;
-  const size_t clipDuration = 1; // 1 second audio @ 8kHz = 8000 samples = 16000 bytes
-  size_t pcmDataSize = CLIP_RATE * sizeof(int16_t) * clipDuration;
-  size_t totalWavSize = 44 + pcmDataSize;
-
-  uint8_t* wavBuffer = (uint8_t*) malloc(totalWavSize);
-  if (!wavBuffer) {
-    Serial.println("[INMP441] ERROR: Out of memory for audio clip buffer!");
-    return "";
-  }
-
-  // Write WAV header for 8000 Hz, Mono, 16-bit
-  createWavHeader(wavBuffer, pcmDataSize, CLIP_RATE, 1, 16);
-
-  uint8_t* pcmPtr = wavBuffer + 44;
-  size_t bytesReadTotal = 0;
-  unsigned long startRec = millis();
-
-  // If SAMPLE_RATE is 16kHz and target is 8kHz, decimate by 2 (take 1 out of 2 frames).
-  int frameStep = (SAMPLE_RATE >= 16000) ? 2 : 1;
-  int frameCounter = 0;
-
-  i2s_zero_dma_buffer(I2S_PORT);
-
-  while (bytesReadTotal < pcmDataSize && (millis() - startRec < (clipDuration * 1000 + 1000))) {
-    int32_t i2sChunk[128]; // 64 stereo frames
-    size_t bytesReadThisChunk = 0;
-    i2s_read(I2S_PORT, i2sChunk, sizeof(i2sChunk), &bytesReadThisChunk, pdMS_TO_TICKS(50));
-    size_t framesRead = (bytesReadThisChunk / sizeof(int32_t)) / 2;
-
-    for (size_t f = 0; f < framesRead; f++) {
-      if ((frameCounter % frameStep) == 0) {
-        if (bytesReadTotal + sizeof(int16_t) <= pcmDataSize) {
-          int32_t raw = louderMicRaw(i2sChunk[f * 2], i2sChunk[f * 2 + 1]);
-          int16_t sampleVal = processMicSample(raw);
-          memcpy(pcmPtr + bytesReadTotal, &sampleVal, sizeof(int16_t));
-          bytesReadTotal += sizeof(int16_t);
-        }
-      }
-      frameCounter++;
+  if (!tabangOk && !helpOk) {
+    voiceSliceWasQuiet = (noiseScore >= helpScore) && (noiseScore >= tabangScore);
+    ei_keyword_hits = 0;
+    static unsigned long lastIgnoredLog = 0;
+    if (millis() - lastIgnoredLog > 2000) {
+      lastIgnoredLog = millis();
+      Serial.printf("[VOICE] Sound ignored (peak=%d avg=%d help=%.2f Tabang=%.2f Noise=%.2f)\n",
+                    ei_slice_peak, ei_slice_avg, helpScore, tabangScore, noiseScore);
     }
+    return false;
   }
 
-  String base64Wav = encodeBase64(wavBuffer, 44 + bytesReadTotal);
-  free(wavBuffer);
-  return base64Wav;
+  if (tabangOk && (!helpOk || tabangScore >= helpScore)) {
+    lastVoiceKeyword = "TABANG";
+  } else {
+    lastVoiceKeyword = "HELP";
+  }
+
+  voiceSliceWasQuiet = false;
+  ei_keyword_hits++;
+  Serial.printf("[VOICE] Candidate %s %u/%u (help=%.2f Tabang=%.2f Noise=%.2f peak=%d avg=%d)\n",
+                lastVoiceKeyword.c_str(), ei_keyword_hits, VOICE_HITS_REQUIRED,
+                helpScore, tabangScore, noiseScore, ei_slice_peak, ei_slice_avg);
+
+  if (ei_keyword_hits < VOICE_HITS_REQUIRED) {
+    return false;
+  }
+
+  ei_keyword_hits = 0;
+  Serial.printf("[VOICE] Locked %s (help=%.2f Tabang=%.2f Noise=%.2f)\n",
+                lastVoiceKeyword.c_str(), helpScore, tabangScore, noiseScore);
+  return true;
 }
 
 
 // Main Emergency Dispatcher Routine (Button Press or Voice 'HELP'/'TABANG')
 void triggerEmergencyAlertProcess(const String& triggerSource) {
-  Serial.printf("\n=========================================\n");
-  Serial.printf("[ALERT DISPATCHER] Triggered by: %s\n", triggerSource.c_str());
-  Serial.printf("=========================================\n");
+  Serial.printf("\n[ALERT] Triggered by: %s\n", triggerSource.c_str());
 
+  pauseMicrophoneForAlert();
   lastSmsSubmissionStatus = "none";
 
-  // 1. Optional short WAV clip for cloud re-verification (disable with ENABLE_VOICE_AUDIO_CLIP=0)
-  String audioBase64 = "";
-#if ENABLE_VOICE_AUDIO_CLIP
-  if (triggerSource == "voice_help") {
-    audioBase64 = recordAndEncodeAudioClip(1);
-  }
-#else
-  Serial.println("[PRIVACY] Voice audio clip upload disabled (on-device keyword only).");
-#endif
-
-  // 2. Refresh parent phone from Firestore before SMS (reuse devices/{DEVICE_ID})
-  fetchDeviceConfig();
-
-  // 3. Obtain GPS Location
   double lat = 0.0;
   double lon = 0.0;
   bool hasGPS = getGPSLocation(lat, lon);
@@ -2542,33 +2486,24 @@ void triggerEmergencyAlertProcess(const String& triggerSource) {
     if (globalCurrentLat != 0.0 && globalCurrentLon != 0.0) {
       lat = globalCurrentLat;
       lon = globalCurrentLon;
-      Serial.printf("[GPS] Using stored last known exact coordinates: Lat: %.6f, Lon: %.6f\n", lat, lon);
-    } else {
-      Serial.println("[WARNING] Satellite lock pending. Querying cellular tower LBS...");
-      if (!queryA7670CellularLBS(lat, lon)) {
-        delay(1000);
-        queryA7670InternalGNSS(lat, lon);
-      }
+    } else if (!queryA7670CellularLBS(lat, lon)) {
+      delay(1000);
+      queryA7670InternalGNSS(lat, lon);
     }
   }
 
-  // If still 0.0, 0.0, check Firestore for student profile coordinates
-  if (lat == 0.0 && lon == 0.0) {
-    Serial.println("[GPS] Live satellites and cellular LBS pending. Checking Firestore for student's phone location...");
-    fetchDeviceConfig();
-    if (globalCurrentLat != 0.0 && globalCurrentLon != 0.0) {
-      lat = globalCurrentLat;
-      lon = globalCurrentLon;
-      Serial.printf("[GPS] Acquired student location from Firestore: Lat: %.6f, Lon: %.6f\n", lat, lon);
-    }
+  fetchDeviceConfig();
+  if (lat == 0.0 && lon == 0.0 &&
+      globalCurrentLat != 0.0 && globalCurrentLon != 0.0) {
+    lat = globalCurrentLat;
+    lon = globalCurrentLon;
   }
 
-  Serial.printf("[INFO] Exact Coordinates: Lat: %.6f, Lon: %.6f\n", lat, lon);
+  Serial.printf("[ALERT] Coordinates: %.6f, %.6f\n", lat, lon);
   if (lat != 0.0 && lon != 0.0) {
     syncDeviceCoordinatesToFirestore(lat, lon);
   }
 
-  // If coordinates are still 0,0 (indoor / pending lock), set pending flag so follow-up SMS sends once locked
   if (lat == 0.0 || lon == 0.0) {
     pendingEmergencySMSCoordinateUpdate = true;
     pendingUpdateTriggerType = triggerSource;
@@ -2576,22 +2511,21 @@ void triggerEmergencyAlertProcess(const String& triggerSource) {
     pendingEmergencySMSCoordinateUpdate = false;
   }
 
-  // 4. Send cellular SMS FIRST (primary emergency path) — recipient from Firestore parentPhoneNumber
   bool smsSent = sendSMSAlert(lat, lon, triggerSource);
-  if (smsSent) {
-    Serial.println("[SUCCESS] Cellular SMS submitted to carrier for parent phone.");
-  } else {
-    Serial.println("[ERROR] Failed to submit cellular SMS.");
-  }
+  Serial.println(smsSent ? "[ALERT] SMS submitted." : "[ALERT] SMS failed.");
 
-  delay(3000);
+  delay(1500);
   flushModemBuffer();
 
-  // 5. Upload emergency_alerts to Firestore (includes smsSubmissionStatus)
-  bool firebaseSent = triggerFirebaseAlert(lat, lon, triggerSource, audioBase64);
-  if (firebaseSent) {
-    Serial.println("[SUCCESS] Emergency alert uploaded to Firebase.");
-  } else {
-    Serial.println("[ERROR] Failed to upload emergency alert to Firebase.");
-  }
+  bool firebaseSent = triggerFirebaseAlert(lat, lon, triggerSource);
+  Serial.println(firebaseSent ? "[ALERT] Firebase uploaded." : "[ALERT] Firebase failed.");
+
+  // Cooldown starts now, not when the keyword was first seen. SMS+HTTP can take
+  // longer than VOICE_COOLDOWN_MS and was immediately re-triggering HELP.
+  lastVoiceTriggerTime = millis();
+  voiceDetectorArmed = false;
+  voiceKeywordCurrentlyActive = false;
+  voiceSliceWasQuiet = true;
+  recoverMicrophoneListening();
+  Serial.println("[VOICE] Mic restarted. Cooldown + quiet audio required before the next SOS.");
 }
