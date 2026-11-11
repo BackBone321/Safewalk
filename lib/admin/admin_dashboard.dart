@@ -49,6 +49,7 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
   final Map<String, Map<String, dynamic>> _usersByUid =
       <String, Map<String, dynamic>>{};
   final Set<String> _backfilledAdminAlertIds = <String>{};
+  final Set<String> _clearedAdminAlertIds = <String>{};
 
   static const LatLng _defaultMapCenter = LatLng(14.5995, 120.9842);
   static final Set<Factory<OneSequenceGestureRecognizer>>
@@ -241,40 +242,210 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
     );
   }
 
+  Map<String, dynamic> _clearedLocationPatch() => {
+        'locationCleared': true,
+        'location': 'Location removed',
+        'locationText': 'Location removed',
+        'currentLocation': FieldValue.delete(),
+        'coordinates': FieldValue.delete(),
+        'latitude': FieldValue.delete(),
+        'longitude': FieldValue.delete(),
+        'lat': FieldValue.delete(),
+        'lng': FieldValue.delete(),
+        'lon': FieldValue.delete(),
+      };
+
+  void _applyLocalLocationClear({
+    required String senderUid,
+    required Set<String> deviceIds,
+  }) {
+    void clearMap(Map<String, dynamic> data) {
+      data['locationCleared'] = true;
+      data['location'] = 'Location removed';
+      data['locationText'] = 'Location removed';
+      data.remove('currentLocation');
+      data.remove('coordinates');
+      data.remove('latitude');
+      data.remove('longitude');
+      data.remove('lat');
+      data.remove('lng');
+      data.remove('lon');
+    }
+
+    if (senderUid.isNotEmpty) {
+      final user = _usersByUid[senderUid];
+      if (user != null) clearMap(user);
+    }
+    for (final id in deviceIds) {
+      final device = _devicesById[id];
+      if (device != null) clearMap(device);
+    }
+    if (mounted) setState(() {});
+  }
+
+  bool _isFalseAlarmStatus(Map<String, dynamic> data) {
+    final status = (data['status'] ?? '').toString().toLowerCase().trim();
+    return data['falseAlarm'] == true ||
+        status == 'false_alarm' ||
+        status == 'cancelled_false_trigger';
+  }
+
+  Future<void> _collectDeviceDocIds(
+    Set<String> ids,
+    String lookupId,
+  ) async {
+    final trimmed = lookupId.trim();
+    if (trimmed.isEmpty || trimmed == 'Not linked') return;
+    final db = FirebaseFirestore.instance;
+    final direct = await db.collection('devices').doc(trimmed).get();
+    if (direct.exists) ids.add(direct.id);
+    final byField = await db
+        .collection('devices')
+        .where('deviceId', isEqualTo: trimmed)
+        .get();
+    for (final doc in byField.docs) {
+      ids.add(doc.id);
+    }
+  }
+
+  Future<void> _collectAlerts(
+    Map<String, DocumentReference<Map<String, dynamic>>> refs,
+    Set<String> markedIds,
+    String field,
+    String value,
+  ) async {
+    final trimmed = value.trim();
+    if (trimmed.isEmpty) return;
+    final snap = await FirebaseFirestore.instance
+        .collection('emergency_alerts')
+        .where(field, isEqualTo: trimmed)
+        .get();
+    for (final doc in snap.docs) {
+      if (_isFalseAlarmStatus(doc.data())) continue;
+      refs[doc.id] = doc.reference;
+      markedIds.add(doc.id);
+      _clearedAdminAlertIds.add(doc.id);
+    }
+  }
+
+  Future<void> _removeLocationAndAlerts(String alertId) async {
+    if (alertId.isEmpty || _clearedAdminAlertIds.contains(alertId)) return;
+    final markedIds = <String>{alertId};
+    _clearedAdminAlertIds.add(alertId);
+    if (mounted) setState(() {});
+    try {
+      final db = FirebaseFirestore.instance;
+      final alertRef = db.collection('emergency_alerts').doc(alertId);
+      final snap = await alertRef.get();
+      if (!snap.exists) {
+        _showMessage('Done. Location and alerts removed.');
+        return;
+      }
+      final data = snap.data() ?? <String, dynamic>{};
+      if (_isFalseAlarmStatus(data)) {
+        _clearedAdminAlertIds.remove(alertId);
+        _showMessage(
+          "Student reported this alert as a false alarm (miss-clicked device).",
+        );
+        return;
+      }
+
+      final senderUid =
+          (data['uid'] ?? data['studentUid'] ?? '').toString().trim();
+      final deviceId = (data['deviceId'] ?? '').toString().trim();
+      final phone = (data['phoneNumber'] ?? '').toString().trim();
+      final linkedDeviceId = senderUid.isEmpty
+          ? ''
+          : (_usersByUid[senderUid]?['linkedDeviceId'] ?? '').toString().trim();
+
+      final alertRefs = <String, DocumentReference<Map<String, dynamic>>>{
+        alertId: alertRef,
+      };
+      await _collectAlerts(alertRefs, markedIds, 'uid', senderUid);
+      await _collectAlerts(alertRefs, markedIds, 'studentUid', senderUid);
+      await _collectAlerts(alertRefs, markedIds, 'deviceId', deviceId);
+      await _collectAlerts(alertRefs, markedIds, 'deviceId', linkedDeviceId);
+      await _collectAlerts(alertRefs, markedIds, 'phoneNumber', phone);
+
+      final deviceIds = <String>{};
+      await _collectDeviceDocIds(deviceIds, deviceId);
+      await _collectDeviceDocIds(deviceIds, linkedDeviceId);
+      if (senderUid.isNotEmpty) {
+        final byStudent = await db
+            .collection('devices')
+            .where('studentUid', isEqualTo: senderUid)
+            .get();
+        for (final doc in byStudent.docs) {
+          deviceIds.add(doc.id);
+        }
+      }
+      if (phone.isNotEmpty) {
+        final byPhone = await db
+            .collection('devices')
+            .where('phoneNumber', isEqualTo: phone)
+            .get();
+        for (final doc in byPhone.docs) {
+          deviceIds.add(doc.id);
+        }
+      }
+
+      _applyLocalLocationClear(senderUid: senderUid, deviceIds: deviceIds);
+
+      final writes = <void Function(WriteBatch batch)>[];
+      if (senderUid.isNotEmpty) {
+        final userRef = db.collection('users').doc(senderUid);
+        writes.add(
+          (batch) => batch.set(
+            userRef,
+            _clearedLocationPatch(),
+            SetOptions(merge: true),
+          ),
+        );
+      }
+      for (final id in deviceIds) {
+        final deviceRef = db.collection('devices').doc(id);
+        writes.add(
+          (batch) => batch.set(
+            deviceRef,
+            _clearedLocationPatch(),
+            SetOptions(merge: true),
+          ),
+        );
+      }
+      for (final ref in alertRefs.values) {
+        writes.add((batch) => batch.delete(ref));
+      }
+
+      var start = 0;
+      while (start < writes.length) {
+        final batch = db.batch();
+        final end = start + 400 > writes.length ? writes.length : start + 400;
+        for (var i = start; i < end; i++) {
+          writes[i](batch);
+        }
+        await batch.commit();
+        start = end;
+      }
+
+      _showMessage('Done. Location and alerts removed.');
+    } catch (e) {
+      _clearedAdminAlertIds.removeAll(markedIds);
+      if (mounted) setState(() {});
+      _showMessage('Failed to remove alert: $e', isError: true);
+    }
+  }
+
   Future<void> _handleAlertAction(String alertId, String currentStatus) async {
     final status = currentStatus.toLowerCase().trim();
-    if (status == 'resolved') {
-      _showMessage("The issue is already been fixed.");
-      return;
-    }
-    if (status == 'false_alarm') {
+    if (status == 'false_alarm' || status == 'cancelled_false_trigger') {
       _showMessage("Student reported this alert as a false alarm (miss-clicked device).");
       return;
     }
-    if (status == 'responded' ||
+    if (status == 'resolved' ||
+        status == 'responded' ||
         status == 'acknowledged' ||
         status == 'not_resolved') {
-      try {
-        await FirebaseFirestore.instance
-            .collection('emergency_alerts')
-            .doc(alertId)
-            .set({
-          'status': 'resolved',
-          'resolvedAt': FieldValue.serverTimestamp(),
-          'resolvedBy': FirebaseAuth.instance.currentUser?.uid ?? 'admin',
-          'locationCleared': true,
-          'location': 'Location removed',
-          'coordinates': FieldValue.delete(),
-          'latitude': FieldValue.delete(),
-          'longitude': FieldValue.delete(),
-          'lat': FieldValue.delete(),
-          'lng': FieldValue.delete(),
-          'lon': FieldValue.delete(),
-        }, SetOptions(merge: true));
-        _showMessage('Done. Location marker removed from the map.');
-      } catch (e) {
-        _showMessage('Failed to resolve alert: $e', isError: true);
-      }
+      await _removeLocationAndAlerts(alertId);
       return;
     }
 
@@ -430,7 +601,8 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
     String? alertId,
   }) {
     final status = (data['status'] ?? '').toString().toLowerCase();
-    if (data['locationCleared'] == true ||
+    if ((alertId != null && _clearedAdminAlertIds.contains(alertId)) ||
+        data['locationCleared'] == true ||
         data['falseAlarm'] == true ||
         status == 'false_alarm' ||
         status == 'cancelled_false_trigger' ||
@@ -509,6 +681,7 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
 
     if (alertId != null &&
         alertId.isNotEmpty &&
+        !_clearedAdminAlertIds.contains(alertId) &&
         resolved != null &&
         !_isDefaultManila(resolved) &&
         (directAlertPoint == null ||
@@ -1912,6 +2085,7 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
           final data = doc.data();
           final type = (data['type'] ?? '').toString().toLowerCase();
           final status = (data['status'] ?? '').toString().toLowerCase();
+          if (_clearedAdminAlertIds.contains(doc.id)) return false;
           final isEmergency =
               type == 'sos' || type == 'voice_help' || type == 'emergency';
           final isActiveEmergency =
@@ -2073,6 +2247,7 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
         final dedupKey = devId.isEmpty ? dev.hashCode.toString() : devId;
         if (seenDevices.contains(dedupKey)) continue;
         seenDevices.add(dedupKey);
+        if (dev['locationCleared'] == true) continue;
 
         final point = _extractDirectCoordinatesFromMap(dev);
         if (point == null || _isDefaultManila(point)) continue;
@@ -2269,19 +2444,25 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
             Positioned(
               top: 14,
               right: 14,
-              child: _buildAdminMapActionChip(
-                label: (actionStatus == 'active' ||
-                        actionStatus == 'verifying_speech')
-                    ? 'RESPOND'
-                    : 'DONE',
-                color: actionStatus == 'responded'
-                    ? const Color(0xFF111827)
-                    : actionStatus == 'acknowledged'
-                    ? const Color(0xFFEA580C)
-                    : actionStatus == 'not_resolved'
-                    ? const Color(0xFF6D28D9)
-                    : const Color(0xFFCB392B),
-                onTap: () => _handleAlertAction(actionAlertId, actionStatus),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (actionStatus == 'active' ||
+                      actionStatus == 'verifying_speech') ...[
+                    _buildAdminMapActionChip(
+                      label: 'RESPOND',
+                      color: const Color(0xFF111827),
+                      onTap: () =>
+                          _handleAlertAction(actionAlertId, actionStatus),
+                    ),
+                    const SizedBox(width: 8),
+                  ],
+                  _buildAdminMapActionChip(
+                    label: 'DONE',
+                    color: const Color(0xFF0E5B3C),
+                    onTap: () => _removeLocationAndAlerts(actionAlertId),
+                  ),
+                ],
               ),
             ),
           Positioned(
@@ -2343,7 +2524,9 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
             return const Center(child: CircularProgressIndicator());
           }
 
-          final docs = snapshot.data!.docs.toList()
+          final docs = snapshot.data!.docs
+              .where((doc) => !_clearedAdminAlertIds.contains(doc.id))
+              .toList()
             ..sort((a, b) {
               final aData = a.data();
               final bData = b.data();
@@ -2525,36 +2708,73 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
                                   const SizedBox(height: 10),
                                   Align(
                                     alignment: Alignment.centerRight,
-                                    child: TextButton.icon(
-                                      onPressed: () => _handleAlertAction(
-                                        docs[index].id,
-                                        data['status']?.toString() ?? 'active',
-                                      ),
-                                      icon: const Icon(
-                                        Icons.reply_outlined,
-                                        size: 14,
-                                        color: Color(0xFF111827),
-                                      ),
-                                      label: const Text(
-                                        'RESPOND',
-                                        style: TextStyle(
-                                          fontSize: 10,
-                                          fontWeight: FontWeight.bold,
-                                          color: Color(0xFF111827),
-                                          letterSpacing: 1,
+                                    child: Wrap(
+                                      spacing: 8,
+                                      runSpacing: 8,
+                                      alignment: WrapAlignment.end,
+                                      children: [
+                                        TextButton.icon(
+                                          onPressed: () => _handleAlertAction(
+                                            docs[index].id,
+                                            data['status']?.toString() ?? 'active',
+                                          ),
+                                          icon: const Icon(
+                                            Icons.reply_outlined,
+                                            size: 14,
+                                            color: Color(0xFF111827),
+                                          ),
+                                          label: const Text(
+                                            'RESPOND',
+                                            style: TextStyle(
+                                              fontSize: 10,
+                                              fontWeight: FontWeight.bold,
+                                              color: Color(0xFF111827),
+                                              letterSpacing: 1,
+                                            ),
+                                          ),
+                                          style: TextButton.styleFrom(
+                                            padding: const EdgeInsets.symmetric(
+                                              horizontal: 12,
+                                              vertical: 6,
+                                            ),
+                                            backgroundColor: const Color(0xFF111827)
+                                                .withOpacity(0.08),
+                                            shape: RoundedRectangleBorder(
+                                              borderRadius: BorderRadius.circular(6),
+                                            ),
+                                          ),
                                         ),
-                                      ),
-                                      style: TextButton.styleFrom(
-                                        padding: const EdgeInsets.symmetric(
-                                          horizontal: 12,
-                                          vertical: 6,
+                                        TextButton.icon(
+                                          onPressed: () => _removeLocationAndAlerts(
+                                            docs[index].id,
+                                          ),
+                                          icon: const Icon(
+                                            Icons.check_circle_outline,
+                                            size: 14,
+                                            color: Color(0xFF0E5B3C),
+                                          ),
+                                          label: const Text(
+                                            'DONE',
+                                            style: TextStyle(
+                                              fontSize: 10,
+                                              fontWeight: FontWeight.bold,
+                                              color: Color(0xFF0E5B3C),
+                                              letterSpacing: 1,
+                                            ),
+                                          ),
+                                          style: TextButton.styleFrom(
+                                            padding: const EdgeInsets.symmetric(
+                                              horizontal: 12,
+                                              vertical: 6,
+                                            ),
+                                            backgroundColor: const Color(0xFF0E5B3C)
+                                                .withOpacity(0.08),
+                                            shape: RoundedRectangleBorder(
+                                              borderRadius: BorderRadius.circular(6),
+                                            ),
+                                          ),
                                         ),
-                                        backgroundColor:
-                                            const Color(0xFF111827).withOpacity(0.08),
-                                        shape: RoundedRectangleBorder(
-                                          borderRadius: BorderRadius.circular(6),
-                                        ),
-                                      ),
+                                      ],
                                     ),
                                   ),
                                 ],
@@ -2565,21 +2785,20 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
                                   Align(
                                     alignment: Alignment.centerRight,
                                     child: TextButton.icon(
-                                      onPressed: () => _handleAlertAction(
+                                      onPressed: () => _removeLocationAndAlerts(
                                         docs[index].id,
-                                        data['status']?.toString() ?? 'responded',
                                       ),
                                       icon: const Icon(
                                         Icons.check_circle_outline,
                                         size: 14,
-                                        color: Color(0xFFCB392B),
+                                        color: Color(0xFF0E5B3C),
                                       ),
                                       label: const Text(
                                         'DONE',
                                         style: TextStyle(
                                           fontSize: 10,
                                           fontWeight: FontWeight.bold,
-                                          color: Color(0xFFCB392B),
+                                          color: Color(0xFF0E5B3C),
                                           letterSpacing: 1,
                                         ),
                                       ),
@@ -2589,7 +2808,7 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
                                           vertical: 6,
                                         ),
                                         backgroundColor:
-                                            const Color(0xFFCB392B).withOpacity(0.08),
+                                            const Color(0xFF0E5B3C).withOpacity(0.08),
                                         shape: RoundedRectangleBorder(
                                           borderRadius: BorderRadius.circular(6),
                                         ),
@@ -2644,16 +2863,16 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
                                   Align(
                                     alignment: Alignment.centerRight,
                                     child: TextButton.icon(
-                                      onPressed: () {
-                                        _showMessage("The issue is already been fixed.");
-                                      },
+                                      onPressed: () => _removeLocationAndAlerts(
+                                        docs[index].id,
+                                      ),
                                       icon: const Icon(
                                         Icons.check_circle,
                                         size: 14,
                                         color: AppColors.green,
                                       ),
                                       label: const Text(
-                                        'DONE (FIXED)',
+                                        'DONE',
                                         style: TextStyle(
                                           fontSize: 10,
                                           fontWeight: FontWeight.bold,

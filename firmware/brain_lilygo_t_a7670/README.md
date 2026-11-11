@@ -1,3 +1,5 @@
+#include <safewalk-voice-help_inferencing.h>
+
 # Safewalk Firmware — LILYGO T-A7670 V3
 
 Automatic emergency SMS when the spoken keywords **Help** or **Tabang** are detected.
@@ -34,7 +36,7 @@ sequenceDiagram
   end
 ```
 
-1. Energy gate + Edge Impulse classify `help` / `tabang`.
+1. A capture task records the microphone without gaps; Edge Impulse classifies `help` / `tabang` every half second.
 2. Fetch `devices/{DEVICE_ID}.parentPhoneNumber` from Firestore (fallback: compile-time `PARENT_PHONE`).
 3. Send SMS via modem `AT+CMGS`.
 4. Upload `emergency_alerts` with `smsSubmissionStatus` (`submitted` | `failed`).
@@ -55,7 +57,7 @@ This is the wiring already soldered on the board. Do not move those joints. Take
 | SCK / BCLK | **IO33** | Bit clock |
 | WS / LRCLK | **IO25** | Word select |
 | SD / DOUT | **IO32** | Microphone data into the ESP32 |
-| L/R | **GND** | Firmware follows whichever stereo slot is louder |
+| L/R | **GND** | Firmware finds the stereo slot that carries sound and prints it at boot |
 
 ### SOS button
 
@@ -134,10 +136,13 @@ Set via parent–student link accept flow or admin device edit in the Flutter ap
 
 ### Keyword detection
 
-1. The microphone keeps listening in the background.
-2. Any sound above the noise floor prints `[INMP441] Voice activity detected (Peak: …, Avg: …)`. Silence prints nothing.
-3. Say **“Help”** or **“Tabang”** clearly once. Serial prints `VOICE DETECTED: HELP` or `VOICE DETECTED: TABANG`, then sends the location SMS.
-4. Other speech prints the activity line only. It does not send an alert.
+1. At boot the log prints both stereo slots, for example `[I2S] LEFT slot: offset …, sound … | RIGHT slot: offset …, sound …`, then `[I2S] Microphone audio is on the LEFT slot.` The microphone is the slot with **sound**.
+2. Two seconds later: `[VOICE] Listening on the LEFT slot. Room noise level …`.
+3. Silence prints `[VOICE] Quiet (mic level …, room …)` every 10 seconds (`VOICE_QUIET_LOG_MS`, set to `0` to turn it off).
+4. Any sound above the room noise prints `[VOICE] Heard sound (level …, room …): help=… Tabang=… Noise=…`. Other speech prints only this line. It does not send an alert.
+5. Say **“Help”** or **“Tabang”** clearly once. Serial prints `[VOICE] Locked HELP` (or `TABANG`), then `[VOICE] DETECTED: …`, then sends the location SMS.
+
+A keyword sends an SOS when one half-second slice scores `VOICE_SCORE_INSTANT` (0.80) or higher, or when 2 of the last 3 slices score at least `HELP_SCORE_MIN` (0.55) / `TABANG_SCORE_MIN` (0.50) and beat `Noise`. Speech-level sound must also have been heard inside the model's 2-second window.
 
 ### SMS transmission
 
@@ -167,8 +172,8 @@ Data/Firestore can work while SMS fails. Firmware now retries CS/PS domains and 
 ### Duplicate prevention
 
 1. Trigger once → SMS sent; detector **disarmed**.
-2. Keep repeating “Help” within 30 s → Serial: duplicate suppressed; **no** second SMS.
-3. Stop speaking; wait for cooldown → `[ALERT] Voice detector re-armed`.
+2. Keep repeating “Help” within 30 s of the alert finishing → Serial: `[VOICE] Keyword heard during the cooldown after the last SOS. No new SOS sent.`
+3. Stop speaking; wait for cooldown → `[VOICE] Re-armed. Say HELP or TABANG.`
 4. Say keyword again → one new SMS.
 
 ## Security / privacy

@@ -1,3 +1,5 @@
+#include <safewalk-voice-help_inferencing.h>
+
 /*
  * Safewalk IoT Tracker - LILYGO T-A7670 V3
  * Button SOS + Edge Impulse "help"/"Tabang" keyword SOS + GPS/SMS/Firestore.
@@ -92,12 +94,15 @@ String lastSmsSubmissionStatus = "none";      // "submitted" | "failed" | "none"
 // Edge Impulse continuous keyword spotting (official slice API).
 // Model window = 2.0s @ 16 kHz (32000 samples). Each slice = 0.5s (8000 samples).
 // Labels in the deployed model: "Noise", "Tabang", "help"
-const float HELP_SCORE_MIN = 0.70f;            // Previous working firmware used ~0.75
-const float TABANG_SCORE_MIN = 0.55f;          // Previous working firmware used ~0.55
-const float KEYWORD_OVER_NOISE = 0.15f;        // Keyword must beat Noise, not merely match it
-const int32_t VOICE_SLICE_PEAK_MIN = 2200;     // INMP441 must actually hear speech
-const int32_t VOICE_SLICE_AVG_MIN = 500;
-const uint8_t VOICE_HITS_REQUIRED = 2;         // Two consecutive 0.5s slices before SOS
+const float HELP_SCORE_MIN = 0.55f;            // Score that counts as a HELP match (must also beat Noise)
+const float TABANG_SCORE_MIN = 0.50f;          // Score that counts as a TABANG match (must also beat Noise)
+const float VOICE_SCORE_INSTANT = 0.80f;       // One slice this confident sends the SOS at once
+const uint8_t VOICE_HITS_REQUIRED = 2;         // Otherwise 2 of the last 3 half-second slices must match
+// Sound levels are the mean absolute sample value of a 20 ms block.
+const float VOICE_LEVEL_MIN = 40.0f;           // Quietest block that can count as speech
+const float VOICE_LEVEL_OVER_ROOM = 3.0f;      // Speech must be this many times louder than the room
+const uint8_t VOICE_MIN_LOUD_BLOCKS = 4;       // 80 ms of speech-level sound inside the 2 s model window
+const unsigned long VOICE_QUIET_LOG_MS = 10000; // "[VOICE] Quiet" heartbeat interval; 0 turns it off
 
 // Boot grace period: prevents any false triggers during startup while hardware/network stabilizes
 unsigned long systemBootReadyTime = 0;
@@ -231,8 +236,7 @@ void serviceSosButtons() {
 }
 
 void loop() {
-  // Button is sampled here and also inside the microphone capture, so a press
-  // is not lost while a keyword recording is in progress.
+  // Button is sampled here and again inside the voice check.
   serviceSosButtons();
   if (sosPressPending) {
     sosPressPending = false;
@@ -244,11 +248,15 @@ void loop() {
   bool voiceTriggerDetected = checkVoiceHelpTrigger();
   if (voiceTriggerDetected) {
     voiceKeywordCurrentlyActive = true;
-    if (voiceDetectorArmed && (millis() - lastVoiceTriggerTime > VOICE_COOLDOWN_MS)) {
+    // voiceDetectorArmed already covers the cooldown: it is cleared when an SOS is sent
+    // and set again only after the cooldown and quiet audio.
+    if (voiceDetectorArmed) {
       voiceDetectorArmed = false;
       lastVoiceTriggerTime = millis();
       Serial.printf("[VOICE] DETECTED: %s\n", lastVoiceKeyword.c_str());
       triggerEmergencyAlertProcess("voice_help");
+    } else {
+      Serial.println("[VOICE] Keyword heard during the cooldown after the last SOS. No new SOS sent.");
     }
   } else {
     if (voiceKeywordCurrentlyActive) {
@@ -2097,39 +2105,162 @@ String detectAPN() {
 // INMP441 I2S Microphone Driver & Voice Trigger Helper Routines
 // ============================================================================
 
-// DC-blocking high-pass filter state
-static float dc_x1 = 0.0f;
-static float dc_y1 = 0.0f;
+// Sound level is measured in 20 ms blocks: the mean absolute sample value of the block.
+#define MIC_BLOCK_SAMPLES     (EI_CLASSIFIER_FREQUENCY / 50)
+#define MIC_BLOCKS_PER_SLICE  (EI_CLASSIFIER_SLICE_SIZE / MIC_BLOCK_SAMPLES)
 
-// Locked once at boot. Per-sample "louder slot" hops onto I2S garbage and
-// makes Edge Impulse classify silence as HELP.
-static int i2sActiveChannel = 0; // 0 = left, 1 = right
-static bool i2sPausedForAlert = false;
+// DC-blocking high-pass filter state, one per stereo slot (0 = left, 1 = right).
+static float micDcX1[2] = { 0.0f, 0.0f };
+static float micDcY1[2] = { 0.0f, 0.0f };
+static bool micDcPrimed[2] = { false, false };
 
-// INMP441 puts audio on one slot. The other slot stays near zero.
-// L/R to GND fills the left slot; L/R to 3V3 fills the right slot.
-static inline int32_t selectedMicRaw(int32_t left, int32_t right) {
-  return (i2sActiveChannel == 0) ? left : right;
-}
+// The INMP441 fills one stereo slot. The unused slot is not silent on this board: it reads
+// a fixed non-zero value, so it looks "loud" until the constant offset is removed.
+// The microphone slot is the one whose sound level moves, and it is re-checked while running.
+static volatile int micChannel = 0;
+static volatile bool micChannelChanged = false;
 
-// Process 32-bit raw sample from active I2S channel:
+// Audio is captured by its own task so no samples are lost while the classifier,
+// GPS or modem code is running. It fills two half-second slices in turn.
+static TaskHandle_t micTaskHandle = nullptr;
+static portMUX_TYPE micMux = portMUX_INITIALIZER_UNLOCKED;
+static volatile bool micPaused = true;        // Capture task discards audio while true
+static int16_t micSlice[2][EI_CLASSIFIER_SLICE_SIZE];
+static uint16_t micSliceLevels[2][MIC_BLOCKS_PER_SLICE];
+static volatile int8_t micReadySlot = -1;     // Finished slice waiting for the classifier
+static volatile int8_t micBusySlot = -1;      // Slice the classifier is reading
+static volatile uint32_t micDroppedSlices = 0;
+static float voiceRoomLevel = -1.0f;          // Tracked room noise level; -1 until first slice
+
+// Converts one raw 32-bit I2S word from a stereo slot into a 16-bit sample:
 // - Shifts 24-bit MSB-aligned data with gain
 // - Clamps to int16 range to prevent overflow / wrap-around distortion
 // - Removes DC offset with a high-pass filter (~30 Hz cutoff at 16kHz)
-static inline int16_t processMicSample(int32_t raw32) {
-  int32_t s32 = raw32 >> 14; // level that produced real HELP/TABANG scores on this mic
+static inline int16_t micSampleFromRaw(int slot, int32_t raw32) {
+  int32_t s32 = raw32 >> 14;
   if (s32 > 32767) s32 = 32767;
   if (s32 < -32768) s32 = -32768;
 
-  // 1-pole DC-blocking filter: y[n] = x[n] - x[n-1] + 0.985 * y[n-1]
   float x = (float)s32;
-  float y = x - dc_x1 + 0.985f * dc_y1;
-  dc_x1 = x;
-  dc_y1 = y;
+  if (!micDcPrimed[slot]) {
+    // Start from the current offset so the first sample is not a click.
+    micDcPrimed[slot] = true;
+    micDcX1[slot] = x;
+    micDcY1[slot] = 0.0f;
+  }
+
+  // 1-pole DC-blocking filter: y[n] = x[n] - x[n-1] + 0.985 * y[n-1]
+  float y = x - micDcX1[slot] + 0.985f * micDcY1[slot];
+  micDcX1[slot] = x;
+  micDcY1[slot] = y;
 
   if (y > 32767.0f) y = 32767.0f;
   if (y < -32768.0f) y = -32768.0f;
   return (int16_t)y;
+}
+
+// Which slot carried real sound in one 20 ms block: 0 = left, 1 = right, -1 = neither clearly.
+static inline int micBlockWinner(uint32_t levelLeft, uint32_t levelRight) {
+  if (levelLeft >= 2 && levelLeft > levelRight * 2) return 0;
+  if (levelRight >= 2 && levelRight > levelLeft * 2) return 1;
+  return -1;
+}
+
+// Reads the microphone without gaps and hands finished half-second slices to loop().
+static void micCaptureTask(void* arg) {
+  static int32_t raw[256]; // 128 stereo frames = 8 ms
+  uint8_t writeSlot = 0;
+  size_t fill = 0;
+  uint32_t levelSum = 0;
+
+  uint32_t trackSum[2] = { 0, 0 };
+  uint32_t trackCount = 0;
+  uint32_t trackBlocks = 0;
+  uint32_t trackWins[2] = { 0, 0 };
+  uint8_t otherSlotStreak = 0;
+
+  for (;;) {
+    size_t bytesRead = 0;
+    esp_err_t err = i2s_read(I2S_PORT, raw, sizeof(raw), &bytesRead, portMAX_DELAY);
+    if (err != ESP_OK || bytesRead == 0) {
+      vTaskDelay(pdMS_TO_TICKS(10));
+      continue;
+    }
+
+    const bool storing = !micPaused;
+    if (!storing) {
+      fill = 0;
+      levelSum = 0;
+    }
+
+    size_t frames = (bytesRead / sizeof(int32_t)) / 2;
+    for (size_t f = 0; f < frames; f++) {
+      int16_t slotSample[2];
+      slotSample[0] = micSampleFromRaw(0, raw[f * 2]);
+      slotSample[1] = micSampleFromRaw(1, raw[f * 2 + 1]);
+
+      // Keep checking which slot is the live microphone. A slot must win most
+      // blocks for a full second before the audio source moves to it.
+      trackSum[0] += (uint32_t)abs((int32_t)slotSample[0]);
+      trackSum[1] += (uint32_t)abs((int32_t)slotSample[1]);
+      if (++trackCount >= MIC_BLOCK_SAMPLES) {
+        int winner = micBlockWinner(trackSum[0] / MIC_BLOCK_SAMPLES, trackSum[1] / MIC_BLOCK_SAMPLES);
+        if (winner >= 0) trackWins[winner]++;
+        trackSum[0] = 0;
+        trackSum[1] = 0;
+        trackCount = 0;
+
+        if (++trackBlocks >= MIC_BLOCKS_PER_SLICE) {
+          int other = micChannel ^ 1;
+          if (trackWins[other] * 4 >= trackBlocks * 3) {
+            otherSlotStreak++;
+          } else {
+            otherSlotStreak = 0;
+          }
+          if (otherSlotStreak >= 2) {
+            micChannel = other;
+            micChannelChanged = true;
+            otherSlotStreak = 0;
+          }
+          trackWins[0] = 0;
+          trackWins[1] = 0;
+          trackBlocks = 0;
+        }
+      }
+
+      if (!storing) continue;
+
+      int16_t sample = slotSample[micChannel];
+      micSlice[writeSlot][fill++] = sample;
+      levelSum += (uint32_t)abs((int32_t)sample);
+
+      if ((fill % MIC_BLOCK_SAMPLES) == 0) {
+        size_t block = (fill / MIC_BLOCK_SAMPLES) - 1;
+        if (block < MIC_BLOCKS_PER_SLICE) {
+          uint32_t level = levelSum / MIC_BLOCK_SAMPLES;
+          micSliceLevels[writeSlot][block] = (level > 65535) ? 65535 : (uint16_t)level;
+        }
+        levelSum = 0;
+      }
+
+      if (fill >= EI_CLASSIFIER_SLICE_SIZE) {
+        portENTER_CRITICAL(&micMux);
+        uint32_t dropped = micDroppedSlices;
+        if (micReadySlot >= 0) dropped++;          // loop() never collected the previous slice
+        uint8_t otherSlot = writeSlot ^ 1;
+        if (micBusySlot == (int8_t)otherSlot) {
+          dropped++;                               // classifier still reads the other slice: reuse this one
+        } else {
+          micReadySlot = (int8_t)writeSlot;
+          writeSlot = otherSlot;
+        }
+        micDroppedSlices = dropped;
+        portEXIT_CRITICAL(&micMux);
+        fill = 0;
+        levelSum = 0;
+      }
+    }
+  }
 }
 
 // Initializes ESP32 I2S Peripheral for INMP441 Microphone
@@ -2148,7 +2279,7 @@ bool initI2SMicrophone() {
 #endif
     .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
     .dma_buf_count = 8,
-    .dma_buf_len = 64,
+    .dma_buf_len = 128,
     .use_apll = false,
     .tx_desc_auto_clear = false,
     .fixed_mclk = 0
@@ -2185,46 +2316,81 @@ bool initI2SMicrophone() {
     i2s_read(I2S_PORT, dummyBuffer, sizeof(dummyBuffer), &dummyBytes, pdMS_TO_TICKS(20));
   }
 
-  // 2. Auto-detect active channel (Left vs Right):
-  // INMP441 L/R tied to GND outputs on Left (0); tied to VDD outputs on Right (1).
-  uint64_t leftEnergy = 0;
-  uint64_t rightEnergy = 0;
+  // 2. Find the stereo slot that carries the microphone.
+  // "offset" is the constant value a slot sits at. "sound" is what is left after that
+  // offset is removed. The unused slot can show a large offset with no sound at all,
+  // so the microphone is the slot with sound, not the slot with the bigger numbers.
+  micDcPrimed[0] = false;
+  micDcPrimed[1] = false;
+  int64_t offsetSum[2] = { 0, 0 };
+  uint64_t soundSum[2] = { 0, 0 };
+  uint32_t blockSum[2] = { 0, 0 };
+  uint32_t blockCount = 0;
+  uint32_t blockWins[2] = { 0, 0 };
+  uint32_t calFramesTotal = 0;
   unsigned long calStart = millis();
-  while (millis() - calStart < 150) {
-    int32_t calBuffer[64];
+  while (millis() - calStart < 600) {
+    int32_t calBuffer[128];
     size_t calBytes = 0;
     i2s_read(I2S_PORT, calBuffer, sizeof(calBuffer), &calBytes, pdMS_TO_TICKS(20));
     size_t calFrames = (calBytes / sizeof(int32_t)) / 2;
     for (size_t f = 0; f < calFrames; f++) {
-      int32_t leftSample = abs(calBuffer[f * 2] >> 14);
-      int32_t rightSample = abs(calBuffer[f * 2 + 1] >> 14);
-      leftEnergy += leftSample;
-      rightEnergy += rightSample;
+      for (int slot = 0; slot < 2; slot++) {
+        int32_t raw = calBuffer[f * 2 + slot];
+        offsetSum[slot] += (raw >> 14);
+        uint32_t sound = (uint32_t)abs((int32_t)micSampleFromRaw(slot, raw));
+        soundSum[slot] += sound;
+        blockSum[slot] += sound;
+      }
+      calFramesTotal++;
+      if (++blockCount >= MIC_BLOCK_SAMPLES) {
+        int winner = micBlockWinner(blockSum[0] / MIC_BLOCK_SAMPLES, blockSum[1] / MIC_BLOCK_SAMPLES);
+        if (winner >= 0) blockWins[winner]++;
+        blockSum[0] = 0;
+        blockSum[1] = 0;
+        blockCount = 0;
+      }
     }
   }
 
-  i2sActiveChannel = (rightEnergy > leftEnergy) ? 1 : 0;
-  if (rightEnergy > leftEnergy * 2) {
-    Serial.printf("[I2S] Locked RIGHT slot (L-Energy: %llu, R-Energy: %llu). L/R pin looks tied high.\n", leftEnergy, rightEnergy);
-  } else if (leftEnergy > rightEnergy * 2) {
-    Serial.printf("[I2S] Locked LEFT slot (L-Energy: %llu, R-Energy: %llu). L/R pin looks tied to GND.\n", leftEnergy, rightEnergy);
-  } else {
-    Serial.printf("[I2S] Slots similar; locked %s (L-Energy: %llu, R-Energy: %llu).\n",
-                  i2sActiveChannel ? "RIGHT" : "LEFT", leftEnergy, rightEnergy);
+  long offsetLevel[2] = { 0, 0 };
+  unsigned long soundLevel[2] = { 0, 0 };
+  if (calFramesTotal > 0) {
+    for (int slot = 0; slot < 2; slot++) {
+      offsetLevel[slot] = (long)(offsetSum[slot] / (int64_t)calFramesTotal);
+      soundLevel[slot] = (unsigned long)(soundSum[slot] / calFramesTotal);
+    }
   }
 
-  if (leftEnergy < 8000 && rightEnergy < 8000) {
+  if (blockWins[0] != blockWins[1]) {
+    micChannel = (blockWins[1] > blockWins[0]) ? 1 : 0;
+  } else {
+    micChannel = (soundSum[1] > soundSum[0]) ? 1 : 0;
+  }
+
+  Serial.printf("[I2S] LEFT slot: offset %ld, sound %lu | RIGHT slot: offset %ld, sound %lu\n",
+                offsetLevel[0], soundLevel[0], offsetLevel[1], soundLevel[1]);
+  Serial.printf("[I2S] Microphone audio is on the %s slot.\n", micChannel ? "RIGHT" : "LEFT");
+
+  if (soundSum[0] == 0 && soundSum[1] == 0) {
     Serial.println("[I2S] WARNING: Microphone looks silent.");
     Serial.println("[I2S] Soldered wiring is VDD->3V3, GND->GND, SCK->IO33, WS->IO25, SD->IO32, L/R->GND.");
-    Serial.println("[I2S] Check those six joints. A peak that stays 0 means one of them is open.");
+    Serial.println("[I2S] Check those six joints. Sound that stays 0 means one of them is open.");
   } else {
     Serial.println("[I2S] Microphone is producing audio.");
   }
 
-  // Reset filter state & clear DMA buffer
-  dc_x1 = 0.0f;
-  dc_y1 = 0.0f;
-  i2s_zero_dma_buffer(I2S_PORT);
+  // 3. Start the capture task. It stays paused until the classifier is ready.
+  micPaused = true;
+  if (micTaskHandle == nullptr) {
+    BaseType_t started = xTaskCreatePinnedToCore(micCaptureTask, "mic_capture", 4096, nullptr, 5, &micTaskHandle, 0);
+    if (started != pdPASS) {
+      micTaskHandle = nullptr;
+      Serial.println("[I2S] ERROR: Could not start the microphone capture task.");
+      return false;
+    }
+  }
+
   Serial.println("[I2S] INMP441 Microphone ready (calibrated & DC-filtered).");
   return true;
 }
@@ -2232,15 +2398,14 @@ bool initI2SMicrophone() {
 // Edge Impulse continuous classifier state.
 // IMPORTANT: do NOT allocate EI_CLASSIFIER_RAW_SAMPLE_COUNT (32000) here — that is 64KB
 // and can starve the ESP32 when TinyGSM/HTTP are also loaded. Use slice buffers only.
-static int16_t ei_slice_buffer[EI_CLASSIFIER_SLICE_SIZE];
-static size_t ei_slice_fill = 0;
+static int8_t ei_active_slot = -1;            // micSlice[] index the classifier is reading
 static bool ei_classifier_ready = false;
-static uint8_t ei_consecutive_i2s_fails = 0;
+static bool ei_classifier_inited = false;
 static uint8_t ei_warmup_slices = 0;
-static uint8_t ei_keyword_hits = 0;
-static int32_t ei_slice_peak = 0;
-static int32_t ei_slice_avg = 0;
-static float voiceAmbientAvg = 400.0f;
+static uint8_t voiceLoudBlocks[EI_CLASSIFIER_SLICES_PER_MODEL_WINDOW]; // speech-level blocks per recent slice
+static uint8_t voiceLoudIndex = 0;
+static uint8_t voiceHelpHits = 0;             // Bit history: HELP matched in the last 3 slices
+static uint8_t voiceTabangHits = 0;           // Bit history: TABANG matched in the last 3 slices
 
 static bool labelMentions(const char* label, const char* needle) {
   if (label == nullptr || needle == nullptr) return false;
@@ -2263,112 +2428,128 @@ static bool labelMentions(const char* label, const char* needle) {
 
 // Callback used by run_classifier_continuous() — one slice of raw audio.
 static int microphone_audio_signal_get_data(size_t offset, size_t length, float *out_ptr) {
-  numpy::int16_to_float(&ei_slice_buffer[offset], out_ptr, length);
+  if (ei_active_slot < 0) return -1;
+  numpy::int16_to_float(&micSlice[ei_active_slot][offset], out_ptr, length);
   return 0;
 }
 
+// The capture task keeps draining the microphone during an alert, but the audio is discarded.
 static void pauseMicrophoneForAlert() {
-  if (!i2sPausedForAlert) {
-    i2s_stop(I2S_PORT);
-    i2sPausedForAlert = true;
-  }
+  micPaused = true;
   ei_classifier_ready = false;
-  ei_slice_fill = 0;
-  ei_keyword_hits = 0;
 }
 
-// Clear DMA / classifier state so listening never stays stuck after SOS or a failed classify.
+// Restart listening from a clean state: after boot, after an SOS, or after a failed classify.
 void recoverMicrophoneListening() {
-  dc_x1 = 0.0f;
-  dc_y1 = 0.0f;
-  ei_slice_fill = 0;
-  ei_consecutive_i2s_fails = 0;
+  micPaused = true;
+  portENTER_CRITICAL(&micMux);
+  micReadySlot = -1;
+  micBusySlot = -1;
+  micDroppedSlices = 0;
+  portEXIT_CRITICAL(&micMux);
+
+  ei_active_slot = -1;
   ei_warmup_slices = 0;
-  ei_keyword_hits = 0;
-  ei_slice_peak = 0;
-  ei_slice_avg = 0;
+  voiceHelpHits = 0;
+  voiceTabangHits = 0;
+  memset(voiceLoudBlocks, 0, sizeof(voiceLoudBlocks));
+  voiceLoudIndex = 0;
   voiceSliceWasQuiet = true;
 
-  if (i2sPausedForAlert) {
-    i2s_start(I2S_PORT);
-    i2sPausedForAlert = false;
+  if (ei_classifier_inited) {
+    run_classifier_deinit();
   }
-
-  i2s_zero_dma_buffer(I2S_PORT);
-
-  // Drain stale DMA so Edge Impulse does not classify leftover SOS-period garbage.
-  for (int i = 0; i < 24; i++) {
-    int32_t dump[128];
-    size_t dumped = 0;
-    i2s_read(I2S_PORT, dump, sizeof(dump), &dumped, pdMS_TO_TICKS(10));
-  }
-
   run_classifier_init();
+  ei_classifier_inited = true;
   ei_classifier_ready = true;
+  micPaused = false;
 }
 
 // Official Edge Impulse continuous path:
-// fill EI_CLASSIFIER_SLICE_SIZE samples -> run_classifier_continuous() -> check Help/Tabang.
+// capture task fills a half-second slice -> run_classifier_continuous() -> check Help/Tabang.
 bool checkVoiceHelpTrigger() {
   serviceSosButtons();
   if (sosPressPending) return false;
+  if (micTaskHandle == nullptr) return false;
 
   if (!ei_classifier_ready) {
     recoverMicrophoneListening();
   }
 
-  if (ei_consecutive_i2s_fails >= 12) {
+  // Collect the newest finished slice from the capture task.
+  int8_t slot = -1;
+  uint32_t droppedSlices = 0;
+  portENTER_CRITICAL(&micMux);
+  slot = micReadySlot;
+  if (slot >= 0) {
+    micBusySlot = slot;
+    micReadySlot = -1;
+  }
+  droppedSlices = micDroppedSlices;
+  micDroppedSlices = 0;
+  portEXIT_CRITICAL(&micMux);
+
+  if (micChannelChanged) {
+    micChannelChanged = false;
+    Serial.printf("[I2S] Microphone audio moved to the %s slot. Restarting the listener.\n",
+                  micChannel ? "RIGHT" : "LEFT");
     recoverMicrophoneListening();
-  }
-
-  // Drain I2S into the current 0.5s slice. Cap time so GPS/modem still get CPU,
-  // but read enough each pass that the DMA buffers do not overrun.
-  {
-    unsigned long fillStart = millis();
-    while (ei_slice_fill < EI_CLASSIFIER_SLICE_SIZE && (millis() - fillStart) < 45) {
-      serviceSosButtons();
-      if (sosPressPending) return false;
-
-      int32_t quickBuffer[256]; // 128 stereo frames
-      size_t bytesRead = 0;
-      esp_err_t err = i2s_read(I2S_PORT, quickBuffer, sizeof(quickBuffer), &bytesRead, pdMS_TO_TICKS(15));
-      if (err != ESP_OK || bytesRead == 0) {
-        ei_consecutive_i2s_fails++;
-        break;
-      }
-
-      ei_consecutive_i2s_fails = 0;
-      size_t framesRead = (bytesRead / sizeof(int32_t)) / 2;
-      for (size_t f = 0; f < framesRead && ei_slice_fill < EI_CLASSIFIER_SLICE_SIZE; f++) {
-        int32_t raw = selectedMicRaw(quickBuffer[f * 2], quickBuffer[f * 2 + 1]);
-        ei_slice_buffer[ei_slice_fill++] = processMicSample(raw);
-      }
-    }
-  }
-
-  if (ei_slice_fill < EI_CLASSIFIER_SLICE_SIZE) {
     return false;
   }
 
-  int64_t absSum = 0;
-  int32_t peak = 0;
-  for (size_t i = 0; i < EI_CLASSIFIER_SLICE_SIZE; i++) {
-    int32_t v = ei_slice_buffer[i];
-    if (v < 0) v = -v;
-    if (v > peak) peak = v;
-    absSum += v;
+  if (slot < 0) {
+    delay(2); // nothing new yet
+    return false;
   }
-  ei_slice_peak = peak;
-  ei_slice_avg = (int32_t)(absSum / (int64_t)EI_CLASSIFIER_SLICE_SIZE);
 
-  // Slice complete — classify continuously (model keeps a rolling 2s feature window).
+  // Loudness of this slice, in 20 ms blocks.
+  uint16_t sliceQuietest = 65535;
+  uint16_t sliceLoudest = 0;
+  for (size_t b = 0; b < MIC_BLOCKS_PER_SLICE; b++) {
+    uint16_t level = micSliceLevels[slot][b];
+    if (level < sliceQuietest) sliceQuietest = level;
+    if (level > sliceLoudest) sliceLoudest = level;
+  }
+
+  // Room noise follows the quietest block: down quickly, up slowly, so speech does not raise it.
+  if (voiceRoomLevel < 0.0f) {
+    voiceRoomLevel = (float)sliceQuietest;
+  } else if ((float)sliceQuietest < voiceRoomLevel) {
+    voiceRoomLevel += ((float)sliceQuietest - voiceRoomLevel) * 0.5f;
+  } else {
+    voiceRoomLevel += ((float)sliceQuietest - voiceRoomLevel) * 0.05f;
+  }
+  if (voiceRoomLevel < 1.0f) voiceRoomLevel = 1.0f;
+
+  float speechLevel = voiceRoomLevel * VOICE_LEVEL_OVER_ROOM;
+  if (speechLevel < VOICE_LEVEL_MIN) speechLevel = VOICE_LEVEL_MIN;
+
+  uint8_t loudBlocks = 0;
+  for (size_t b = 0; b < MIC_BLOCKS_PER_SLICE; b++) {
+    if ((float)micSliceLevels[slot][b] >= speechLevel) loudBlocks++;
+  }
+  voiceLoudBlocks[voiceLoudIndex] = loudBlocks;
+  voiceLoudIndex = (uint8_t)((voiceLoudIndex + 1) % EI_CLASSIFIER_SLICES_PER_MODEL_WINDOW);
+
+  // The model looks at the last 2 s, so speech anywhere in that window counts.
+  uint16_t windowLoudBlocks = 0;
+  for (size_t i = 0; i < EI_CLASSIFIER_SLICES_PER_MODEL_WINDOW; i++) {
+    windowLoudBlocks += voiceLoudBlocks[i];
+  }
+
+  // Classify every slice, quiet or not, so the model's rolling 2 s window stays continuous.
   signal_t signal;
   signal.total_length = EI_CLASSIFIER_SLICE_SIZE;
   signal.get_data = &microphone_audio_signal_get_data;
 
+  ei_active_slot = slot;
   ei_impulse_result_t result = { 0 };
   EI_IMPULSE_ERROR r = run_classifier_continuous(&signal, &result, false);
-  ei_slice_fill = 0; // start collecting the next slice immediately
+  ei_active_slot = -1;
+
+  portENTER_CRITICAL(&micMux);
+  micBusySlot = -1; // capture task may reuse this slice
+  portEXIT_CRITICAL(&micMux);
 
   if (r != EI_IMPULSE_OK) {
     Serial.printf("[VOICE] run_classifier_continuous failed (%d). Recovering.\n", r);
@@ -2376,18 +2557,29 @@ bool checkVoiceHelpTrigger() {
     return false;
   }
 
-  // First full window needs ~4 slices (~2s). Extra slices after SOS flush stale DMA.
-  const uint8_t warmupNeeded = (uint8_t)(EI_CLASSIFIER_SLICES_PER_MODEL_WINDOW + 2);
-  if (ei_warmup_slices < warmupNeeded) {
+  // The first full window needs 4 slices (2 s).
+  if (ei_warmup_slices < EI_CLASSIFIER_SLICES_PER_MODEL_WINDOW) {
     ei_warmup_slices++;
     voiceSliceWasQuiet = true;
-    ei_keyword_hits = 0;
+    if (ei_warmup_slices == EI_CLASSIFIER_SLICES_PER_MODEL_WINDOW) {
+      Serial.printf("[VOICE] Listening on the %s slot. Room noise level %.0f. Speech counts from level %.0f.\n",
+                    micChannel ? "RIGHT" : "LEFT", voiceRoomLevel, speechLevel);
+      // Must stay well under 500 ms, or half-second slices are skipped.
+      Serial.printf("[VOICE] Classifier takes %d ms per half-second slice.\n",
+                    (int)(result.timing.dsp + result.timing.classification));
+    }
     return false;
   }
 
   if (millis() - systemBootReadyTime < BOOT_GRACE_PERIOD_MS) {
     voiceSliceWasQuiet = true;
     return false;
+  }
+
+  // loop() was busy (GPS / modem) and missed audio: matches on either side of the gap do not add up.
+  if (droppedSlices > 0) {
+    voiceHelpHits = 0;
+    voiceTabangHits = 0;
   }
 
   float helpScore = 0.0f;
@@ -2408,63 +2600,62 @@ bool checkVoiceHelpTrigger() {
     }
   }
 
-  const int32_t energyFloor = (int32_t)(voiceAmbientAvg * 2.4f);
-  const bool energyOk =
-      (ei_slice_peak >= VOICE_SLICE_PEAK_MIN) &&
-      (ei_slice_avg >= VOICE_SLICE_AVG_MIN) &&
-      (ei_slice_avg >= energyFloor);
-
-  if (!energyOk) {
-    voiceAmbientAvg = (voiceAmbientAvg * 0.90f) + ((float)ei_slice_avg * 0.10f);
-    voiceSliceWasQuiet = true;
-    ei_keyword_hits = 0;
-
-    static unsigned long lastQuietLog = 0;
-    if (millis() - lastQuietLog > 4000) {
-      lastQuietLog = millis();
-      Serial.printf("[VOICE] Silence (peak=%d avg=%d floor=%.0f help=%.2f Tabang=%.2f Noise=%.2f)\n",
-                    ei_slice_peak, ei_slice_avg, voiceAmbientAvg,
-                    helpScore, tabangScore, noiseScore);
-    }
-    return false;
-  }
-
-  const bool tabangOk =
-      (tabangScore >= TABANG_SCORE_MIN) &&
-      (tabangScore > (noiseScore + KEYWORD_OVER_NOISE));
-  const bool helpOk =
+  // A keyword only counts when speech-level sound was heard inside the model's 2 s window.
+  // Without this, the classifier's guess on plain room noise could send an SOS.
+  const bool speechHeard = (windowLoudBlocks >= VOICE_MIN_LOUD_BLOCKS);
+  const bool helpHit =
+      speechHeard &&
       (helpScore >= HELP_SCORE_MIN) &&
-      (helpScore > (noiseScore + KEYWORD_OVER_NOISE));
+      (helpScore > noiseScore) &&
+      (helpScore >= tabangScore);
+  const bool tabangHit =
+      speechHeard &&
+      (tabangScore >= TABANG_SCORE_MIN) &&
+      (tabangScore > noiseScore) &&
+      (tabangScore > helpScore);
 
-  if (!tabangOk && !helpOk) {
-    voiceSliceWasQuiet = (noiseScore >= helpScore) && (noiseScore >= tabangScore);
-    ei_keyword_hits = 0;
-    static unsigned long lastIgnoredLog = 0;
-    if (millis() - lastIgnoredLog > 2000) {
-      lastIgnoredLog = millis();
-      Serial.printf("[VOICE] Sound ignored (peak=%d avg=%d help=%.2f Tabang=%.2f Noise=%.2f)\n",
-                    ei_slice_peak, ei_slice_avg, helpScore, tabangScore, noiseScore);
-    }
+  voiceHelpHits = (uint8_t)(((voiceHelpHits << 1) | (helpHit ? 1 : 0)) & 0x07);
+  voiceTabangHits = (uint8_t)(((voiceTabangHits << 1) | (tabangHit ? 1 : 0)) & 0x07);
+  voiceSliceWasQuiet = !helpHit && !tabangHit;
+
+  // Show what the microphone hears. Sound prints its scores; silence prints a slow heartbeat.
+  static unsigned long lastQuietLog = 0;
+  if (loudBlocks > 0 || helpHit || tabangHit) {
+    lastQuietLog = millis();
+    Serial.printf("[VOICE] Heard sound (level %u, room %.0f): help=%.2f Tabang=%.2f Noise=%.2f\n",
+                  sliceLoudest, voiceRoomLevel, helpScore, tabangScore, noiseScore);
+  } else if (VOICE_QUIET_LOG_MS > 0 && (millis() - lastQuietLog > VOICE_QUIET_LOG_MS)) {
+    lastQuietLog = millis();
+    Serial.printf("[VOICE] Quiet (mic level %u, room %.0f, speech counts from %.0f)\n",
+                  sliceLoudest, voiceRoomLevel, speechLevel);
+  }
+
+  // A keyword score with no speech-level sound is not an SOS, but say so: if this prints
+  // while someone is really speaking, VOICE_LEVEL_MIN / VOICE_LEVEL_OVER_ROOM are too high.
+  static unsigned long lastTooQuietLog = 0;
+  if (!speechHeard &&
+      (helpScore >= HELP_SCORE_MIN || tabangScore >= TABANG_SCORE_MIN) &&
+      (millis() - lastTooQuietLog > 3000)) {
+    lastTooQuietLog = millis();
+    Serial.printf("[VOICE] Ignored keyword score, sound too quiet (level %u, speech counts from %.0f): help=%.2f Tabang=%.2f\n",
+                  sliceLoudest, speechLevel, helpScore, tabangScore);
+  }
+
+  // One very confident slice is enough. Otherwise 2 of the last 3 slices must agree.
+  const bool helpConfirmed =
+      helpHit &&
+      (helpScore >= VOICE_SCORE_INSTANT || __builtin_popcount(voiceHelpHits) >= VOICE_HITS_REQUIRED);
+  const bool tabangConfirmed =
+      tabangHit &&
+      (tabangScore >= VOICE_SCORE_INSTANT || __builtin_popcount(voiceTabangHits) >= VOICE_HITS_REQUIRED);
+
+  if (!helpConfirmed && !tabangConfirmed) {
     return false;
   }
 
-  if (tabangOk && (!helpOk || tabangScore >= helpScore)) {
-    lastVoiceKeyword = "TABANG";
-  } else {
-    lastVoiceKeyword = "HELP";
-  }
-
-  voiceSliceWasQuiet = false;
-  ei_keyword_hits++;
-  Serial.printf("[VOICE] Candidate %s %u/%u (help=%.2f Tabang=%.2f Noise=%.2f peak=%d avg=%d)\n",
-                lastVoiceKeyword.c_str(), ei_keyword_hits, VOICE_HITS_REQUIRED,
-                helpScore, tabangScore, noiseScore, ei_slice_peak, ei_slice_avg);
-
-  if (ei_keyword_hits < VOICE_HITS_REQUIRED) {
-    return false;
-  }
-
-  ei_keyword_hits = 0;
+  lastVoiceKeyword = tabangConfirmed ? "TABANG" : "HELP";
+  voiceHelpHits = 0;
+  voiceTabangHits = 0;
   Serial.printf("[VOICE] Locked %s (help=%.2f Tabang=%.2f Noise=%.2f)\n",
                 lastVoiceKeyword.c_str(), helpScore, tabangScore, noiseScore);
   return true;
@@ -2529,3 +2720,4 @@ void triggerEmergencyAlertProcess(const String& triggerSource) {
   recoverMicrophoneListening();
   Serial.println("[VOICE] Mic restarted. Cooldown + quiet audio required before the next SOS.");
 }
+
